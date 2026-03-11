@@ -36,7 +36,7 @@ function buildPrompt(input: PRDescriptionInputType): string {
     '  "riskNotes": string | null',
     "}",
     "",
-    'The "body" must be markdown with these sections exactly:',
+    'The "body" must be markdown using these section headings:',
     "## Summary",
     "High-level explanation of what changed.",
     "",

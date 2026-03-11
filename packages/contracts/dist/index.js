@@ -33,8 +33,8 @@ var PRDescriptionInput = import_zod.z.object({
   issueBody: import_zod.z.string().trim().min(1).optional()
 });
 var PRDescriptionOutput = import_zod.z.object({
-  title: import_zod.z.string().trim().min(1),
-  body: import_zod.z.string().trim().min(1),
+  title: import_zod.z.string().trim().min(1, "title must be non-empty"),
+  body: import_zod.z.string().trim().min(1, "body must be non-empty"),
   testingNotes: import_zod.z.string().trim().min(1).optional(),
   riskNotes: import_zod.z.string().trim().min(1).optional()
 });
