@@ -28,15 +28,15 @@ module.exports = __toCommonJS(index_exports);
 // src/pr-description.ts
 var import_zod = require("zod");
 var PRDescriptionInput = import_zod.z.object({
-  diff: import_zod.z.string(),
-  issueTitle: import_zod.z.string().optional(),
-  issueBody: import_zod.z.string().optional()
+  diff: import_zod.z.string().trim().min(1),
+  issueTitle: import_zod.z.string().trim().min(1).optional(),
+  issueBody: import_zod.z.string().trim().min(1).optional()
 });
 var PRDescriptionOutput = import_zod.z.object({
-  title: import_zod.z.string(),
-  body: import_zod.z.string(),
-  testingNotes: import_zod.z.string().optional(),
-  riskNotes: import_zod.z.string().optional()
+  title: import_zod.z.string().trim().min(1),
+  body: import_zod.z.string().trim().min(1),
+  testingNotes: import_zod.z.string().trim().min(1).optional(),
+  riskNotes: import_zod.z.string().trim().min(1).optional()
 });
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {

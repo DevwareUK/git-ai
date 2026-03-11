@@ -1,4 +1,4 @@
-import { AIProvider } from "./provider";
+import { AIProvider, GenerateTextInput } from "./provider";
 
 interface OpenAIChatResponse {
   choices?: Array<{
@@ -20,12 +20,22 @@ export class OpenAIProvider implements AIProvider {
   private readonly baseUrl: string;
 
   constructor(options: OpenAIProviderOptions) {
-    this.apiKey = options.apiKey;
+    const apiKey = options.apiKey?.trim();
+    if (!apiKey) {
+      throw new Error("OpenAIProvider requires a non-empty apiKey");
+    }
+
+    this.apiKey = apiKey;
     this.model = options.model ?? "gpt-4o-mini";
     this.baseUrl = options.baseUrl ?? "https://api.openai.com/v1";
   }
 
-  async generate(prompt: string): Promise<string> {
+  async generateText(input: GenerateTextInput): Promise<string> {
+    const prompt = input.prompt?.trim();
+    if (!prompt) {
+      throw new Error("OpenAIProvider requires a non-empty prompt");
+    }
+
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
@@ -35,17 +45,12 @@ export class OpenAIProvider implements AIProvider {
       body: JSON.stringify({
         model: this.model,
         messages: [
-          {
-            role: "system",
-            content:
-              "You generate high quality GitHub PR titles and descriptions.",
-          },
-          {
-            role: "user",
-            content: prompt,
-          },
+          ...(input.systemPrompt
+            ? [{ role: "system", content: input.systemPrompt }]
+            : []),
+          { role: "user", content: prompt },
         ],
-        temperature: 0.2,
+        temperature: input.temperature,
       }),
     });
 
@@ -59,7 +64,7 @@ export class OpenAIProvider implements AIProvider {
     const data = (await response.json()) as OpenAIChatResponse;
     const content = data.choices?.[0]?.message?.content?.trim();
 
-    if (!content) {
+    if (!content || content.length === 0) {
       throw new Error("OpenAI response did not include message content");
     }
 

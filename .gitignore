@@ -4,17 +4,22 @@ node_modules/
 # Package manager / local stores
 .pnpm-store/
 .npm/
+.pnpm-debug.log*
+node_modules/.pnpm-workspace-state.json
+pnpm-workspace.yaml.tmp
 
 # Build outputs
-dist/
+/packages/*/dist/
+/actions/*/dist/*.d.ts
 build/
 coverage/
 *.tsbuildinfo
+.turbo/
+.cache/
 
 # Logs
 *.log
 npm-debug.log*
-pnpm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 

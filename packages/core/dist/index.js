@@ -26,6 +26,7 @@ module.exports = __toCommonJS(index_exports);
 
 // src/pr-description.ts
 var import_contracts = require("@ai-actions/contracts");
+var PR_DESCRIPTION_SYSTEM_PROMPT = "You write clear, accurate GitHub pull request titles and descriptions.";
 function buildPrompt(input) {
   return [
     "Generate a GitHub pull request title and body from the diff.",
@@ -55,7 +56,11 @@ function extractJson(raw) {
 async function generatePRDescription(provider, input) {
   const parsedInput = import_contracts.PRDescriptionInput.parse(input);
   const prompt = buildPrompt(parsedInput);
-  const rawResponse = await provider.generate(prompt);
+  const rawResponse = await provider.generateText({
+    systemPrompt: PR_DESCRIPTION_SYSTEM_PROMPT,
+    prompt,
+    temperature: 0.2
+  });
   const parsedOutput = extractJson(rawResponse);
   return import_contracts.PRDescriptionOutput.parse(parsedOutput);
 }

@@ -30,11 +30,19 @@ var OpenAIProvider = class {
   model;
   baseUrl;
   constructor(options) {
-    this.apiKey = options.apiKey;
+    const apiKey = options.apiKey?.trim();
+    if (!apiKey) {
+      throw new Error("OpenAIProvider requires a non-empty apiKey");
+    }
+    this.apiKey = apiKey;
     this.model = options.model ?? "gpt-4o-mini";
     this.baseUrl = options.baseUrl ?? "https://api.openai.com/v1";
   }
-  async generate(prompt) {
+  async generateText(input) {
+    const prompt = input.prompt?.trim();
+    if (!prompt) {
+      throw new Error("OpenAIProvider requires a non-empty prompt");
+    }
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
@@ -44,16 +52,10 @@ var OpenAIProvider = class {
       body: JSON.stringify({
         model: this.model,
         messages: [
-          {
-            role: "system",
-            content: "You generate high quality GitHub PR titles and descriptions."
-          },
-          {
-            role: "user",
-            content: prompt
-          }
+          ...input.systemPrompt ? [{ role: "system", content: input.systemPrompt }] : [],
+          { role: "user", content: prompt }
         ],
-        temperature: 0.2
+        temperature: input.temperature
       })
     });
     if (!response.ok) {
@@ -64,7 +66,7 @@ var OpenAIProvider = class {
     }
     const data = await response.json();
     const content = data.choices?.[0]?.message?.content?.trim();
-    if (!content) {
+    if (!content || content.length === 0) {
       throw new Error("OpenAI response did not include message content");
     }
     return content;
