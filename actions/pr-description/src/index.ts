@@ -1,3 +1,4 @@
+import { appendFileSync } from "node:fs";
 import { PRDescriptionInput } from "@ai-actions/contracts";
 import { generatePRDescription } from "@ai-actions/core";
 import { OpenAIProvider } from "@ai-actions/providers";
@@ -26,7 +27,7 @@ function setOutput(name: string, value: string): void {
 
   const delimiter = `EOF_${name.toUpperCase()}`;
   const payload = `${name}<<${delimiter}\n${value}\n${delimiter}\n`;
-  require("node:fs").appendFileSync(outputPath, payload);
+  appendFileSync(outputPath, payload);
 }
 
 async function run(): Promise<void> {

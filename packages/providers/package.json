@@ -2,7 +2,11 @@
   "name": "@ai-actions/providers",
   "version": "0.0.1",
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "scripts": {
-    "build": "rm -rf dist && mkdir -p dist && cp src/*.js dist/"
+    "build": "tsup src/index.ts --dts"
+  },
+  "devDependencies": {
+    "tsup": "^8.5.1"
   }
 }

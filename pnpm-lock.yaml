@@ -22,11 +22,46 @@ importers:
         specifier: ^5.9.3
         version: 5.9.3
 
+  actions/pr-description:
+    dependencies:
+      '@ai-actions/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@ai-actions/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@ai-actions/providers':
+        specifier: workspace:*
+        version: link:../../packages/providers
+    devDependencies:
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(typescript@5.9.3)
+
   packages/contracts:
     dependencies:
       zod:
         specifier: ^4.3.6
         version: 4.3.6
+    devDependencies:
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(typescript@5.9.3)
+
+  packages/core:
+    dependencies:
+      '@ai-actions/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@ai-actions/providers':
+        specifier: workspace:*
+        version: link:../providers
+    devDependencies:
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(typescript@5.9.3)
+
+  packages/providers:
     devDependencies:
       tsup:
         specifier: ^8.5.1
