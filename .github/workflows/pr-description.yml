@@ -23,12 +23,17 @@ jobs:
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
+        with:
+          version: 10.7.0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: pnpm
+
+      - name: Configure pnpm
+        run: pnpm config set inject-workspace-packages true
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
