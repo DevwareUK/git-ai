@@ -2,7 +2,7 @@
 
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
-import { generateCommitMessage } from "@ai-actions/core";
+import { generateCommitMessage, generateDiffSummary } from "@ai-actions/core";
 import { OpenAIProvider } from "@ai-actions/providers";
 import dotenv from "dotenv";
 
@@ -28,26 +28,26 @@ function getOptionalEnv(name: string): string | undefined {
   return value ? value : undefined;
 }
 
-function readStagedDiff(): string {
+function readGitDiff(
+  args: string[],
+  emptyDiffMessage: string,
+  commandDescription: string,
+  missingRevisionMessage?: string
+): string {
   try {
-    const diff = execFileSync("git", ["diff", "--cached"], {
+    const diff = execFileSync("git", args, {
       encoding: "utf8",
       maxBuffer: 10 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"],
     });
 
     if (!diff.trim()) {
-      throw new Error(
-        "No staged changes found. Stage changes before generating a commit message."
-      );
+      throw new Error(emptyDiffMessage);
     }
 
     return diff;
   } catch (error: unknown) {
-    if (
-      error instanceof Error &&
-      error.message ===
-        "No staged changes found. Stage changes before generating a commit message."
-    ) {
+    if (error instanceof Error && error.message === emptyDiffMessage) {
       throw error;
     }
 
@@ -58,33 +58,94 @@ function readStagedDiff(): string {
       typeof error.stderr === "string"
         ? error.stderr.trim()
         : undefined;
+    const combinedMessage = [error instanceof Error ? error.message : "", stderr]
+      .filter(Boolean)
+      .join(" ");
+
+    if (
+      missingRevisionMessage &&
+      (combinedMessage.includes("ambiguous argument 'HEAD'") ||
+        combinedMessage.includes("bad revision 'HEAD'"))
+    ) {
+      throw new Error(missingRevisionMessage);
+    }
 
     const detail = stderr ? ` ${stderr}` : "";
     throw new Error(
-      `Failed to read staged git diff. Make sure git is installed and you are inside a git repository.${detail}`
+      `Failed to read ${commandDescription} git diff. Make sure git is installed and you are inside a git repository.${detail}`
     );
   }
+}
+
+function readStagedDiff(): string {
+  return readGitDiff(
+    ["diff", "--cached"],
+    "No staged changes found. Stage changes before generating a commit message.",
+    "staged"
+  );
+}
+
+function readHeadDiff(): string {
+  return readGitDiff(
+    ["diff", "HEAD"],
+    "No changes found in git diff HEAD. Make a change before generating a diff summary.",
+    "HEAD",
+    "git diff HEAD requires at least one commit. Create an initial commit before generating a diff summary."
+  );
 }
 
 function formatCommitMessage(title: string, body?: string): string {
   return body ? `${title}\n\n${body}\n` : `${title}\n`;
 }
 
-async function run(): Promise<void> {
-  const command = process.argv[2];
-  if (command && command !== "commit") {
-    throw new Error(`Unknown command: ${command}. Only "commit" is supported.`);
+function formatDiffSummary(
+  summary: Awaited<ReturnType<typeof generateDiffSummary>>
+): string {
+  const sections = ["## Summary", summary.summary, "", "## Major Areas"];
+
+  for (const area of summary.majorAreas) {
+    sections.push(`- ${area}`);
   }
 
-  const diff = readStagedDiff();
-  const provider = new OpenAIProvider({
+  if (summary.riskAreas && summary.riskAreas.length > 0) {
+    sections.push("", "## Risk Areas");
+    for (const risk of summary.riskAreas) {
+      sections.push(`- ${risk}`);
+    }
+  }
+
+  sections.push("");
+  return sections.join("\n");
+}
+
+function createProvider(): OpenAIProvider {
+  return new OpenAIProvider({
     apiKey: getRequiredEnv("OPENAI_API_KEY"),
     model: getOptionalEnv("OPENAI_MODEL"),
     baseUrl: getOptionalEnv("OPENAI_BASE_URL"),
   });
+}
 
-  const result = await generateCommitMessage(provider, diff);
-  process.stdout.write(formatCommitMessage(result.title, result.body));
+async function run(): Promise<void> {
+  const command = process.argv[2] ?? "commit";
+  if (command !== "commit" && command !== "diff") {
+    throw new Error(
+      `Unknown command: ${command}. Supported commands: "commit", "diff".`
+    );
+  }
+
+  if (command === "commit") {
+    const diff = readStagedDiff();
+    const provider = createProvider();
+    const result = await generateCommitMessage(provider, diff);
+    process.stdout.write(formatCommitMessage(result.title, result.body));
+    return;
+  }
+
+  const diff = readHeadDiff();
+  const provider = createProvider();
+  const result = await generateDiffSummary(provider, { diff });
+  process.stdout.write(formatDiffSummary(result));
 }
 
 run().catch((error: unknown) => {

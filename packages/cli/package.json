@@ -9,7 +9,8 @@
   },
   "scripts": {
     "build": "tsup src/index.ts --format cjs --dts --out-dir dist",
-    "commit": "pnpm --filter @ai-actions/cli... build && node dist/index.js commit"
+    "commit": "pnpm --filter @ai-actions/cli... build && node dist/index.js commit",
+    "diff": "pnpm --filter @ai-actions/cli... build && node dist/index.js diff"
   },
   "dependencies": {
     "@ai-actions/core": "workspace:*",
