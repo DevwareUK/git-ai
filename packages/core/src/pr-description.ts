@@ -5,6 +5,7 @@ import {
   PRDescriptionOutputType,
 } from "@ai-actions/contracts";
 import { AIProvider } from "@ai-actions/providers";
+import { generateStructuredOutput } from "./structured-generation";
 
 const PR_DESCRIPTION_SYSTEM_PROMPT =
   [
@@ -59,26 +60,6 @@ function buildPrompt(input: PRDescriptionInputType): string {
   ].join("\n");
 }
 
-function stripMarkdownJsonFences(raw: string): string {
-  const trimmed = raw.trim();
-  const match = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-  if (match?.[1]) {
-    return match[1].trim();
-  }
-
-  return trimmed;
-}
-
-function parseModelJson(raw: string): unknown {
-  const normalized = stripMarkdownJsonFences(raw);
-  try {
-    return JSON.parse(normalized);
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Failed to parse model output as JSON: ${message}`);
-  }
-}
-
 function normalizeNullableNotes(value: unknown): unknown {
   if (!value || typeof value !== "object") {
     return value;
@@ -101,21 +82,15 @@ export async function generatePRDescription(
 ): Promise<PRDescriptionOutputType> {
   const parsedInput = PRDescriptionInput.parse(input);
   const prompt = buildPrompt(parsedInput);
-  const rawResponse = await provider.generateText({
+  const modelOutput = await generateStructuredOutput({
+    provider,
     systemPrompt: PR_DESCRIPTION_SYSTEM_PROMPT,
     prompt,
-    temperature: 0.2,
+    schema: PRDescriptionOutput,
+    validationErrorPrefix:
+      "Model output failed PR description schema validation",
+    normalizeParsedJson: normalizeNullableNotes,
   });
 
-  const parsedJson = parseModelJson(rawResponse.trim());
-  const normalizedOutput = normalizeNullableNotes(parsedJson);
-
-  const validated = PRDescriptionOutput.safeParse(normalizedOutput);
-  if (!validated.success) {
-    throw new Error(
-      `Model output failed PR description schema validation: ${validated.error.message}`
-    );
-  }
-
-  return validated.data;
+  return modelOutput;
 }

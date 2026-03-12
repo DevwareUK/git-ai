@@ -7,6 +7,7 @@ import {
   CommitMessageOutputType,
 } from "@ai-actions/contracts";
 import { AIProvider } from "@ai-actions/providers";
+import { generateStructuredOutput } from "./structured-generation";
 
 const COMMIT_MESSAGE_SYSTEM_PROMPT =
   [
@@ -43,26 +44,6 @@ function buildPrompt(input: CommitMessageInputType): string {
   ].join("\n");
 }
 
-function stripMarkdownJsonFences(raw: string): string {
-  const trimmed = raw.trim();
-  const match = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-  if (match?.[1]) {
-    return match[1].trim();
-  }
-
-  return trimmed;
-}
-
-function parseModelJson(raw: string): unknown {
-  const normalized = stripMarkdownJsonFences(raw);
-  try {
-    return JSON.parse(normalized);
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Failed to parse model output as JSON: ${message}`);
-  }
-}
-
 function normalizeCommitMessageOutput(
   value: CommitMessageModelOutputType
 ): CommitMessageOutputType {
@@ -78,19 +59,14 @@ export async function generateCommitMessage(
 ): Promise<CommitMessageOutputType> {
   const parsedInput = CommitMessageInput.parse({ diff });
   const prompt = buildPrompt(parsedInput);
-  const rawResponse = await provider.generateText({
+  const modelOutput = await generateStructuredOutput({
+    provider,
     systemPrompt: COMMIT_MESSAGE_SYSTEM_PROMPT,
     prompt,
-    temperature: 0.2,
+    schema: CommitMessageModelOutput,
+    validationErrorPrefix:
+      "Model output failed commit message schema validation",
   });
 
-  const parsedJson = parseModelJson(rawResponse.trim());
-  const validatedModelOutput = CommitMessageModelOutput.safeParse(parsedJson);
-  if (!validatedModelOutput.success) {
-    throw new Error(
-      `Model output failed commit message schema validation: ${validatedModelOutput.error.message}`
-    );
-  }
-
-  return normalizeCommitMessageOutput(validatedModelOutput.data);
+  return normalizeCommitMessageOutput(modelOutput);
 }
