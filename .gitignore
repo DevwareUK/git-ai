@@ -34,6 +34,9 @@ yarn-error.log*
 .env.*
 !.env.example
 
+# Husky generated local shims
+.husky/_/
+
 # Editor / IDE
 .idea/
 .vscode/
