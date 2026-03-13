@@ -19,6 +19,8 @@ const PR_DESCRIPTION_SYSTEM_PROMPT =
     "You are a senior software engineer writing a GitHub pull request description.",
     "Be concise but informative.",
     ...DIFF_GROUNDED_SYSTEM_PROMPT_LINES,
+    "Focus on the intent and meaningful impact of the change, not every tiny diff line.",
+    "Mention testing or risk details only when the diff supports them.",
   ].join(" ");
 
 function buildPrompt(input: PRDescriptionInputType): string {
@@ -33,6 +35,7 @@ function buildPrompt(input: PRDescriptionInputType): string {
   return buildDiffTaskPrompt({
     taskLine: "Generate a GitHub pull request title and body from the provided diff.",
     guidanceLines: [
+      'The "title" should be concise and specific to the change.',
       "Use issue context only as supporting context and prefer the diff when they conflict.",
       'The "body" must be markdown using these section headings:',
       "## Summary",
@@ -46,12 +49,15 @@ function buildPrompt(input: PRDescriptionInputType): string {
       "",
       "## Risk",
       "Potential risks, rollout notes, or migration concerns.",
+      "",
+      'Omit "testingNotes" when there are no concrete validation steps supported by the diff.',
+      'Omit "riskNotes" when there are no clear risks, rollout notes, or migration concerns supported by the diff.',
     ],
     schemaLines: [
       '  "title": string,',
       '  "body": string,',
-      '  "testingNotes": string | null,',
-      '  "riskNotes": string | null',
+      '  "testingNotes"?: string,',
+      '  "riskNotes"?: string',
     ],
     contextLines:
       contextLines.length > 0
