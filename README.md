@@ -37,3 +37,12 @@ git-ai diff
 ```
 
 This will summarize the current `git diff HEAD`.
+
+```bash
+git-ai issue 123
+```
+
+This will fetch GitHub issue `#123`, create a branch named from the issue title,
+run `codex exec` with a structured repository prompt, verify the build with
+`pnpm build`, commit the resulting changes, and if `gh` is installed and
+authenticated, push the branch and open a pull request automatically.
