@@ -8,25 +8,9 @@ on:
         required: false
         default: "5"
         type: string
-      create_issues:
-        description: Create GitHub issues for the highest-priority findings
-        required: false
-        default: false
-        type: boolean
-      max_issues:
-        description: Maximum number of GitHub issues to create when enabled
-        required: false
-        default: "3"
-        type: string
-      issue_labels:
-        description: Optional comma-separated labels to add to created issues
-        required: false
-        default: ""
-        type: string
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
   test-backlog:
@@ -59,21 +43,9 @@ jobs:
 
       - name: Generate test backlog report
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MAX_FINDINGS: ${{ inputs.max_findings }}
-          CREATE_ISSUES: ${{ inputs.create_issues }}
-          MAX_ISSUES: ${{ inputs.max_issues }}
-          ISSUE_LABELS: ${{ inputs.issue_labels }}
         run: |
-          args=(test-backlog --format json --top "$MAX_FINDINGS")
-          if [ "$CREATE_ISSUES" = "true" ]; then
-            args+=(--create-issues --max-issues "$MAX_ISSUES")
-            if [ -n "$ISSUE_LABELS" ]; then
-              args+=(--labels "$ISSUE_LABELS")
-            fi
-          fi
-
-          node packages/cli/dist/index.js "${args[@]}" > test-backlog-report.json
+          node packages/cli/dist/index.js test-backlog --format json --top "$MAX_FINDINGS" > test-backlog-report.json
 
       - name: Upload backlog report
         uses: actions/upload-artifact@v4
@@ -113,21 +85,12 @@ jobs:
                 .addList([
                   `Priority: ${finding.priority}`,
                   `Suggested test types: ${finding.suggestedTestTypes.join(", ")}`,
+                  `Suggested scope: ${finding.suggestedScope.join("; ")}`,
+                  `Acceptance criteria: ${finding.acceptanceCriteria.join("; ")}`,
                   `Draft issue title: ${finding.issueTitle}`,
                 ])
                 .addRaw(finding.rationale)
                 .addEOL();
-            }
-
-            if (Array.isArray(report.createdIssues) && report.createdIssues.length > 0) {
-              core.summary
-                .addHeading("GitHub issue results", 2)
-                .addList(
-                  report.createdIssues.map(
-                    (issue) =>
-                      `${issue.status === "created" ? "Created" : "Reused"} #${issue.number}: ${issue.title} (${issue.url})`
-                  )
-                );
             }
 
             await core.summary.write();

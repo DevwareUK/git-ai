@@ -66,15 +66,15 @@ Use JSON output when you want to script the result:
 git-ai test-backlog --format json --top 5
 ```
 
-GitHub issue creation is explicit and opt-in:
+GitHub issue creation is explicit, opt-in, and interactive in the local CLI:
 
 ```bash
 GITHUB_TOKEN=... git-ai test-backlog --create-issues --max-issues 3
 ```
 
-When `--create-issues` is enabled, `git-ai` checks for matching open issue
-titles first so it can reuse existing backlog items instead of creating
-duplicates.
+When `--create-issues` is enabled, `git-ai` reviews each proposed issue with
+you one by one. You can create it, skip it, or modify the title/body before
+creation. Matching open issue titles are reused instead of creating duplicates.
 
 ## GitHub Actions issue flow
 
@@ -105,6 +105,7 @@ Trigger it with `workflow_dispatch` to:
 
 - scan the repository for existing test setup and likely gaps
 - publish a prioritized backlog summary in the workflow run
-- optionally create GitHub issues for the highest-value findings
+- publish issue-ready proposals with suggested scope and acceptance criteria
 
-Issue creation is disabled by default and requires a deliberate manual trigger.
+Interactive GitHub issue creation is local CLI only and is not performed by the
+workflow.

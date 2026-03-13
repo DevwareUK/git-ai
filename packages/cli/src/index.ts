@@ -3,9 +3,11 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { relative, resolve } from "node:path";
+import { createInterface } from "node:readline/promises";
 import { analyzeTestBacklog, generateCommitMessage, generateDiffSummary } from "@git-ai/core";
 import { OpenAIProvider } from "@git-ai/providers";
 import dotenv from "dotenv";
+import type { Interface as ReadlineInterface } from "node:readline/promises";
 
 dotenv.config({ path: resolve(__dirname, "../../..", ".env"), quiet: true });
 
@@ -51,6 +53,32 @@ type CreatedIssueRecord = {
   url: string;
   status: "created" | "existing";
 };
+
+type IssueReviewRecord = {
+  findingId: string;
+  title: string;
+  status: "created" | "existing" | "skipped";
+  number?: number;
+  url?: string;
+};
+
+type IssueProposalDraft = {
+  findingId: string;
+  title: string;
+  body: string;
+  rationale: string;
+  suggestedScope: string[];
+  relatedPaths: string[];
+  acceptanceCriteria: string[];
+  existingCoverage?: string;
+};
+
+type ReviewedIssueProposal = {
+  action: "create" | "skip";
+  draft: IssueProposalDraft;
+};
+
+type TestBacklogFinding = Awaited<ReturnType<typeof analyzeTestBacklog>>["findings"][number];
 
 type IssueRunContext = {
   issueNumber: number;
@@ -981,9 +1009,62 @@ function createProvider(): OpenAIProvider {
   });
 }
 
+function formatIssueProposalDraft(
+  draft: IssueProposalDraft,
+  existingIssue?: { number: number; title: string; url: string }
+): string {
+  const lines = [
+    "------------------------------------------------------------",
+    `Proposed issue: ${draft.title}`,
+    "------------------------------------------------------------",
+    "",
+    "Summary / rationale",
+    draft.rationale,
+    "",
+    "Suggested scope",
+    ...draft.suggestedScope.map((item) => `- ${item}`),
+    "",
+    "Related paths",
+    ...draft.relatedPaths.map((path) => `- ${path}`),
+    "",
+    "Acceptance criteria",
+    ...draft.acceptanceCriteria.map((item) => `- ${item}`),
+  ];
+
+  if (draft.existingCoverage) {
+    lines.push("", "Existing coverage signal", draft.existingCoverage);
+  }
+
+  if (existingIssue) {
+    lines.push(
+      "",
+      "Matching open issue",
+      `- #${existingIssue.number}: ${existingIssue.title}`,
+      `- ${existingIssue.url}`
+    );
+  }
+
+  lines.push("", "Draft body", draft.body, "");
+  return lines.join("\n");
+}
+
+function renderIssueReviewResults(issueReviews: IssueReviewRecord[]): string[] {
+  if (issueReviews.length === 0) {
+    return [];
+  }
+
+  return issueReviews.map((issue) => {
+    if (issue.status === "skipped") {
+      return `- Skipped: ${issue.title}`;
+    }
+
+    return `- ${issue.status === "created" ? "Created" : "Reused"} #${issue.number}: ${issue.title} (${issue.url})`;
+  });
+}
+
 function formatTestBacklogMarkdown(
   result: Awaited<ReturnType<typeof analyzeTestBacklog>>,
-  createdIssues: CreatedIssueRecord[]
+  issueReviews: IssueReviewRecord[]
 ): string {
   const lines: string[] = [
     "# AI Test Backlog",
@@ -1019,6 +1100,8 @@ function formatTestBacklogMarkdown(
     lines.push(`- Priority: ${toTitleCase(finding.priority)}`);
     lines.push(`- Suggested test types: ${finding.suggestedTestTypes.join(", ")}`);
     lines.push(`- Rationale: ${finding.rationale}`);
+    lines.push(`- Suggested scope: ${finding.suggestedScope.join("; ")}`);
+    lines.push(`- Acceptance criteria: ${finding.acceptanceCriteria.join("; ")}`);
     if (finding.existingCoverage) {
       lines.push(`- Existing coverage signal: ${finding.existingCoverage}`);
     }
@@ -1029,14 +1112,9 @@ function formatTestBacklogMarkdown(
     lines.push("");
   }
 
-  if (createdIssues.length > 0) {
-    lines.push("## GitHub issue results");
-    lines.push(
-      ...createdIssues.map(
-        (issue) =>
-          `- ${issue.status === "created" ? "Created" : "Reused"} #${issue.number}: ${issue.title} (${issue.url})`
-      )
-    );
+  if (issueReviews.length > 0) {
+    lines.push("## Issue review results");
+    lines.push(...renderIssueReviewResults(issueReviews));
     lines.push("");
   }
 
@@ -1142,50 +1220,206 @@ async function createGitHubIssue(
   };
 }
 
-async function maybeCreateTestBacklogIssues(
+function requireInteractiveIssueCreation(): void {
+  if (!process.stdin.isTTY || !process.stderr.isTTY) {
+    throw new Error(
+      "Interactive issue creation requires a local TTY. Run `git-ai test-backlog --create-issues` in a local terminal."
+    );
+  }
+}
+
+function buildIssueProposalDraft(finding: TestBacklogFinding): IssueProposalDraft {
+  return {
+    findingId: finding.id,
+    title: finding.issueTitle,
+    body: finding.issueBody,
+    rationale: finding.rationale,
+    suggestedScope: finding.suggestedScope,
+    relatedPaths: finding.relatedPaths,
+    acceptanceCriteria: finding.acceptanceCriteria,
+    existingCoverage: finding.existingCoverage,
+  };
+}
+
+async function promptIssueDecision(rl: ReadlineInterface): Promise<"create" | "skip" | "modify"> {
+  while (true) {
+    const response = (await rl.question("Decision [y=create / n=skip / m=modify]: "))
+      .trim()
+      .toLowerCase();
+
+    if (response === "y" || response === "yes" || response === "create" || response === "c") {
+      return "create";
+    }
+
+    if (response === "n" || response === "no" || response === "skip" || response === "s") {
+      return "skip";
+    }
+
+    if (response === "m" || response === "modify" || response === "edit") {
+      return "modify";
+    }
+
+    process.stderr.write("Enter `y`, `n`, or `m`.\n");
+  }
+}
+
+async function readMultilineResponse(rl: ReadlineInterface): Promise<string> {
+  const lines: string[] = [];
+
+  while (true) {
+    const line = await rl.question("");
+    if (line === ".") {
+      return lines.join("\n").trim();
+    }
+
+    lines.push(line);
+  }
+}
+
+async function modifyIssueProposalDraft(
+  rl: ReadlineInterface,
+  draft: IssueProposalDraft
+): Promise<IssueProposalDraft> {
+  const nextTitle = (await rl.question(`Updated title (Enter to keep current): `)).trim();
+  const updatedTitle = nextTitle || draft.title;
+
+  process.stderr.write("\nCurrent issue body:\n");
+  process.stderr.write("------------------------------------------------------------\n");
+  process.stderr.write(`${draft.body}\n`);
+  process.stderr.write("------------------------------------------------------------\n");
+
+  const replaceBody = (await rl.question("Replace body? [y/N]: ")).trim().toLowerCase();
+  let updatedBody = draft.body;
+
+  if (replaceBody === "y" || replaceBody === "yes") {
+    process.stderr.write(
+      "Enter the full replacement body. Finish with a single `.` on its own line.\n"
+    );
+    const replacementBody = await readMultilineResponse(rl);
+    if (replacementBody) {
+      updatedBody = replacementBody;
+    } else {
+      process.stderr.write("Body left unchanged because the replacement was empty.\n");
+    }
+  }
+
+  process.stderr.write("\n");
+  return {
+    ...draft,
+    title: updatedTitle,
+    body: updatedBody,
+  };
+}
+
+async function reviewIssueProposal(
+  rl: ReadlineInterface,
+  finding: TestBacklogFinding,
+  existingByTitle: Map<string, { number: number; title: string; url: string }>
+): Promise<ReviewedIssueProposal> {
+  let draft = buildIssueProposalDraft(finding);
+
+  while (true) {
+    const existingIssue = existingByTitle.get(draft.title.trim().toLowerCase());
+    process.stderr.write(formatIssueProposalDraft(draft, existingIssue));
+
+    const decision = await promptIssueDecision(rl);
+    if (decision === "skip") {
+      process.stderr.write("\n");
+      return {
+        action: "skip",
+        draft,
+      };
+    }
+
+    if (decision === "create") {
+      process.stderr.write("\n");
+      return {
+        action: "create",
+        draft,
+      };
+    }
+
+    draft = await modifyIssueProposalDraft(rl, draft);
+  }
+}
+
+async function reviewAndCreateTestBacklogIssues(
   options: TestBacklogCommandOptions,
   analysis: Awaited<ReturnType<typeof analyzeTestBacklog>>
-): Promise<CreatedIssueRecord[]> {
+): Promise<IssueReviewRecord[]> {
   if (!options.createIssues) {
     return [];
   }
 
+  requireInteractiveIssueCreation();
   const token = getGitHubApiToken();
   const { owner, repo } = parseGitHubRepoFromRemote();
   const existingIssues = await listOpenIssues(owner, repo, token);
   const existingByTitle = new Map(
     existingIssues.map((issue) => [issue.title.trim().toLowerCase(), issue])
   );
-  const createdIssues: CreatedIssueRecord[] = [];
+  const issueReviews: IssueReviewRecord[] = [];
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stderr,
+  });
 
-  for (const finding of analysis.findings.slice(0, options.maxIssues)) {
-    const existingIssue = existingByTitle.get(finding.issueTitle.trim().toLowerCase());
-    if (existingIssue) {
-      createdIssues.push({
-        ...existingIssue,
-        status: "existing",
-      });
-      continue;
-    }
-
-    const createdIssue = await createGitHubIssue(
-      owner,
-      repo,
-      token,
-      finding.issueTitle,
-      finding.issueBody,
-      options.labels
+  try {
+    process.stderr.write(
+      `Reviewing ${Math.min(options.maxIssues, analysis.findings.length)} proposed issue(s).\n\n`
     );
 
-    const record: CreatedIssueRecord = {
-      ...createdIssue,
-      status: "created",
-    };
-    existingByTitle.set(record.title.trim().toLowerCase(), record);
-    createdIssues.push(record);
+    for (const finding of analysis.findings.slice(0, options.maxIssues)) {
+      const reviewedProposal = await reviewIssueProposal(rl, finding, existingByTitle);
+      if (reviewedProposal.action === "skip") {
+        issueReviews.push({
+          findingId: finding.id,
+          title: reviewedProposal.draft.title,
+          status: "skipped",
+        });
+        continue;
+      }
+
+      const reviewedDraft = reviewedProposal.draft;
+      const existingIssue = existingByTitle.get(reviewedDraft.title.trim().toLowerCase());
+      if (existingIssue) {
+        issueReviews.push({
+          findingId: finding.id,
+          title: existingIssue.title,
+          number: existingIssue.number,
+          url: existingIssue.url,
+          status: "existing",
+        });
+        continue;
+      }
+
+      const createdIssue = await createGitHubIssue(
+        owner,
+        repo,
+        token,
+        reviewedDraft.title,
+        reviewedDraft.body,
+        options.labels
+      );
+
+      const record: CreatedIssueRecord = {
+        ...createdIssue,
+        status: "created",
+      };
+      existingByTitle.set(record.title.trim().toLowerCase(), record);
+      issueReviews.push({
+        findingId: finding.id,
+        title: record.title,
+        number: record.number,
+        url: record.url,
+        status: record.status,
+      });
+    }
+  } finally {
+    rl.close();
   }
 
-  return createdIssues;
+  return issueReviews;
 }
 
 async function runTestBacklogCommand(): Promise<void> {
@@ -1194,9 +1428,28 @@ async function runTestBacklogCommand(): Promise<void> {
     repoRoot: options.repoRoot,
     maxFindings: options.top,
   });
-  const createdIssues = await maybeCreateTestBacklogIssues(options, analysis);
+  const issueReviews = await reviewAndCreateTestBacklogIssues(options, analysis);
+  const createdIssues: CreatedIssueRecord[] = issueReviews.flatMap((issue) => {
+    if (
+      (issue.status === "created" || issue.status === "existing") &&
+      typeof issue.number === "number" &&
+      typeof issue.url === "string"
+    ) {
+      return [
+        {
+          number: issue.number,
+          title: issue.title,
+          url: issue.url,
+          status: issue.status,
+        },
+      ];
+    }
+
+    return [];
+  });
   const output = {
     ...analysis,
+    issueReviews,
     createdIssues,
   };
 
@@ -1205,7 +1458,7 @@ async function runTestBacklogCommand(): Promise<void> {
     return;
   }
 
-  process.stdout.write(`${formatTestBacklogMarkdown(analysis, createdIssues)}\n`);
+  process.stdout.write(`${formatTestBacklogMarkdown(analysis, issueReviews)}\n`);
 }
 
 async function prepareIssueRun(

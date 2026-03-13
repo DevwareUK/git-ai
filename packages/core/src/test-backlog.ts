@@ -410,7 +410,7 @@ function issueBodyForFinding(
     finding.rationale,
     "",
     "## Suggested scope",
-    ...finding.suggestedTestTypes.map((testType) => `- Add ${testType} coverage for this area`),
+    ...finding.suggestedScope.map((item) => `- ${item}`),
     "",
     "## Target paths",
     ...finding.relatedPaths.map((path) => `- \`${path}\``),
@@ -420,7 +420,14 @@ function issueBodyForFinding(
     lines.push("", "## Existing coverage signal", finding.existingCoverage);
   }
 
-  lines.push("", "## Acceptance notes", `- Backlog finding id: \`${finding.id}\``);
+  lines.push(
+    "",
+    "## Acceptance criteria",
+    ...finding.acceptanceCriteria.map((item) => `- ${item}`),
+    "",
+    "## Backlog metadata",
+    `- Backlog finding id: \`${finding.id}\``
+  );
   return lines.join("\n");
 }
 
@@ -482,13 +489,81 @@ function buildFinding(component: Component, setupStatus: string, testFileCount: 
     workflow: ["workflow", "integration"],
   };
 
+  const scopeByKind: Record<Component["kind"], string[]> = {
+    cli: [
+      "Exercise the highest-value CLI entry points with repo-backed command execution tests.",
+      "Cover success and failure handling for argument parsing, git preconditions, and output rendering.",
+      "Lock down markdown and JSON output for user-facing commands that are likely to be scripted.",
+    ],
+    core: [
+      "Add focused unit tests around repository analysis, finding prioritization, and issue proposal generation.",
+      "Cover empty, partial, and established test-setup snapshots so ranking behavior stays predictable.",
+      "Assert that top findings remain curated and implementation-oriented instead of expanding into issue spam.",
+    ],
+    contracts: [
+      "Add schema validation tests for valid and invalid test backlog payloads.",
+      "Verify that issue-ready proposal fields such as suggested scope and acceptance criteria stay required.",
+      "Cover representative malformed payloads so contract failures stay explicit as the CLI evolves.",
+    ],
+    providers: [
+      "Add mocked provider adapter coverage around request construction and response parsing.",
+      "Exercise error handling for missing content, malformed payloads, and provider failures.",
+      "Verify that provider integrations preserve the output contracts expected by core workflows.",
+    ],
+    actions: [
+      "Add smoke coverage for the highest-value action wrappers and their required inputs/outputs.",
+      "Exercise packaging or dist-level execution paths so broken action bundles are caught before release.",
+      "Cover at least one failure path where user-facing action output needs to remain actionable.",
+    ],
+    workflow: [
+      "Add regression coverage for the workflows that orchestrate checkout, install, build, and reporting steps.",
+      "Exercise the branching paths that gate side effects so automation stays explicit and safe.",
+      "Verify that workflow outputs and summaries remain consistent for the main operational paths.",
+    ],
+  };
+
+  const acceptanceCriteriaByKind: Record<Component["kind"], string[]> = {
+    cli: [
+      "CLI tests cover both valid and invalid invocation paths for the targeted commands.",
+      "User-facing errors remain clear when git or GitHub prerequisites are missing.",
+      "At least one test asserts stable machine-readable output for scripted usage.",
+    ],
+    core: [
+      "Core tests prove finding prioritization across representative repository states.",
+      "Issue proposal generation includes practical scope and acceptance criteria fields.",
+      "Finding limits and ordering remain deterministic for a fixed repository snapshot.",
+    ],
+    contracts: [
+      "Schema tests reject malformed backlog findings and issue proposal fields.",
+      "Valid payloads continue to parse without widening required field shapes accidentally.",
+      "Contract failures are specific enough to diagnose caller mistakes quickly.",
+    ],
+    providers: [
+      "Provider tests cover both successful responses and at least one failure path.",
+      "Adapter logic preserves the contracts expected by core use cases.",
+      "Network-facing parsing changes can fail fast without silently corrupting outputs.",
+    ],
+    actions: [
+      "Action smoke tests verify required inputs, outputs, and packaged execution paths.",
+      "At least one failure scenario produces actionable output instead of a silent breakage.",
+      "The covered action path can run in CI without manual setup beyond documented secrets.",
+    ],
+    workflow: [
+      "Workflow coverage validates the main orchestration path end to end at a smoke level.",
+      "Guard rails around side-effecting steps remain explicit under the tested conditions.",
+      "Workflow summaries or outputs stay stable enough for maintainers to trust the automation.",
+    ],
+  };
+
   const findingBase = {
     id: component.id,
     title: component.title,
     priority,
     rationale: rationaleByKind[component.kind],
     suggestedTestTypes: suggestedTypesByKind[component.kind],
+    suggestedScope: scopeByKind[component.kind],
     relatedPaths: component.relatedPaths.slice(0, 12),
+    acceptanceCriteria: acceptanceCriteriaByKind[component.kind],
     existingCoverage: component.coverageEvidence,
   };
 
@@ -522,7 +597,17 @@ function buildInitialFrameworkFinding(
     priority: "high" as const,
     rationale,
     suggestedTestTypes: ["smoke", "unit"],
+    suggestedScope: [
+      "Add a lightweight repository-wide test runner configuration and a documented test script.",
+      "Create one representative smoke or unit test that proves the harness works against the current layout.",
+      "Wire the initial harness into the normal contributor workflow so later backlog items have a foundation.",
+    ],
     relatedPaths: relatedPaths.length > 0 ? relatedPaths : ["package.json"],
+    acceptanceCriteria: [
+      "The repository can run at least one automated test through a documented command.",
+      "The initial test setup is lightweight enough to extend across packages and actions incrementally.",
+      "A representative smoke or unit test passes against the current codebase structure.",
+    ],
     existingCoverage: undefined,
   };
 
