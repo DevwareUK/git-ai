@@ -40,6 +40,9 @@ jobs:
       - name: Build workspace
         run: pnpm build
 
+      - name: Run tests
+        run: pnpm test
+
       - name: Generate PR diff
         id: diff
         env:
