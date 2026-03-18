@@ -1,0 +1,46 @@
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import {
+  RepositoryConfig,
+  type RepositoryConfigType,
+  type ResolvedRepositoryConfigType,
+} from "@git-ai/contracts";
+import { resolveRepositoryConfig } from "@git-ai/core";
+
+export const REPOSITORY_CONFIG_RELATIVE_PATH = ".git-ai/config.json";
+
+export function getRepositoryConfigPath(repoRoot: string): string {
+  return resolve(repoRoot, REPOSITORY_CONFIG_RELATIVE_PATH);
+}
+
+export function loadRepositoryConfig(repoRoot: string): RepositoryConfigType | undefined {
+  const configPath = getRepositoryConfigPath(repoRoot);
+  if (!existsSync(configPath)) {
+    return undefined;
+  }
+
+  let parsedJson: unknown;
+  try {
+    parsedJson = JSON.parse(readFileSync(configPath, "utf8"));
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to parse ${REPOSITORY_CONFIG_RELATIVE_PATH}: ${message}`);
+  }
+
+  try {
+    return RepositoryConfig.parse(parsedJson);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid ${REPOSITORY_CONFIG_RELATIVE_PATH}: ${message}`);
+  }
+}
+
+export function loadResolvedRepositoryConfig(repoRoot: string): ResolvedRepositoryConfigType {
+  return resolveRepositoryConfig(loadRepositoryConfig(repoRoot));
+}
+
+export function formatCommandForDisplay(command: string[]): string {
+  return command
+    .map((segment) => (/\s/.test(segment) ? JSON.stringify(segment) : segment))
+    .join(" ");
+}

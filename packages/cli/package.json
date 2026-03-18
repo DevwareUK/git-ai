@@ -15,6 +15,7 @@
     "issue": "pnpm --filter @git-ai/cli... build && node dist/index.js"
   },
   "dependencies": {
+    "@git-ai/contracts": "workspace:*",
     "@git-ai/core": "workspace:*",
     "@git-ai/providers": "workspace:*",
     "dotenv": "^17.2.3"

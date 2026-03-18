@@ -65,6 +65,9 @@ importers:
 
   packages/cli:
     dependencies:
+      '@git-ai/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       '@git-ai/core':
         specifier: workspace:*
         version: link:../core
