@@ -2,7 +2,7 @@
 
 AI tooling for Git workflows, including a CLI and GitHub Actions.
 
-Pull request workflows in this repo currently cover an AI PR assistant section, test suggestions, and repo-wide test backlog generation.
+Pull request workflows in this repo currently cover an AI PR assistant section, test suggestions, repo-wide test backlog generation, and repository feature backlog generation.
 
 ## Local Setup
 
@@ -49,6 +49,7 @@ Run these from the repository root.
 | `pnpm prepare` | Runs `husky` to install/update Git hooks. This also runs automatically during install. |
 | `pnpm cli:commit` | Builds the CLI package and runs `git-ai commit`. |
 | `pnpm cli:diff` | Builds the CLI package and runs `git-ai diff`. |
+| `pnpm cli:feature-backlog -- <args>` | Builds the CLI package and runs `git-ai feature-backlog <args>`. |
 | `pnpm cli:issue -- <args>` | Builds the CLI package and runs `git-ai issue <args>`. |
 | `pnpm cli:test-backlog -- <args>` | Builds the CLI package and runs `git-ai test-backlog <args>`. |
 
@@ -61,6 +62,7 @@ These are useful when working on an individual workspace directly.
 | `packages/cli` | `pnpm --filter @git-ai/cli build` | Builds the `git-ai` CLI into `packages/cli/dist`. |
 | `packages/cli` | `pnpm --filter @git-ai/cli commit` | Builds the CLI package and runs `node dist/index.js commit`. |
 | `packages/cli` | `pnpm --filter @git-ai/cli diff` | Builds the CLI package and runs `node dist/index.js diff`. |
+| `packages/cli` | `pnpm --filter @git-ai/cli feature-backlog -- <args>` | Builds the CLI package and runs `node dist/index.js feature-backlog <args>`. |
 | `packages/cli` | `pnpm --filter @git-ai/cli issue -- <args>` | Builds the CLI package and runs `node dist/index.js <args>`. Use this when testing CLI issue flows directly. |
 | `packages/core` | `pnpm --filter @git-ai/core build` | Builds the shared core library. |
 | `packages/contracts` | `pnpm --filter @git-ai/contracts build` | Builds the shared contract/schema package. |
@@ -170,6 +172,46 @@ git-ai test-backlog --labels testing,backlog
 ```
 
 When `--create-issues` is enabled, `git-ai` checks for matching open issue titles first so it can reuse existing backlog items instead of creating duplicates.
+
+#### `git-ai feature-backlog`
+
+Usage:
+
+```bash
+git-ai feature-backlog [repo-path] [--format <markdown|json>] [--top <count>]
+                        [--create-issues] [--max-issues <count>]
+                        [--label <name>] [--labels <a,b>]
+```
+
+Flags:
+
+| Flag | What it does |
+| --- | --- |
+| `repo-path` | Optional repository path to analyze. Defaults to the current working directory. |
+| `--format markdown` | Prints a Markdown feature backlog report. This is the default. |
+| `--format json` | Prints a JSON payload suitable for scripting when issue creation is not being prompted interactively. |
+| `--top <count>` | Limits how many feature suggestions are returned. Default: `5`. |
+| `--create-issues` | Prompts you to choose one or more suggestions, then asks for issue title, extra description, and labels before creating or reusing GitHub issues. |
+| `--max-issues <count>` | Limits how many selected suggestions are converted into issues. Default: `3`, capped to `--top`. |
+| `--label <name>` | Adds a single default GitHub label to created issues. Repeatable. |
+| `--labels <a,b>` | Adds a comma-separated list of default GitHub labels to created issues. |
+
+Examples:
+
+```bash
+git-ai feature-backlog
+git-ai feature-backlog ../other-repo --top 3
+GITHUB_TOKEN=... git-ai feature-backlog . --create-issues --label product
+git-ai feature-backlog . --format json
+```
+
+Important behavior:
+
+- the repository analysis is heuristic and based on the repository structure, current product surface, and automation signals
+- `--create-issues` requires `GH_TOKEN` or `GITHUB_TOKEN`
+- issue creation targets the analyzed repository’s `origin` remote, not just the current workspace repository
+- before each issue is created, `git-ai` prompts for the final title, optional extra description, and labels
+- if an open GitHub issue already exists with the chosen title, `git-ai` reuses it instead of creating a duplicate
 
 ### GitHub Action local entrypoints
 
