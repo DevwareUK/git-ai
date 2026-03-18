@@ -44,6 +44,8 @@ Supported config fields:
 - `buildCommand`: command run after Codex exits during full local `git-ai issue <number>` flows. Default: `["pnpm", "build"]`.
 - `forge.type`: repository forge integration. Use `"github"` for the current GitHub-backed flows or `"none"` to disable issue and PR creation features for non-GitHub repositories.
 
+The CLI resolves the active repository from the current Git working tree at runtime with `git rev-parse --show-toplevel`. `.env` and `.git-ai/config.json` are loaded from that repository root, not from the CLI package install location.
+
 ## Command Reference
 
 This repository exposes commands in four places:
@@ -137,7 +139,7 @@ Available modes and subcommands:
 
 | Command | What it does |
 | --- | --- |
-| `git-ai issue <number>` | Full local issue-to-PR flow. Fetches the configured forge issue, creates a branch, writes `.git-ai/` workspace files, opens an interactive Codex session, runs the configured build command, commits the result, and opens a PR if the configured forge supports it and `gh` is installed and authenticated. |
+| `git-ai issue <number>` | Full local issue-to-PR flow for the current Git repository. Fetches the configured forge issue, creates a branch, writes `.git-ai/` workspace files, opens an interactive Codex session, runs the configured build command, commits the result, and opens a PR if the configured forge supports it. |
 | `git-ai issue draft` | Interactive issue drafting flow. Prompts for a feature idea, generates a Markdown issue draft with AI, optionally opens it in `$VISUAL` or `$EDITOR`, and can create the issue through the configured forge when GitHub support is enabled. |
 | `git-ai issue plan <number>` | Generates an issue resolution plan for the configured forge issue and posts it as a managed comment. If an editable plan comment already exists, the command reuses it instead of overwriting collaborator edits. |
 | `git-ai issue prepare <number>` | Prepares the issue branch and `.git-ai/` workspace artifacts, then prints machine-readable JSON describing the run. |
@@ -157,6 +159,7 @@ Important behavior:
 - if an issue resolution plan comment exists, `git-ai issue prepare <number>` and full `git-ai issue <number>` runs copy the latest edited plan into the generated issue snapshot
 - when `forge.type` is `github`, issue fetching uses `gh issue view` when available, otherwise the GitHub API
 - when `forge.type` is `github`, GitHub API access for issue fetching, plan comments, or issue creation uses `GH_TOKEN` or `GITHUB_TOKEN` when present
+- when `forge.type` is `github`, `git-ai issue draft` can create issues with either `gh` or a GitHub token
 - when `forge.type` is `none`, issue and PR creation features are disabled for the repository
 
 #### `git-ai test-backlog`
@@ -176,8 +179,8 @@ Flags:
 | `--format markdown` | Prints a Markdown backlog report. This is the default. |
 | `--format json` | Prints a JSON payload suitable for scripting. |
 | `--top <count>` | Limits how many findings are returned. Default: `5`. |
-| `--repo-root <path>` | Analyzes a different repository root relative to this workspace. |
-| `--create-issues` | Creates or reuses GitHub issues for the highest-priority findings. |
+| `--repo-root <path>` | Analyzes a different repository root relative to the current working directory. The default is the current Git repository root. |
+| `--create-issues` | Creates or reuses issues for the highest-priority findings through the configured forge. |
 | `--max-issues <count>` | Limits how many issues are created when `--create-issues` is enabled. Default: `3`, capped to `--top`. |
 | `--label <name>` | Adds a single GitHub label to created issues. Repeatable. |
 | `--labels <a,b>` | Adds a comma-separated list of GitHub labels to created issues. |
@@ -209,11 +212,11 @@ Flags:
 
 | Flag | What it does |
 | --- | --- |
-| `repo-path` | Optional repository path to analyze. Defaults to the current working directory. |
+| `repo-path` | Optional repository path to analyze. Defaults to the current Git repository root. |
 | `--format markdown` | Prints a Markdown feature backlog report. This is the default. |
 | `--format json` | Prints a JSON payload suitable for scripting when issue creation is not being prompted interactively. |
 | `--top <count>` | Limits how many feature suggestions are returned. Default: `5`. |
-| `--create-issues` | Prompts you to choose one or more suggestions, then asks for issue title, extra description, and labels before creating or reusing GitHub issues. |
+| `--create-issues` | Prompts you to choose one or more suggestions, then asks for issue title, extra description, and labels before creating or reusing issues through the configured forge. |
 | `--max-issues <count>` | Limits how many selected suggestions are converted into issues. Default: `3`, capped to `--top`. |
 | `--label <name>` | Adds a single default GitHub label to created issues. Repeatable. |
 | `--labels <a,b>` | Adds a comma-separated list of default GitHub labels to created issues. |
@@ -231,7 +234,7 @@ Important behavior:
 
 - the repository analysis is heuristic and based on the repository structure, current product surface, and automation signals
 - with the default GitHub forge integration, `--create-issues` requires `GH_TOKEN` or `GITHUB_TOKEN`
-- with the default GitHub forge integration, issue creation targets the analyzed repository’s `origin` remote, not just the current workspace repository
+- with the default GitHub forge integration, issue creation targets the analyzed repository’s `origin` remote, not just the current working directory
 - before each issue is created, `git-ai` prompts for the final title, optional extra description, and labels
 - if an open GitHub issue already exists with the chosen title, `git-ai` reuses it instead of creating a duplicate
 - if `.git-ai/config.json` sets `forge.type` to `none`, feature backlog issue creation is disabled for that repository

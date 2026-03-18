@@ -35,7 +35,7 @@ export interface RepositoryForge {
   fetchIssueDetails(issueNumber: number): Promise<IssueDetails>;
   fetchIssuePlanComment(issueNumber: number): Promise<IssuePlanComment | undefined>;
   createIssuePlanComment(issueNumber: number, body: string): Promise<IssuePlanComment>;
-  createDraftIssue(title: string, body: string): string;
+  createDraftIssue(title: string, body: string): Promise<string>;
   createOrReuseIssue(
     title: string,
     body: string,
@@ -69,7 +69,7 @@ class NoopRepositoryForge implements RepositoryForge {
     );
   }
 
-  createDraftIssue(): string {
+  async createDraftIssue(): Promise<string> {
     throw new Error(
       "Repository forge support is disabled by .git-ai/config.json. Configure `forge.type` to enable issue creation."
     );

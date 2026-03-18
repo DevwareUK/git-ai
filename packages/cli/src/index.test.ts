@@ -210,6 +210,40 @@ function createFetchResponse(
   } as unknown as Response;
 }
 
+function parseMockRepositoryConfig(value?: unknown): Record<string, unknown> {
+  const config = (value ?? {}) as {
+    baseBranch?: unknown;
+    buildCommand?: unknown;
+    forge?: { type?: unknown };
+  };
+
+  if (config.baseBranch !== undefined) {
+    if (typeof config.baseBranch !== "string" || config.baseBranch.trim().length === 0) {
+      throw new Error("baseBranch must be a non-empty string");
+    }
+  }
+
+  if (config.buildCommand !== undefined) {
+    if (
+      !Array.isArray(config.buildCommand) ||
+      config.buildCommand.length === 0 ||
+      config.buildCommand.some(
+        (segment) => typeof segment !== "string" || segment.trim().length === 0
+      )
+    ) {
+      throw new Error("buildCommand must be a non-empty string array");
+    }
+  }
+
+  if (config.forge?.type !== undefined) {
+    if (config.forge.type !== "github" && config.forge.type !== "none") {
+      throw new Error("forge.type must be github or none");
+    }
+  }
+
+  return config as Record<string, unknown>;
+}
+
 function captureStdout(): { output: () => string } {
   const chunks: string[] = [];
 
@@ -233,6 +267,25 @@ function listIssueDraftFiles(): string[] {
   } catch {
     return [];
   }
+}
+
+function withRepositoryConfig(
+  contents: string,
+  callback: () => Promise<void>
+): Promise<void> {
+  const configPath = resolve(REPO_ROOT, ".git-ai", "config.json");
+  const hadOriginalConfig = existsSync(configPath);
+  const originalConfig = hadOriginalConfig ? readFileSync(configPath, "utf8") : undefined;
+  mkdirSync(dirname(configPath), { recursive: true });
+  writeFileSync(configPath, contents);
+
+  return callback().finally(() => {
+    if (hadOriginalConfig && originalConfig !== undefined) {
+      writeFileSync(configPath, originalConfig);
+    } else {
+      rmSync(configPath, { force: true });
+    }
+  });
 }
 
 async function loadCli(options: {
@@ -269,7 +322,19 @@ async function loadCli(options: {
   }
 
   const execFileSync = vi.fn((command: string, args: string[]) => {
+    if (
+      command === "git" &&
+      args[0] === "-C" &&
+      args[2] === "rev-parse" &&
+      args[3] === "--show-toplevel"
+    ) {
+      return `${REPO_ROOT}\n`;
+    }
+
     if (options.execFileSyncImpl) {
+      if (command === "git" && args[0] === "-C") {
+        return options.execFileSyncImpl(command, args.slice(2));
+      }
       return options.execFileSyncImpl(command, args);
     }
 
@@ -278,6 +343,9 @@ async function loadCli(options: {
   const spawnSync = vi.fn((command: string, rawSecondArg?: unknown) => {
     const args = Array.isArray(rawSecondArg) ? rawSecondArg : [];
     if (options.spawnSyncImpl) {
+      if (command === "git" && args[0] === "-C") {
+        return options.spawnSyncImpl(command, args.slice(2), rawSecondArg);
+      }
       return options.spawnSyncImpl(command, args, rawSecondArg);
     }
 
@@ -310,7 +378,7 @@ async function loadCli(options: {
   }));
   vi.doMock("@git-ai/contracts", () => ({
     RepositoryConfig: {
-      parse: vi.fn((value?: unknown) => (value ?? {}) as Record<string, unknown>),
+      parse: vi.fn((value?: unknown) => parseMockRepositoryConfig(value)),
     },
   }));
   vi.doMock("node:child_process", () => ({
@@ -728,6 +796,10 @@ describe("CLI integration", () => {
       issueDraftResult: issueDraft,
       readlineAnswers: ["Unify PR assistant outputs.", "", "y"],
       execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/git-ai.git\n";
+        }
+
         if (command === "gh" && args[0] === "issue" && args[1] === "create") {
           return "https://github.com/DevwareUK/git-ai/issues/99\n";
         }
@@ -761,6 +833,8 @@ describe("CLI integration", () => {
       [
         "issue",
         "create",
+        "--repo",
+        "DevwareUK/git-ai",
         "--title",
         issueDraft.title,
         "--body",
@@ -1159,6 +1233,121 @@ describe("CLI integration", () => {
         rmSync(configPath, { force: true });
       }
     }
+  });
+
+  it("fails clearly when .git-ai/config.json contains malformed JSON", async () => {
+    await withRepositoryConfig("{invalid-json", async () => {
+      const { run } = await loadCli({
+        analysisResult: createTestBacklogAnalysis(),
+      });
+
+      process.argv = ["node", "git-ai", "test-backlog", "--create-issues"];
+
+      await expect(run()).rejects.toThrow("Failed to parse .git-ai/config.json");
+    });
+  });
+
+  it("fails clearly when .git-ai/config.json contains an empty buildCommand", async () => {
+    await withRepositoryConfig(
+      JSON.stringify({ buildCommand: [] }, null, 2),
+      async () => {
+        const { run } = await loadCli({
+          analysisResult: createTestBacklogAnalysis(),
+        });
+
+        process.argv = ["node", "git-ai", "test-backlog", "--create-issues"];
+
+        await expect(run()).rejects.toThrow("Invalid .git-ai/config.json");
+      }
+    );
+  });
+
+  it("fails clearly when .git-ai/config.json contains an unsupported forge type", async () => {
+    await withRepositoryConfig(
+      JSON.stringify({ forge: { type: "gitlab" } }, null, 2),
+      async () => {
+        const { run } = await loadCli({
+          analysisResult: createTestBacklogAnalysis(),
+        });
+
+        process.argv = ["node", "git-ai", "test-backlog", "--create-issues"];
+
+        await expect(run()).rejects.toThrow("Invalid .git-ai/config.json");
+      }
+    );
+  });
+
+  it("fails full issue runs clearly when forge.type is none", async () => {
+    await withRepositoryConfig(
+      JSON.stringify({ forge: { type: "none" } }, null, 2),
+      async () => {
+        const { run } = await loadCli();
+
+        process.argv = ["node", "git-ai", "issue", "42"];
+
+        await expect(run()).rejects.toThrow(
+          "Repository forge support is disabled by .git-ai/config.json"
+        );
+      }
+    );
+  });
+
+  it("fails issue plan runs clearly when forge.type is none", async () => {
+    await withRepositoryConfig(
+      JSON.stringify({ forge: { type: "none" } }, null, 2),
+      async () => {
+        const { run } = await loadCli();
+
+        process.argv = ["node", "git-ai", "issue", "plan", "42"];
+
+        await expect(run()).rejects.toThrow(
+          "Repository forge support is disabled by .git-ai/config.json"
+        );
+      }
+    );
+  });
+
+  it("fails backlog issue creation clearly when forge.type is none", async () => {
+    await withRepositoryConfig(
+      JSON.stringify({ forge: { type: "none" } }, null, 2),
+      async () => {
+        const { run } = await loadCli({
+          analysisResult: createTestBacklogAnalysis(),
+        });
+
+        process.argv = ["node", "git-ai", "test-backlog", "--create-issues"];
+
+        await expect(run()).rejects.toThrow(
+          "Repository forge support is disabled by .git-ai/config.json"
+        );
+      }
+    );
+  });
+
+  it("skips draft issue creation with a clear message when forge.type is none", async () => {
+    await withRepositoryConfig(
+      JSON.stringify({ forge: { type: "none" } }, null, 2),
+      async () => {
+        const issueDraft = createIssueDraftResult();
+        const { run } = await loadCli({
+          issueDraftResult: issueDraft,
+          readlineAnswers: ["Unify PR assistant outputs.", ""],
+        });
+
+        process.env.OPENAI_API_KEY = "test-key";
+        process.argv = ["node", "git-ai", "issue", "draft"];
+
+        const messages: string[] = [];
+        vi.spyOn(console, "log").mockImplementation((message?: unknown) => {
+          messages.push(String(message ?? ""));
+        });
+        await run();
+
+        expect(messages.join("\n")).toContain(
+          "Issue creation skipped because repository forge support is disabled by .git-ai/config.json."
+        );
+      }
+    );
   });
 
   it("fails issue finalize clearly when no generated changes exist", async () => {

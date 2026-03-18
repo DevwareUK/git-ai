@@ -40,12 +40,16 @@ function canRunCommand(command: string, args: string[] = ["--version"]): boolean
   return !result.error && result.status === 0;
 }
 
+function hasGitHubApiToken(): boolean {
+  return Boolean(process.env.GH_TOKEN?.trim() || process.env.GITHUB_TOKEN?.trim());
+}
+
 function parseGitHubRepoFromRemote(repoRoot: string): { owner: string; repo: string } {
-  const gitArgs =
-    process.cwd() === repoRoot
-      ? ["remote", "get-url", "origin"]
-      : ["-C", repoRoot, "remote", "get-url", "origin"];
-  const remoteUrl = runCommand("git", gitArgs, "Failed to resolve the origin remote.");
+  const remoteUrl = runCommand(
+    "git",
+    ["-C", repoRoot, "remote", "get-url", "origin"],
+    "Failed to resolve the origin remote."
+  );
 
   const match = remoteUrl.match(/github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?$/);
   if (!match) {
@@ -68,6 +72,10 @@ function isGhAuthenticated(): boolean {
   });
 
   return !result.error && result.status === 0;
+}
+
+function canUseGitHub(): boolean {
+  return isGhAuthenticated() || hasGitHubApiToken();
 }
 
 function tryResolveGitHubApiToken(): string | undefined {
@@ -114,9 +122,11 @@ function runTrackedCommand(
   command: string,
   args: string[],
   errorMessage: string,
-  outputLogPath: string
+  outputLogPath: string,
+  cwd?: string
 ): void {
   const result = spawnSync(command, args, {
+    cwd,
     encoding: "utf8",
     maxBuffer: 10 * 1024 * 1024,
     stdio: ["inherit", "pipe", "pipe"],
@@ -186,7 +196,11 @@ async function listIssueComments(
     }));
 }
 
-function tryFetchIssueWithGh(issueNumber: number): IssueDetails | undefined {
+function tryFetchIssueWithGh(
+  owner: string,
+  repo: string,
+  issueNumber: number
+): IssueDetails | undefined {
   if (!canRunCommand("gh")) {
     return undefined;
   }
@@ -194,7 +208,7 @@ function tryFetchIssueWithGh(issueNumber: number): IssueDetails | undefined {
   try {
     const payload = runCommand(
       "gh",
-      ["issue", "view", String(issueNumber), "--json", "title,body,url"],
+      ["issue", "view", String(issueNumber), "--repo", `${owner}/${repo}`, "--json", "title,body,url"],
       `Failed to fetch GitHub issue #${issueNumber} with gh.`
     );
 
@@ -345,16 +359,16 @@ class GitHubRepositoryForge implements RepositoryForge {
   constructor(private readonly repoRoot: string) {}
 
   isAuthenticated(): boolean {
-    return isGhAuthenticated();
+    return canUseGitHub();
   }
 
   async fetchIssueDetails(issueNumber: number): Promise<IssueDetails> {
-    const ghIssue = tryFetchIssueWithGh(issueNumber);
+    const { owner, repo } = parseGitHubRepoFromRemote(this.repoRoot);
+    const ghIssue = tryFetchIssueWithGh(owner, repo, issueNumber);
     if (ghIssue) {
       return ghIssue;
     }
 
-    const { owner, repo } = parseGitHubRepoFromRemote(this.repoRoot);
     return fetchIssueWithApi(owner, repo, issueNumber);
   }
 
@@ -416,18 +430,28 @@ class GitHubRepositoryForge implements RepositoryForge {
     };
   }
 
-  createDraftIssue(title: string, body: string): string {
-    const output = runCommand(
-      "gh",
-      ["issue", "create", "--title", title, "--body", body],
-      `Failed to create GitHub issue "${title}" with gh.`
-    );
+  async createDraftIssue(title: string, body: string): Promise<string> {
+    const { owner, repo } = parseGitHubRepoFromRemote(this.repoRoot);
 
-    const lines = output
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-    return lines[lines.length - 1] ?? output;
+    if (isGhAuthenticated()) {
+      const output = runCommand(
+        "gh",
+        ["issue", "create", "--repo", `${owner}/${repo}`, "--title", title, "--body", body],
+        `Failed to create GitHub issue "${title}" with gh.`
+      );
+
+      const lines = output
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+      return lines[lines.length - 1] ?? output;
+    }
+
+    const token = getGitHubApiToken(
+      "Creating issues requires GH_TOKEN or GITHUB_TOKEN to be set, or gh to be installed and authenticated."
+    );
+    const createdIssue = await createGitHubIssue(owner, repo, token, title, body, []);
+    return createdIssue.url;
   }
 
   async createOrReuseIssue(
@@ -469,7 +493,8 @@ class GitHubRepositoryForge implements RepositoryForge {
       "git",
       ["push", "-u", "origin", input.branchName],
       `Failed to push branch "${input.branchName}".`,
-      input.outputLogPath
+      input.outputLogPath,
+      this.repoRoot
     );
     runTrackedCommand(
       "gh",
@@ -484,7 +509,8 @@ class GitHubRepositoryForge implements RepositoryForge {
         input.baseBranch,
       ],
       "Failed to create a pull request.",
-      input.outputLogPath
+      input.outputLogPath,
+      this.repoRoot
     );
   }
 }

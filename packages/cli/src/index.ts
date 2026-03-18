@@ -25,10 +25,7 @@ import {
   type IssuePlanComment,
   type RepositoryForge,
 } from "./forge";
-
-dotenv.config({ path: resolve(__dirname, "../../..", ".env"), quiet: true });
-
-const REPO_ROOT = resolve(__dirname, "../../..");
+import { resolveRuntimeRepoRoot } from "./repo-root";
 
 type IssueWorkspace = {
   issueDir: string;
@@ -134,11 +131,19 @@ function getOptionalEnv(name: string): string | undefined {
   return value ? value : undefined;
 }
 
-function getRepositoryConfig(repoRoot = REPO_ROOT) {
+function getDefaultRepoRoot(): string {
+  return resolveRuntimeRepoRoot();
+}
+
+function loadRepoEnv(repoRoot: string): void {
+  dotenv.config({ path: resolve(repoRoot, ".env"), quiet: true });
+}
+
+function getRepositoryConfig(repoRoot = getDefaultRepoRoot()) {
   return loadResolvedRepositoryConfig(repoRoot);
 }
 
-function getRepositoryForge(repoRoot = REPO_ROOT): RepositoryForge {
+function getRepositoryForge(repoRoot = getDefaultRepoRoot()): RepositoryForge {
   return createRepositoryForge(repoRoot, getRepositoryConfig(repoRoot));
 }
 
@@ -148,8 +153,9 @@ function readGitDiff(
   commandDescription: string,
   missingRevisionMessage?: string
 ): string {
+  const repoRoot = getDefaultRepoRoot();
   try {
-    const diff = execFileSync("git", args, {
+    const diff = execFileSync("git", ["-C", repoRoot, ...args], {
       encoding: "utf8",
       maxBuffer: 10 * 1024 * 1024,
       stdio: ["ignore", "pipe", "pipe"],
@@ -235,9 +241,11 @@ function runCommand(
 function runInteractiveCommand(
   command: string,
   args: string[],
-  errorMessage: string
+  errorMessage: string,
+  cwd?: string
 ): void {
   const result = spawnSync(command, args, {
+    cwd,
     stdio: "inherit",
   });
 
@@ -259,9 +267,10 @@ function canRunCommand(command: string, args: string[] = ["--version"]): boolean
 }
 
 function hasChanges(): boolean {
+  const repoRoot = getDefaultRepoRoot();
   return runCommand(
     "git",
-    ["status", "--porcelain"],
+    ["-C", repoRoot, "status", "--porcelain"],
     "Failed to inspect the working tree."
   ).length > 0;
 }
@@ -393,7 +402,7 @@ function parsePositiveInteger(value: string | undefined, flagName: string): numb
 
 export function parseTestBacklogCommandArgs(args: string[]): TestBacklogCommandOptions {
   const optionArgs = args.slice(1);
-  let repoRoot = REPO_ROOT;
+  let repoRoot = getDefaultRepoRoot();
   let format: BacklogOutputFormat = "markdown";
   let top = 5;
   let createIssues = false;
@@ -408,7 +417,7 @@ export function parseTestBacklogCommandArgs(args: string[]): TestBacklogCommandO
       if (!rawRepoRoot) {
         throw new Error(`Missing value for --repo-root. ${TEST_BACKLOG_USAGE}`);
       }
-      repoRoot = resolve(REPO_ROOT, rawRepoRoot);
+      repoRoot = resolve(process.cwd(), rawRepoRoot);
       index += 1;
       continue;
     }
@@ -418,7 +427,7 @@ export function parseTestBacklogCommandArgs(args: string[]): TestBacklogCommandO
       if (!rawRepoRoot) {
         throw new Error(`Missing value for --repo-root. ${TEST_BACKLOG_USAGE}`);
       }
-      repoRoot = resolve(REPO_ROOT, rawRepoRoot);
+      repoRoot = resolve(process.cwd(), rawRepoRoot);
       continue;
     }
 
@@ -521,7 +530,7 @@ export function parseTestBacklogCommandArgs(args: string[]): TestBacklogCommandO
 
 export function parseFeatureBacklogCommandArgs(args: string[]): FeatureBacklogCommandOptions {
   const optionArgs = args.slice(1);
-  let repoRoot = process.cwd();
+  let repoRoot = getDefaultRepoRoot();
   let format: BacklogOutputFormat = "markdown";
   let top = 5;
   let createIssues = false;
@@ -701,15 +710,15 @@ function createIssueBranchName(issueNumber: number, title: string): string {
   return `feat/issue-${issueNumber}-${slug}`;
 }
 
-function createIssueDraftFilePath(): string {
-  const issueDir = resolve(REPO_ROOT, ".git-ai", "issues");
+function createIssueDraftFilePath(repoRoot: string): string {
+  const issueDir = resolve(repoRoot, ".git-ai", "issues");
   mkdirSync(issueDir, { recursive: true });
 
   return resolve(issueDir, `issue-draft-${formatRunTimestamp()}.md`);
 }
 
-function toRepoRelativePath(filePath: string): string {
-  return (relative(REPO_ROOT, filePath) || ".").split("\\").join("/");
+function toRepoRelativePath(repoRoot: string, filePath: string): string {
+  return (relative(repoRoot, filePath) || ".").split("\\").join("/");
 }
 
 function formatRunTimestamp(date = new Date()): string {
@@ -730,13 +739,14 @@ function formatRunTimestamp(date = new Date()): string {
 }
 
 function createIssueWorkspace(
+  repoRoot: string,
   issueNumber: number,
   issue: IssueDetails
 ): IssueWorkspace {
   const slug = slugifyIssueTitle(issue.title) || `issue-${issueNumber}`;
-  const issueDir = resolve(REPO_ROOT, ".git-ai", "issues", `${issueNumber}-${slug}`);
+  const issueDir = resolve(repoRoot, ".git-ai", "issues", `${issueNumber}-${slug}`);
   const runDir = resolve(
-    REPO_ROOT,
+    repoRoot,
     ".git-ai",
     "runs",
     `${formatRunTimestamp()}-issue-${issueNumber}`
@@ -762,7 +772,7 @@ function formatIssueSnapshot(
 ): string {
   const issueBody = issue.body.trim() || "(No issue body provided.)";
   const lines = [
-    "# GitHub Issue Snapshot",
+    "# Issue Snapshot",
     "",
     `- Issue number: ${issueNumber}`,
     `- Title: ${issue.title}`,
@@ -788,8 +798,8 @@ function formatIssueSnapshot(
   return lines.join("\n");
 }
 
-function ensureBranchDoesNotExist(branchName: string): void {
-  const result = spawnSync("git", ["rev-parse", "--verify", branchName], {
+function ensureBranchDoesNotExist(repoRoot: string, branchName: string): void {
+  const result = spawnSync("git", ["-C", repoRoot, "rev-parse", "--verify", branchName], {
     stdio: "ignore",
   });
 
@@ -799,12 +809,13 @@ function ensureBranchDoesNotExist(branchName: string): void {
 }
 
 function buildCodexPrompt(
+  repoRoot: string,
   workspace: IssueWorkspace,
   mode: IssueExecutionMode,
   buildCommand: string[]
 ): string {
-  const issueFile = toRepoRelativePath(workspace.issueFilePath);
-  const runDir = toRepoRelativePath(workspace.runDir);
+  const issueFile = toRepoRelativePath(repoRoot, workspace.issueFilePath);
+  const runDir = toRepoRelativePath(repoRoot, workspace.runDir);
   const modeSpecificInstructions =
     mode === "github-action"
       ? [
@@ -814,7 +825,7 @@ function buildCodexPrompt(
       : [];
 
   return [
-    "You are working in the git-ai repository.",
+    "You are working in the current repository.",
     ...modeSpecificInstructions,
     "",
     `Read the issue snapshot at \`${issueFile}\` before making changes.`,
@@ -832,6 +843,7 @@ function buildCodexPrompt(
 }
 
 function writeIssueWorkspaceFiles(
+  repoRoot: string,
   issueNumber: number,
   issue: IssueDetails,
   planComment: IssuePlanComment | undefined,
@@ -841,7 +853,7 @@ function writeIssueWorkspaceFiles(
   buildCommand: string[]
 ): void {
   const createdAt = new Date().toISOString();
-  const prompt = buildCodexPrompt(workspace, mode, buildCommand);
+  const prompt = buildCodexPrompt(repoRoot, workspace, mode, buildCommand);
 
   writeFileSync(
     workspace.issueFilePath,
@@ -860,10 +872,10 @@ function writeIssueWorkspaceFiles(
         issueUrl: issue.url,
         issuePlanCommentUrl: planComment?.url,
         branchName,
-        issueDir: toRepoRelativePath(workspace.issueDir),
-        issueFile: toRepoRelativePath(workspace.issueFilePath),
-        promptFile: toRepoRelativePath(workspace.promptFilePath),
-        outputLog: toRepoRelativePath(workspace.outputLogPath),
+        issueDir: toRepoRelativePath(repoRoot, workspace.issueDir),
+        issueFile: toRepoRelativePath(repoRoot, workspace.issueFilePath),
+        promptFile: toRepoRelativePath(repoRoot, workspace.promptFilePath),
+        outputLog: toRepoRelativePath(repoRoot, workspace.outputLogPath),
       },
       null,
       2
@@ -876,8 +888,8 @@ function writeIssueWorkspaceFiles(
       "# git-ai issue run log",
       "",
       `Created: ${createdAt}`,
-      `Issue snapshot: ${toRepoRelativePath(workspace.issueFilePath)}`,
-      `Prompt file: ${toRepoRelativePath(workspace.promptFilePath)}`,
+      `Issue snapshot: ${toRepoRelativePath(repoRoot, workspace.issueFilePath)}`,
+      `Prompt file: ${toRepoRelativePath(repoRoot, workspace.promptFilePath)}`,
       "",
     ].join("\n"),
     "utf8"
@@ -898,22 +910,22 @@ function writeGitHubOutput(name: string, value: string): void {
   );
 }
 
-function emitIssuePrepareOutputs(context: IssueRunContext): void {
+function emitIssuePrepareOutputs(repoRoot: string, context: IssueRunContext): void {
   writeGitHubOutput("issue_number", String(context.issueNumber));
   writeGitHubOutput("issue_title", context.issue.title);
   writeGitHubOutput("issue_url", context.issue.url);
   writeGitHubOutput("branch_name", context.branchName);
-  writeGitHubOutput("issue_file", toRepoRelativePath(context.workspace.issueFilePath));
+  writeGitHubOutput("issue_file", toRepoRelativePath(repoRoot, context.workspace.issueFilePath));
   writeGitHubOutput(
     "prompt_file",
-    toRepoRelativePath(context.workspace.promptFilePath)
+    toRepoRelativePath(repoRoot, context.workspace.promptFilePath)
   );
   writeGitHubOutput(
     "metadata_file",
-    toRepoRelativePath(context.workspace.metadataFilePath)
+    toRepoRelativePath(repoRoot, context.workspace.metadataFilePath)
   );
-  writeGitHubOutput("output_log", toRepoRelativePath(context.workspace.outputLogPath));
-  writeGitHubOutput("run_dir", toRepoRelativePath(context.workspace.runDir));
+  writeGitHubOutput("output_log", toRepoRelativePath(repoRoot, context.workspace.outputLogPath));
+  writeGitHubOutput("run_dir", toRepoRelativePath(repoRoot, context.workspace.runDir));
   writeGitHubOutput("mode", context.mode);
 }
 
@@ -939,9 +951,11 @@ function runTrackedCommand(
   command: string,
   args: string[],
   errorMessage: string,
-  outputLogPath: string
+  outputLogPath: string,
+  cwd?: string
 ): void {
   const result = spawnSync(command, args, {
+    cwd,
     encoding: "utf8",
     maxBuffer: 10 * 1024 * 1024,
     stdio: ["inherit", "pipe", "pipe"],
@@ -968,7 +982,7 @@ function runTrackedCommand(
   }
 }
 
-function runCodex(workspace: IssueWorkspace): void {
+function runCodex(repoRoot: string, workspace: IssueWorkspace): void {
   if (!canRunCommand("codex")) {
     throw new Error(
       "The `codex` CLI is not available on PATH. Install it before running `git-ai issue`."
@@ -981,8 +995,9 @@ function runCodex(workspace: IssueWorkspace): void {
     "--ask-for-approval",
     "on-request",
     "--cd",
-    REPO_ROOT,
+    repoRoot,
     `Read and follow the instructions in ${toRepoRelativePath(
+      repoRoot,
       workspace.promptFilePath
     )}.`,
   ];
@@ -996,7 +1011,7 @@ function runCodex(workspace: IssueWorkspace): void {
   );
 
   const result = spawnSync("codex", args, {
-    cwd: REPO_ROOT,
+    cwd: repoRoot,
     stdio: "inherit",
   });
 
@@ -1013,7 +1028,7 @@ function runCodex(workspace: IssueWorkspace): void {
   }
 }
 
-function verifyBuild(buildCommand: string[], outputLogPath: string): void {
+function verifyBuild(repoRoot: string, buildCommand: string[], outputLogPath: string): void {
   if (!canRunCommand(buildCommand[0])) {
     throw new Error(`The \`${buildCommand[0]}\` CLI is not available on PATH.`);
   }
@@ -1022,20 +1037,22 @@ function verifyBuild(buildCommand: string[], outputLogPath: string): void {
     buildCommand[0],
     buildCommand.slice(1),
     "Build failed. Changes were not committed.",
-    outputLogPath
+    outputLogPath,
+    repoRoot
   );
 }
 
-function commitIssueChanges(issueNumber: number): void {
+function commitIssueChanges(repoRoot: string, issueNumber: number): void {
   if (!hasChanges()) {
     throw new Error("Codex completed without producing any file changes to commit.");
   }
 
-  runInteractiveCommand("git", ["add", "."], "Failed to stage the generated changes.");
+  runInteractiveCommand("git", ["add", "."], "Failed to stage the generated changes.", repoRoot);
   runInteractiveCommand(
     "git",
     ["commit", "-m", `feat: address issue #${issueNumber}`],
-    "Failed to create the issue commit."
+    "Failed to create the issue commit.",
+    repoRoot
   );
 }
 
@@ -1143,7 +1160,7 @@ function openFileInEditor(filePath: string): void {
   const editor = process.env.VISUAL?.trim() || process.env.EDITOR?.trim();
   if (!editor) {
     console.log(
-      `Draft saved to ${toRepoRelativePath(filePath)}. Review and edit it manually before creating a GitHub issue.`
+      `Draft saved to ${toRepoRelativePath(getDefaultRepoRoot(), filePath)}. Review and edit it manually before creating an issue.`
     );
     return;
   }
@@ -1193,6 +1210,7 @@ function formatDiffSummary(
 }
 
 function createProvider(): OpenAIProvider {
+  loadRepoEnv(getDefaultRepoRoot());
   return new OpenAIProvider({
     apiKey: getRequiredEnv("OPENAI_API_KEY"),
     model: getOptionalEnv("OPENAI_MODEL"),
@@ -1279,7 +1297,7 @@ function formatTestBacklogMarkdown(
   }
 
   if (createdIssues.length > 0) {
-    lines.push("## GitHub issue results");
+    lines.push("## Issue results");
     lines.push(
       ...createdIssues.map(
         (issue) =>
@@ -1344,7 +1362,7 @@ function formatFeatureBacklogMarkdown(
   }
 
   if (createdIssues.length > 0) {
-    lines.push("## GitHub issue results");
+    lines.push("## Issue results");
     lines.push(
       ...createdIssues.map(
         (issue) =>
@@ -1443,7 +1461,7 @@ async function maybeCreateFeatureBacklogIssues(
     .map((suggestion, index) => `${index + 1}:${suggestion.issueTitle}`)
     .join(", ");
   const rawSelection = await promptForLine(
-    `Create GitHub issues for which suggestions? [all|none|${selectionPrompt}]: `
+    `Create issues for which suggestions? [all|none|${selectionPrompt}]: `
   );
   const selectedIndexes = parseBacklogSelection(
     rawSelection,
@@ -1526,6 +1544,7 @@ async function runFeatureBacklogCommand(): Promise<void> {
 }
 
 async function runIssueDraftCommand(): Promise<void> {
+  const repoRoot = getDefaultRepoRoot();
   const featureIdea = (await promptForLine("Feature idea: ")).trim();
   if (!featureIdea) {
     throw new Error("Feature idea is required.");
@@ -1538,14 +1557,14 @@ async function runIssueDraftCommand(): Promise<void> {
     additionalContext: additionalContext || undefined,
   });
 
-  const draftFilePath = createIssueDraftFilePath();
+  const draftFilePath = createIssueDraftFilePath(repoRoot);
   writeFileSync(draftFilePath, renderIssueDraftMarkdown(draft), "utf8");
   openFileInEditor(draftFilePath);
 
-  const forge = getRepositoryForge(REPO_ROOT);
+  const forge = getRepositoryForge(repoRoot);
   if (!forge.isAuthenticated()) {
     if (forge.type === "github") {
-      console.log("GitHub issue creation skipped because gh is unavailable or not authenticated.");
+      console.log("Issue creation skipped because GitHub access is unavailable.");
     } else {
       console.log(
         "Issue creation skipped because repository forge support is disabled by .git-ai/config.json."
@@ -1554,20 +1573,21 @@ async function runIssueDraftCommand(): Promise<void> {
     return;
   }
 
-  const createNow = await promptForLine("Create GitHub issue with gh now? [y/N]: ");
+  const createNow = await promptForLine("Create issue now? [y/N]: ");
   if (!shouldCreateIssue(createNow)) {
-    console.log(`Draft kept at ${toRepoRelativePath(draftFilePath)}.`);
+    console.log(`Draft kept at ${toRepoRelativePath(repoRoot, draftFilePath)}.`);
     return;
   }
 
   const reviewedDraft = parseIssueDraftDocument(readFileSync(draftFilePath, "utf8"));
-  const issueUrl = forge.createDraftIssue(reviewedDraft.title, reviewedDraft.body);
-  console.log(`Created GitHub issue: ${issueUrl}`);
+  const issueUrl = await forge.createDraftIssue(reviewedDraft.title, reviewedDraft.body);
+  console.log(`Created issue: ${issueUrl}`);
 }
 
 async function runIssuePlanCommand(issueNumber: number): Promise<void> {
-  const forge = getRepositoryForge(REPO_ROOT);
-  console.log(`Fetching GitHub issue #${issueNumber}...`);
+  const repoRoot = getDefaultRepoRoot();
+  const forge = getRepositoryForge(repoRoot);
+  console.log(`Fetching issue #${issueNumber}...`);
   const issue = await forge.fetchIssueDetails(issueNumber);
   const existingPlanComment = await forge.fetchIssuePlanComment(issueNumber);
 
@@ -1597,17 +1617,22 @@ async function prepareIssueRun(
   issueNumber: number,
   mode: IssueExecutionMode
 ): Promise<IssueRunContext> {
-  const forge = getRepositoryForge(REPO_ROOT);
-  const repositoryConfig = getRepositoryConfig(REPO_ROOT);
+  const repoRoot = getDefaultRepoRoot();
+  const forge = getRepositoryForge(repoRoot);
+  const repositoryConfig = getRepositoryConfig(repoRoot);
+  if (forge.type === "none") {
+    await forge.fetchIssueDetails(issueNumber);
+  }
   ensureCleanWorkingTree();
-  console.log(`Fetching GitHub issue #${issueNumber}...`);
+  console.log(`Fetching issue #${issueNumber}...`);
   const issue = await forge.fetchIssueDetails(issueNumber);
   const planComment = await forge.fetchIssuePlanComment(issueNumber);
 
   const branchName = createIssueBranchName(issueNumber, issue.title);
-  ensureBranchDoesNotExist(branchName);
-  const workspace = createIssueWorkspace(issueNumber, issue);
+  ensureBranchDoesNotExist(repoRoot, branchName);
+  const workspace = createIssueWorkspace(repoRoot, issueNumber, issue);
   writeIssueWorkspaceFiles(
+    repoRoot,
     issueNumber,
     issue,
     planComment,
@@ -1621,7 +1646,8 @@ async function prepareIssueRun(
   runInteractiveCommand(
     "git",
     ["checkout", "-b", branchName],
-    `Failed to create branch "${branchName}".`
+    `Failed to create branch "${branchName}".`,
+    repoRoot
   );
 
   return {
@@ -1634,12 +1660,13 @@ async function prepareIssueRun(
   };
 }
 
-function finalizeIssueRun(issueNumber: number): void {
+function finalizeIssueRun(repoRoot: string, issueNumber: number): void {
   console.log("Committing generated changes...");
-  commitIssueChanges(issueNumber);
+  commitIssueChanges(repoRoot, issueNumber);
 }
 
 async function runIssueCommand(): Promise<void> {
+  const repoRoot = getDefaultRepoRoot();
   const args = getCliArgs();
   const issueCommand = parseIssueCommandArgs(args);
 
@@ -1658,7 +1685,7 @@ async function runIssueCommand(): Promise<void> {
       issueCommand.issueNumber,
       issueCommand.mode
     );
-    emitIssuePrepareOutputs(context);
+    emitIssuePrepareOutputs(repoRoot, context);
     process.stdout.write(
       `${JSON.stringify(
         {
@@ -1666,11 +1693,11 @@ async function runIssueCommand(): Promise<void> {
           issueTitle: context.issue.title,
           issueUrl: context.issue.url,
           branchName: context.branchName,
-          issueFile: toRepoRelativePath(context.workspace.issueFilePath),
-          promptFile: toRepoRelativePath(context.workspace.promptFilePath),
-          metadataFile: toRepoRelativePath(context.workspace.metadataFilePath),
-          outputLog: toRepoRelativePath(context.workspace.outputLogPath),
-          runDir: toRepoRelativePath(context.workspace.runDir),
+          issueFile: toRepoRelativePath(repoRoot, context.workspace.issueFilePath),
+          promptFile: toRepoRelativePath(repoRoot, context.workspace.promptFilePath),
+          metadataFile: toRepoRelativePath(repoRoot, context.workspace.metadataFilePath),
+          outputLog: toRepoRelativePath(repoRoot, context.workspace.outputLogPath),
+          runDir: toRepoRelativePath(repoRoot, context.workspace.runDir),
           mode: context.mode,
         },
         null,
@@ -1681,7 +1708,7 @@ async function runIssueCommand(): Promise<void> {
   }
 
   if (issueCommand.action === "finalize") {
-    finalizeIssueRun(issueCommand.issueNumber);
+    finalizeIssueRun(repoRoot, issueCommand.issueNumber);
     return;
   }
 
@@ -1692,18 +1719,18 @@ async function runIssueCommand(): Promise<void> {
   }
 
   const context = await prepareIssueRun(issueCommand.issueNumber, issueCommand.mode);
-  const repositoryConfig = getRepositoryConfig(REPO_ROOT);
-  const forge = getRepositoryForge(REPO_ROOT);
+  const repositoryConfig = getRepositoryConfig(repoRoot);
+  const forge = getRepositoryForge(repoRoot);
 
   console.log("Opening an interactive Codex session in this terminal...");
   console.log("Complete the issue work in Codex.");
   console.log("When Codex exits, git-ai will resume with build and commit steps.");
-  runCodex(context.workspace);
+  runCodex(repoRoot, context.workspace);
 
   console.log("Verifying build...");
-  verifyBuild(repositoryConfig.buildCommand, context.workspace.outputLogPath);
+  verifyBuild(repoRoot, repositoryConfig.buildCommand, context.workspace.outputLogPath);
 
-  finalizeIssueRun(context.issueNumber);
+  finalizeIssueRun(repoRoot, context.issueNumber);
 
   if (forge.isAuthenticated()) {
     console.log("Pushing branch and opening a pull request...");
@@ -1717,10 +1744,17 @@ async function runIssueCommand(): Promise<void> {
     return;
   }
 
-  printManualPrInstructions(
-    context.branchName,
-    context.issueNumber,
-    repositoryConfig.baseBranch
+  if (forge.type === "github") {
+    printManualPrInstructions(
+      context.branchName,
+      context.issueNumber,
+      repositoryConfig.baseBranch
+    );
+    return;
+  }
+
+  console.log(
+    "Pull request creation skipped because repository forge support is disabled by .git-ai/config.json."
   );
 }
 
