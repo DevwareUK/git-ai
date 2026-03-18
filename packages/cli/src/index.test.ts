@@ -67,6 +67,82 @@ function createTestBacklogAnalysis() {
   };
 }
 
+function createFeatureBacklogAnalysis() {
+  return {
+    summary: "The product surface is growing faster than onboarding and release ergonomics.",
+    repositorySignals: {
+      hasCli: true,
+      hasGitHubActions: true,
+      hasTests: true,
+      hasIssueTemplates: false,
+      hasReleaseAutomation: false,
+      hasExamples: false,
+      packageCount: 5,
+      workflowCount: 3,
+      providerCount: 1,
+      evidence: [
+        "CLI entrypoint or CLI-oriented scripts detected in package.json",
+        "3 GitHub Actions workflows detected",
+      ],
+      notes: [
+        "No GitHub issue templates were detected.",
+        "Only one concrete provider adapter appears to be implemented.",
+      ],
+    },
+    notableOpportunities: [
+      "Add guided issue templates for feature requests and bug reports (high)",
+      "Add release automation and changelog publishing (high)",
+    ],
+    suggestions: [
+      {
+        id: "feedback-intake",
+        title: "Add guided issue templates for feature requests and bug reports",
+        category: "feedback" as const,
+        priority: "high" as const,
+        rationale: "Structured intake will turn raw feedback into actionable backlog items.",
+        evidence: [
+          "CLI entrypoint or CLI-oriented scripts detected in package.json",
+          "No .github/ISSUE_TEMPLATE files were found",
+        ],
+        relatedPaths: [
+          ".github/ISSUE_TEMPLATE/feature_request.md",
+          ".github/ISSUE_TEMPLATE/bug_report.md",
+        ],
+        implementationHighlights: [
+          "Add a feature request template.",
+          "Add a bug report template.",
+        ],
+        acceptanceCriteria: [
+          "GitHub shows structured issue templates.",
+        ],
+        issueTitle: "Add guided issue templates for feature requests and bug reports",
+        issueBody: "Introduce feature request and bug report issue templates.",
+      },
+      {
+        id: "release-automation",
+        title: "Add release automation and changelog publishing",
+        category: "automation" as const,
+        priority: "high" as const,
+        rationale: "Manual releases do not scale once the CLI is public.",
+        evidence: [
+          "5 package.json files detected",
+          "No release automation signal was found in GitHub workflows or changeset metadata",
+        ],
+        relatedPaths: [".github/workflows/release.yml", ".changeset", "README.md"],
+        implementationHighlights: [
+          "Choose a release strategy.",
+          "Generate changelog entries.",
+        ],
+        acceptanceCriteria: [
+          "Releases can be cut from automation.",
+        ],
+        issueTitle: "Add release automation and changelog publishing",
+        issueBody: "Automate releases and changelog generation.",
+      },
+    ],
+  };
+}
+
 function createIssueDraftResult() {
   return {
     title: "Merge PR description and review summary into one PR assistant action",
@@ -153,6 +229,7 @@ function listIssueDraftFiles(): string[] {
 
 async function loadCli(options: {
   analysisResult?: ReturnType<typeof createTestBacklogAnalysis>;
+  featureAnalysisResult?: ReturnType<typeof createFeatureBacklogAnalysis>;
   issueDraftResult?: ReturnType<typeof createIssueDraftResult>;
   issueResolutionPlanResult?: ReturnType<typeof createIssueResolutionPlanResult>;
   readlineAnswers?: string[];
@@ -166,6 +243,10 @@ async function loadCli(options: {
   vi.resetModules();
   process.env.GIT_AI_DISABLE_AUTO_RUN = "1";
 
+  const analyzeFeatureBacklog = vi.fn();
+  if (options.featureAnalysisResult) {
+    analyzeFeatureBacklog.mockResolvedValue(options.featureAnalysisResult);
+  }
   const analyzeTestBacklog = vi.fn();
   if (options.analysisResult) {
     analyzeTestBacklog.mockResolvedValue(options.analysisResult);
@@ -201,6 +282,7 @@ async function loadCli(options: {
   }));
 
   vi.doMock("@git-ai/core", () => ({
+    analyzeFeatureBacklog,
     analyzeTestBacklog,
     generateCommitMessage: vi.fn(),
     generateDiffSummary: vi.fn(),
@@ -219,7 +301,9 @@ async function loadCli(options: {
 
   return {
     run: module.run,
+    parseFeatureBacklogCommandArgs: module.parseFeatureBacklogCommandArgs,
     parseIssueCommandArgs: module.parseIssueCommandArgs,
+    analyzeFeatureBacklog,
     analyzeTestBacklog,
     generateIssueDraft,
     generateIssueResolutionPlan,
@@ -295,6 +379,31 @@ describe("CLI integration", () => {
     expect(options.maxIssues).toBe(4);
     expect(options.labels).toEqual(["tests", "cli", "smoke"]);
     expect(options.repoRoot).toMatch(/packages\/core$/);
+  });
+
+  it("parses feature-backlog flags with an explicit repository path", async () => {
+    process.env.GIT_AI_DISABLE_AUTO_RUN = "1";
+    const { parseFeatureBacklogCommandArgs } = await loadCli();
+
+    const options = parseFeatureBacklogCommandArgs([
+      "feature-backlog",
+      "packages/cli",
+      "--format=json",
+      "--top=4",
+      "--create-issues",
+      "--max-issues=9",
+      "--label",
+      "product",
+      "--labels",
+      "backlog, discovery",
+    ]);
+
+    expect(options.format).toBe("json");
+    expect(options.top).toBe(4);
+    expect(options.createIssues).toBe(true);
+    expect(options.maxIssues).toBe(4);
+    expect(options.labels).toEqual(["product", "backlog", "discovery"]);
+    expect(options.repoRoot).toMatch(/packages\/cli$/);
   });
 
   it("runs test-backlog in JSON mode and reuses duplicate GitHub issues", async () => {
@@ -426,6 +535,124 @@ describe("CLI integration", () => {
 
     await expect(run()).rejects.toThrow(
       "Creating GitHub issues requires GH_TOKEN or GITHUB_TOKEN to be set."
+    );
+  });
+
+  it("runs feature-backlog in JSON mode and prompts for issue details before creating issues", async () => {
+    const analysis = createFeatureBacklogAnalysis();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createFetchResponse([
+          {
+            number: 51,
+            title: analysis.suggestions[0].issueTitle,
+            html_url: "https://github.com/DevwareUK/git-ai/issues/51",
+          },
+        ])
+      )
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          number: 52,
+          title: "Custom release automation title",
+          html_url: "https://github.com/DevwareUK/git-ai/issues/52",
+        })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { run, analyzeFeatureBacklog } = await loadCli({
+      featureAnalysisResult: analysis,
+      readlineAnswers: [
+        "1,2",
+        "",
+        "",
+        "",
+        "Custom release automation title",
+        "Prioritize npm package publishing and changelog generation.",
+        "release,automation",
+      ],
+      execFileSyncImpl: (command, args) => {
+        if (
+          command === "git" &&
+          (args[0] === "-C" || args[0] === "remote")
+        ) {
+          return "git@github.com:DevwareUK/git-ai.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.env.GITHUB_TOKEN = "test-token";
+    process.argv = [
+      "node",
+      "git-ai",
+      "feature-backlog",
+      ".",
+      "--format",
+      "json",
+      "--create-issues",
+      "--max-issues",
+      "2",
+      "--label",
+      "product",
+    ];
+
+    const stdout = captureStdout();
+    await run();
+
+    expect(analyzeFeatureBacklog).toHaveBeenCalledWith({
+      repoRoot: REPO_ROOT,
+      maxSuggestions: 5,
+    });
+
+    const output = JSON.parse(stdout.output()) as {
+      suggestions: Array<{ issueTitle: string }>;
+      createdIssues: Array<{ number: number; title: string; status: string }>;
+    };
+
+    expect(output.suggestions.map((suggestion) => suggestion.issueTitle)).toEqual(
+      analysis.suggestions.map((suggestion) => suggestion.issueTitle)
+    );
+    expect(output.createdIssues).toEqual([
+      {
+        number: 51,
+        title: analysis.suggestions[0].issueTitle,
+        url: "https://github.com/DevwareUK/git-ai/issues/51",
+        status: "existing",
+      },
+      {
+        number: 52,
+        title: "Custom release automation title",
+        url: "https://github.com/DevwareUK/git-ai/issues/52",
+        status: "created",
+      },
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("renders feature-backlog markdown output", async () => {
+    const analysis = createFeatureBacklogAnalysis();
+    const { run, analyzeFeatureBacklog } = await loadCli({
+      featureAnalysisResult: analysis,
+    });
+
+    process.argv = ["node", "git-ai", "feature-backlog", ".", "--top", "2"];
+
+    const stdout = captureStdout();
+    await run();
+
+    expect(analyzeFeatureBacklog).toHaveBeenCalledWith({
+      repoRoot: REPO_ROOT,
+      maxSuggestions: 2,
+    });
+    expect(stdout.output()).toContain("# AI Feature Backlog");
+    expect(stdout.output()).toContain("## Repository signals");
+    expect(stdout.output()).toContain(
+      "### Add guided issue templates for feature requests and bug reports"
+    );
+    expect(stdout.output()).toContain(
+      "- Draft issue title: Add guided issue templates for feature requests and bug reports"
     );
   });
 

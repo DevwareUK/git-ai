@@ -5,6 +5,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { relative, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import {
+  analyzeFeatureBacklog,
   analyzeTestBacklog,
   generateCommitMessage,
   generateDiffSummary,
@@ -57,11 +58,20 @@ type GeneratedIssueResolutionPlan = Awaited<
   ReturnType<typeof generateIssueResolutionPlan>
 >;
 
-type TestBacklogOutputFormat = "json" | "markdown";
+type BacklogOutputFormat = "json" | "markdown";
 
 type TestBacklogCommandOptions = {
   repoRoot: string;
-  format: TestBacklogOutputFormat;
+  format: BacklogOutputFormat;
+  top: number;
+  createIssues: boolean;
+  maxIssues: number;
+  labels: string[];
+};
+
+type FeatureBacklogCommandOptions = {
+  repoRoot: string;
+  format: BacklogOutputFormat;
   top: number;
   createIssues: boolean;
   maxIssues: number;
@@ -100,6 +110,13 @@ const TEST_BACKLOG_USAGE = [
   "  git-ai test-backlog [--format <markdown|json>] [--top <count>]",
   "                       [--repo-root <path>] [--create-issues]",
   "                       [--max-issues <count>] [--label <name>] [--labels <a,b>]",
+].join("\n");
+
+const FEATURE_BACKLOG_USAGE = [
+  "Usage:",
+  "  git-ai feature-backlog [repo-path] [--format <markdown|json>] [--top <count>]",
+  "                          [--create-issues] [--max-issues <count>]",
+  "                          [--label <name>] [--labels <a,b>]",
 ].join("\n");
 
 function getCliArgs(): string[] {
@@ -378,7 +395,7 @@ function parsePositiveInteger(value: string | undefined, flagName: string): numb
 export function parseTestBacklogCommandArgs(args: string[]): TestBacklogCommandOptions {
   const optionArgs = args.slice(1);
   let repoRoot = REPO_ROOT;
-  let format: TestBacklogOutputFormat = "markdown";
+  let format: BacklogOutputFormat = "markdown";
   let top = 5;
   let createIssues = false;
   let maxIssues = 3;
@@ -503,10 +520,134 @@ export function parseTestBacklogCommandArgs(args: string[]): TestBacklogCommandO
   };
 }
 
-function parseGitHubRepoFromRemote(): { owner: string; repo: string } {
+export function parseFeatureBacklogCommandArgs(args: string[]): FeatureBacklogCommandOptions {
+  const optionArgs = args.slice(1);
+  let repoRoot = process.cwd();
+  let format: BacklogOutputFormat = "markdown";
+  let top = 5;
+  let createIssues = false;
+  let maxIssues = 3;
+  const labels = new Set<string>();
+  let repoPathWasSet = false;
+
+  for (let index = 0; index < optionArgs.length; index += 1) {
+    const rawArg = optionArgs[index];
+
+    if (!rawArg.startsWith("-")) {
+      if (repoPathWasSet) {
+        throw new Error(`Unknown feature-backlog argument "${rawArg}". ${FEATURE_BACKLOG_USAGE}`);
+      }
+
+      repoRoot = resolve(rawArg);
+      repoPathWasSet = true;
+      continue;
+    }
+
+    if (rawArg === "--format") {
+      const rawFormat = optionArgs[index + 1];
+      if (rawFormat !== "json" && rawFormat !== "markdown") {
+        throw new Error(`Invalid format "${rawFormat ?? ""}". ${FEATURE_BACKLOG_USAGE}`);
+      }
+      format = rawFormat;
+      index += 1;
+      continue;
+    }
+
+    if (rawArg.startsWith("--format=")) {
+      const rawFormat = rawArg.slice("--format=".length);
+      if (rawFormat !== "json" && rawFormat !== "markdown") {
+        throw new Error(`Invalid format "${rawFormat}". ${FEATURE_BACKLOG_USAGE}`);
+      }
+      format = rawFormat;
+      continue;
+    }
+
+    if (rawArg === "--top") {
+      top = parsePositiveInteger(optionArgs[index + 1], "--top");
+      index += 1;
+      continue;
+    }
+
+    if (rawArg.startsWith("--top=")) {
+      top = parsePositiveInteger(rawArg.slice("--top=".length), "--top");
+      continue;
+    }
+
+    if (rawArg === "--create-issues") {
+      createIssues = true;
+      continue;
+    }
+
+    if (rawArg === "--max-issues") {
+      maxIssues = parsePositiveInteger(optionArgs[index + 1], "--max-issues");
+      index += 1;
+      continue;
+    }
+
+    if (rawArg.startsWith("--max-issues=")) {
+      maxIssues = parsePositiveInteger(
+        rawArg.slice("--max-issues=".length),
+        "--max-issues"
+      );
+      continue;
+    }
+
+    if (rawArg === "--label") {
+      const label = optionArgs[index + 1]?.trim();
+      if (!label) {
+        throw new Error(`Missing value for --label. ${FEATURE_BACKLOG_USAGE}`);
+      }
+      labels.add(label);
+      index += 1;
+      continue;
+    }
+
+    if (rawArg === "--labels") {
+      const rawLabels = optionArgs[index + 1];
+      if (!rawLabels) {
+        throw new Error(`Missing value for --labels. ${FEATURE_BACKLOG_USAGE}`);
+      }
+      for (const label of rawLabels.split(",")) {
+        const trimmed = label.trim();
+        if (trimmed) {
+          labels.add(trimmed);
+        }
+      }
+      index += 1;
+      continue;
+    }
+
+    if (rawArg.startsWith("--labels=")) {
+      for (const label of rawArg.slice("--labels=".length).split(",")) {
+        const trimmed = label.trim();
+        if (trimmed) {
+          labels.add(trimmed);
+        }
+      }
+      continue;
+    }
+
+    throw new Error(`Unknown feature-backlog option "${rawArg}". ${FEATURE_BACKLOG_USAGE}`);
+  }
+
+  return {
+    repoRoot,
+    format,
+    top,
+    createIssues,
+    maxIssues: Math.min(maxIssues, top),
+    labels: [...labels],
+  };
+}
+
+function parseGitHubRepoFromRemote(repoRoot = REPO_ROOT): { owner: string; repo: string } {
+  const gitArgs =
+    repoRoot === REPO_ROOT
+      ? ["remote", "get-url", "origin"]
+      : ["-C", repoRoot, "remote", "get-url", "origin"];
   const remoteUrl = runCommand(
     "git",
-    ["remote", "get-url", "origin"],
+    gitArgs,
     "Failed to resolve the origin remote."
   );
 
@@ -1272,7 +1413,7 @@ function parseIssueDraftDocument(content: string): { title: string; body: string
 async function promptForLine(prompt: string): Promise<string> {
   const rl = createInterface({
     input: process.stdin,
-    output: process.stdout,
+    output: process.stderr,
   });
 
   try {
@@ -1454,6 +1595,115 @@ function formatTestBacklogMarkdown(
   return lines.join("\n");
 }
 
+function formatFeatureBacklogMarkdown(
+  result: Awaited<ReturnType<typeof analyzeFeatureBacklog>>,
+  createdIssues: CreatedIssueRecord[]
+): string {
+  const lines: string[] = [
+    "# AI Feature Backlog",
+    "",
+    "## Summary",
+    result.summary,
+    "",
+    "## Repository signals",
+    `- CLI surface: ${toTitleCase(String(result.repositorySignals.hasCli))}`,
+    `- GitHub Actions: ${toTitleCase(String(result.repositorySignals.hasGitHubActions))}`,
+    `- Existing tests: ${toTitleCase(String(result.repositorySignals.hasTests))}`,
+    `- Issue templates: ${toTitleCase(String(result.repositorySignals.hasIssueTemplates))}`,
+    `- Release automation: ${toTitleCase(String(result.repositorySignals.hasReleaseAutomation))}`,
+    `- Examples/templates: ${toTitleCase(String(result.repositorySignals.hasExamples))}`,
+    `- Package manifests: ${result.repositorySignals.packageCount}`,
+    `- Workflows: ${result.repositorySignals.workflowCount}`,
+    `- Provider adapters: ${result.repositorySignals.providerCount}`,
+  ];
+
+  if (result.repositorySignals.evidence.length > 0) {
+    lines.push(
+      `- Evidence: ${result.repositorySignals.evidence.slice(0, 5).join("; ")}`
+    );
+  }
+
+  if (result.repositorySignals.notes.length > 0) {
+    lines.push("", "## Notes");
+    lines.push(...result.repositorySignals.notes.map((note) => `- ${note}`));
+  }
+
+  lines.push("", "## Prioritized suggestions", "");
+  for (const suggestion of result.suggestions) {
+    lines.push(`### ${suggestion.title}`);
+    lines.push(`- Priority: ${toTitleCase(suggestion.priority)}`);
+    lines.push(`- Category: ${toTitleCase(suggestion.category)}`);
+    lines.push(`- Rationale: ${suggestion.rationale}`);
+    lines.push(`- Evidence: ${suggestion.evidence.join("; ")}`);
+    lines.push(
+      `- Related paths: ${suggestion.relatedPaths.map((path) => `\`${path}\``).join(", ")}`
+    );
+    lines.push(`- Draft issue title: ${suggestion.issueTitle}`);
+    lines.push("");
+  }
+
+  if (createdIssues.length > 0) {
+    lines.push("## GitHub issue results");
+    lines.push(
+      ...createdIssues.map(
+        (issue) =>
+          `- ${issue.status === "created" ? "Created" : "Reused"} #${issue.number}: ${issue.title} (${issue.url})`
+      )
+    );
+    lines.push("");
+  }
+
+  while (lines[lines.length - 1] === "") {
+    lines.pop();
+  }
+
+  return lines.join("\n");
+}
+
+function parseBacklogSelection(
+  response: string,
+  maxIndex: number
+): number[] {
+  const normalized = response.trim().toLowerCase();
+  if (!normalized || normalized === "none" || normalized === "n") {
+    return [];
+  }
+
+  if (normalized === "all") {
+    return Array.from({ length: maxIndex }, (_, index) => index);
+  }
+
+  const selected = new Set<number>();
+  for (const part of response.split(",")) {
+    const trimmed = part.trim();
+    if (!/^\d+$/.test(trimmed)) {
+      throw new Error(
+        `Invalid selection "${trimmed}". Use comma-separated suggestion numbers, "all", or "none".`
+      );
+    }
+
+    const parsed = Number.parseInt(trimmed, 10);
+    if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > maxIndex) {
+      throw new Error(
+        `Invalid selection "${trimmed}". Choose values between 1 and ${maxIndex}.`
+      );
+    }
+
+    selected.add(parsed - 1);
+  }
+
+  return [...selected].sort((left, right) => left - right);
+}
+
+function appendAdditionalDescription(body: string, additionalDescription: string): string {
+  const trimmed = additionalDescription.trim();
+  if (!trimmed) {
+    return body;
+  }
+
+  return `${body}\n\n## Maintainer notes\n${trimmed}\n`;
+}
+
 async function listOpenIssues(
   owner: string,
   repo: string,
@@ -1549,7 +1799,7 @@ async function maybeCreateTestBacklogIssues(
   const token = getGitHubApiToken(
     "Creating GitHub issues requires GH_TOKEN or GITHUB_TOKEN to be set."
   );
-  const { owner, repo } = parseGitHubRepoFromRemote();
+  const { owner, repo } = parseGitHubRepoFromRemote(options.repoRoot);
   const existingIssues = await listOpenIssues(owner, repo, token);
   const existingByTitle = new Map(
     existingIssues.map((issue) => [issue.title.trim().toLowerCase(), issue])
@@ -1586,6 +1836,86 @@ async function maybeCreateTestBacklogIssues(
   return createdIssues;
 }
 
+async function maybeCreateFeatureBacklogIssues(
+  options: FeatureBacklogCommandOptions,
+  analysis: Awaited<ReturnType<typeof analyzeFeatureBacklog>>
+): Promise<CreatedIssueRecord[]> {
+  if (!options.createIssues) {
+    return [];
+  }
+
+  const token = getGitHubApiToken(
+    "Creating GitHub issues requires GH_TOKEN or GITHUB_TOKEN to be set."
+  );
+  const { owner, repo } = parseGitHubRepoFromRemote(options.repoRoot);
+  const existingIssues = await listOpenIssues(owner, repo, token);
+  const existingByTitle = new Map(
+    existingIssues.map((issue) => [issue.title.trim().toLowerCase(), issue])
+  );
+  const createdIssues: CreatedIssueRecord[] = [];
+  const selectionPrompt = analysis.suggestions
+    .map((suggestion, index) => `${index + 1}:${suggestion.issueTitle}`)
+    .join(", ");
+  const rawSelection = await promptForLine(
+    `Create GitHub issues for which suggestions? [all|none|${selectionPrompt}]: `
+  );
+  const selectedIndexes = parseBacklogSelection(
+    rawSelection,
+    analysis.suggestions.length
+  ).slice(0, options.maxIssues);
+
+  if (selectedIndexes.length === 0) {
+    return [];
+  }
+
+  for (const suggestionIndex of selectedIndexes) {
+    const suggestion = analysis.suggestions[suggestionIndex];
+    const titleInput = await promptForLine(
+      `Issue title [${suggestion.issueTitle}]: `
+    );
+    const issueTitle = titleInput.trim() || suggestion.issueTitle;
+    const extraDescription = await promptForLine(
+      "Additional description (optional): "
+    );
+    const labelsInput = await promptForLine(
+      `Labels [${options.labels.join(",")}]: `
+    );
+    const labels = labelsInput.trim()
+      ? labelsInput
+          .split(",")
+          .map((label) => label.trim())
+          .filter(Boolean)
+      : options.labels;
+
+    const existingIssue = existingByTitle.get(issueTitle.trim().toLowerCase());
+    if (existingIssue) {
+      createdIssues.push({
+        ...existingIssue,
+        status: "existing",
+      });
+      continue;
+    }
+
+    const createdIssue = await createGitHubIssue(
+      owner,
+      repo,
+      token,
+      issueTitle,
+      appendAdditionalDescription(suggestion.issueBody, extraDescription),
+      labels
+    );
+
+    const record: CreatedIssueRecord = {
+      ...createdIssue,
+      status: "created",
+    };
+    existingByTitle.set(record.title.trim().toLowerCase(), record);
+    createdIssues.push(record);
+  }
+
+  return createdIssues;
+}
+
 async function runTestBacklogCommand(): Promise<void> {
   const options = parseTestBacklogCommandArgs(getCliArgs());
   const analysis = await analyzeTestBacklog({
@@ -1604,6 +1934,26 @@ async function runTestBacklogCommand(): Promise<void> {
   }
 
   process.stdout.write(`${formatTestBacklogMarkdown(analysis, createdIssues)}\n`);
+}
+
+async function runFeatureBacklogCommand(): Promise<void> {
+  const options = parseFeatureBacklogCommandArgs(getCliArgs());
+  const analysis = await analyzeFeatureBacklog({
+    repoRoot: options.repoRoot,
+    maxSuggestions: options.top,
+  });
+  const createdIssues = await maybeCreateFeatureBacklogIssues(options, analysis);
+  const output = {
+    ...analysis,
+    createdIssues,
+  };
+
+  if (options.format === "json") {
+    process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+    return;
+  }
+
+  process.stdout.write(`${formatFeatureBacklogMarkdown(analysis, createdIssues)}\n`);
 }
 
 async function runIssueDraftCommand(): Promise<void> {
@@ -1797,10 +2147,11 @@ export async function run(): Promise<void> {
     command !== "commit" &&
     command !== "diff" &&
     command !== "issue" &&
-    command !== "test-backlog"
+    command !== "test-backlog" &&
+    command !== "feature-backlog"
   ) {
     throw new Error(
-      `Unknown command: ${command}. Supported commands: "commit", "diff", "issue", "test-backlog".`
+      `Unknown command: ${command}. Supported commands: "commit", "diff", "issue", "test-backlog", "feature-backlog".`
     );
   }
 
@@ -1819,6 +2170,11 @@ export async function run(): Promise<void> {
 
   if (command === "test-backlog") {
     await runTestBacklogCommand();
+    return;
+  }
+
+  if (command === "feature-backlog") {
+    await runFeatureBacklogCommand();
     return;
   }
 

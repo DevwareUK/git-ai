@@ -1,5 +1,6 @@
 export * from "./commit-message";
 export * from "./diff-summary";
+export * from "./feature-backlog";
 export * from "./issue-draft";
 export * from "./issue-resolution-plan";
 export * from "./pr-assistant";
