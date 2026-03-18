@@ -1,4 +1,12 @@
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -288,6 +296,22 @@ async function loadCli(options: {
     generateDiffSummary: vi.fn(),
     generateIssueDraft,
     generateIssueResolutionPlan,
+    resolveRepositoryConfig: vi.fn((config?: {
+      baseBranch?: string;
+      buildCommand?: string[];
+      forge?: { type?: "github" | "none" };
+    }) => ({
+      baseBranch: config?.baseBranch ?? "main",
+      buildCommand: config?.buildCommand ?? ["pnpm", "build"],
+      forge: {
+        type: config?.forge?.type ?? "github",
+      },
+    })),
+  }));
+  vi.doMock("@git-ai/contracts", () => ({
+    RepositoryConfig: {
+      parse: vi.fn((value?: unknown) => (value ?? {}) as Record<string, unknown>),
+    },
   }));
   vi.doMock("node:child_process", () => ({
     execFileSync,
@@ -999,6 +1023,142 @@ describe("CLI integration", () => {
     expect(readFileSync(githubOutputPath, "utf8")).toContain("branch_name<<");
     expect(readFileSync(githubOutputPath, "utf8")).toContain(output.branchName);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses repository config for issue build verification and pull request base branch", async () => {
+    const issueNumber = 144;
+    const configPath = resolve(REPO_ROOT, ".git-ai", "config.json");
+    const hadOriginalConfig = existsSync(configPath);
+    const originalConfig = hadOriginalConfig ? readFileSync(configPath, "utf8") : undefined;
+    mkdirSync(dirname(configPath), { recursive: true });
+    writeFileSync(
+      configPath,
+      JSON.stringify(
+        {
+          baseBranch: "develop",
+          buildCommand: ["npm", "run", "verify"],
+        },
+        null,
+        2
+      )
+    );
+
+    let gitStatusCallCount = 0;
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          title: "Use repository config in issue runs",
+          body: "Verify issue automation reads .git-ai/config.json.",
+          html_url: `https://github.com/DevwareUK/git-ai/issues/${issueNumber}`,
+        })
+      )
+      .mockResolvedValueOnce(createFetchResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const { run, spawnSync } = await loadCli({
+        execFileSyncImpl: (command, args) => {
+          if (command === "git" && args[0] === "status") {
+            gitStatusCallCount += 1;
+            return gitStatusCallCount === 1 ? "" : " M packages/cli/src/index.ts\n";
+          }
+
+          if (command === "git" && args[0] === "remote") {
+            return "git@github.com:DevwareUK/git-ai.git\n";
+          }
+
+          throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+        },
+        spawnSyncImpl: (command, args) => {
+          if (command === "gh" && args[0] === "--version") {
+            return { status: 0 };
+          }
+
+          if (command === "gh" && args[0] === "auth" && args[1] === "status") {
+            return { status: 0 };
+          }
+
+          if (command === "gh" && args[0] === "issue" && args[1] === "view") {
+            return {
+              status: 1,
+              error: new Error("force API fallback"),
+            };
+          }
+
+          if (command === "git" && args[0] === "rev-parse") {
+            return { status: 1 };
+          }
+
+          if (command === "git" && args[0] === "checkout" && args[1] === "-b") {
+            return { status: 0 };
+          }
+
+          if (command === "codex") {
+            return { status: 0 };
+          }
+
+          if (command === "npm" && args[0] === "--version") {
+            return { status: 0 };
+          }
+
+          if (command === "npm" && args[0] === "run" && args[1] === "verify") {
+            return { status: 0, stdout: "verified\n", stderr: "" };
+          }
+
+          if (command === "git" && args[0] === "add") {
+            return { status: 0 };
+          }
+
+          if (command === "git" && args[0] === "commit") {
+            return { status: 0 };
+          }
+
+          if (command === "git" && args[0] === "push") {
+            return { status: 0, stdout: "", stderr: "" };
+          }
+
+          if (command === "gh" && args[0] === "pr" && args[1] === "create") {
+            return { status: 0, stdout: "", stderr: "" };
+          }
+
+          throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+        },
+      });
+
+      process.argv = ["node", "git-ai", "issue", String(issueNumber)];
+      await run();
+
+      expect(spawnSync).toHaveBeenCalledWith(
+        "npm",
+        ["run", "verify"],
+        expect.objectContaining({
+          encoding: "utf8",
+        })
+      );
+      expect(spawnSync).toHaveBeenCalledWith(
+        "gh",
+        [
+          "pr",
+          "create",
+          "--title",
+          "Fix: Use repository config in issue runs",
+          "--body",
+          `Closes #${issueNumber}`,
+          "--base",
+          "develop",
+        ],
+        expect.objectContaining({
+          encoding: "utf8",
+        })
+      );
+    } finally {
+      if (hadOriginalConfig && originalConfig !== undefined) {
+        writeFileSync(configPath, originalConfig);
+      } else {
+        rmSync(configPath, { force: true });
+      }
+    }
   });
 
   it("fails issue finalize clearly when no generated changes exist", async () => {

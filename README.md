@@ -26,6 +26,24 @@ OPENAI_API_KEY=your_key_here
 
 The CLI tools and Husky commit hook will read environment variables from this file.
 
+Optional: create `.git-ai/config.json` in the repository root to override repository-specific workflow defaults:
+
+```json
+{
+  "baseBranch": "main",
+  "buildCommand": ["pnpm", "build"],
+  "forge": {
+    "type": "github"
+  }
+}
+```
+
+Supported config fields:
+
+- `baseBranch`: default pull request base branch for `git-ai issue <number>`. Default: `main`.
+- `buildCommand`: command run after Codex exits during full local `git-ai issue <number>` flows. Default: `["pnpm", "build"]`.
+- `forge.type`: repository forge integration. Use `"github"` for the current GitHub-backed flows or `"none"` to disable issue and PR creation features for non-GitHub repositories.
+
 ## Command Reference
 
 This repository exposes commands in four places:
@@ -119,9 +137,9 @@ Available modes and subcommands:
 
 | Command | What it does |
 | --- | --- |
-| `git-ai issue <number>` | Full local issue-to-PR flow. Fetches the GitHub issue, creates a branch, writes `.git-ai/` workspace files, opens an interactive Codex session, runs `pnpm build`, commits the result, and opens a PR if `gh` is installed and authenticated. |
-| `git-ai issue draft` | Interactive issue drafting flow. Prompts for a feature idea, generates a Markdown issue draft with AI, optionally opens it in `$VISUAL` or `$EDITOR`, and can create the GitHub issue through `gh`. |
-| `git-ai issue plan <number>` | Generates an issue resolution plan for the GitHub issue and posts it as a managed comment. If an editable plan comment already exists, the command reuses it instead of overwriting collaborator edits. |
+| `git-ai issue <number>` | Full local issue-to-PR flow. Fetches the configured forge issue, creates a branch, writes `.git-ai/` workspace files, opens an interactive Codex session, runs the configured build command, commits the result, and opens a PR if the configured forge supports it and `gh` is installed and authenticated. |
+| `git-ai issue draft` | Interactive issue drafting flow. Prompts for a feature idea, generates a Markdown issue draft with AI, optionally opens it in `$VISUAL` or `$EDITOR`, and can create the issue through the configured forge when GitHub support is enabled. |
+| `git-ai issue plan <number>` | Generates an issue resolution plan for the configured forge issue and posts it as a managed comment. If an editable plan comment already exists, the command reuses it instead of overwriting collaborator edits. |
 | `git-ai issue prepare <number>` | Prepares the issue branch and `.git-ai/` workspace artifacts, then prints machine-readable JSON describing the run. |
 | `git-ai issue prepare <number> --mode github-action` | Same preparation flow, but writes prompt instructions tailored for non-interactive GitHub Actions runs. |
 | `git-ai issue finalize <number>` | Commits generated changes with `feat: address issue #<number>`. |
@@ -132,11 +150,14 @@ Important behavior:
 - `git-ai issue plan <number>` requires `OPENAI_API_KEY` the first time it generates a plan comment
 - issue metadata and run artifacts are written under `.git-ai/`
 - local full runs require the `codex` CLI on `PATH`
-- PR creation requires `gh` to be installed and authenticated
-- issue plan comments require `GH_TOKEN` or `GITHUB_TOKEN`, or an authenticated `gh` session, when they are created
+- full local issue runs execute the configured `.git-ai/config.json` `buildCommand`, defaulting to `pnpm build`
+- PR creation uses the configured `.git-ai/config.json` `baseBranch`, defaulting to `main`
+- GitHub-backed PR creation requires `gh` to be installed and authenticated
+- GitHub-backed issue plan comments require `GH_TOKEN` or `GITHUB_TOKEN`, or an authenticated `gh` session, when they are created
 - if an issue resolution plan comment exists, `git-ai issue prepare <number>` and full `git-ai issue <number>` runs copy the latest edited plan into the generated issue snapshot
-- issue fetching uses `gh issue view` when available, otherwise the GitHub API
-- GitHub API access for issue fetching, plan comments, or issue creation uses `GH_TOKEN` or `GITHUB_TOKEN` when present
+- when `forge.type` is `github`, issue fetching uses `gh issue view` when available, otherwise the GitHub API
+- when `forge.type` is `github`, GitHub API access for issue fetching, plan comments, or issue creation uses `GH_TOKEN` or `GITHUB_TOKEN` when present
+- when `forge.type` is `none`, issue and PR creation features are disabled for the repository
 
 #### `git-ai test-backlog`
 
@@ -172,6 +193,7 @@ git-ai test-backlog --labels testing,backlog
 ```
 
 When `--create-issues` is enabled, `git-ai` checks for matching open issue titles first so it can reuse existing backlog items instead of creating duplicates.
+If `.git-ai/config.json` sets `forge.type` to `none`, backlog issue creation is disabled for that repository.
 
 #### `git-ai feature-backlog`
 
@@ -208,10 +230,11 @@ git-ai feature-backlog . --format json
 Important behavior:
 
 - the repository analysis is heuristic and based on the repository structure, current product surface, and automation signals
-- `--create-issues` requires `GH_TOKEN` or `GITHUB_TOKEN`
-- issue creation targets the analyzed repository’s `origin` remote, not just the current workspace repository
+- with the default GitHub forge integration, `--create-issues` requires `GH_TOKEN` or `GITHUB_TOKEN`
+- with the default GitHub forge integration, issue creation targets the analyzed repository’s `origin` remote, not just the current workspace repository
 - before each issue is created, `git-ai` prompts for the final title, optional extra description, and labels
 - if an open GitHub issue already exists with the chosen title, `git-ai` reuses it instead of creating a duplicate
+- if `.git-ai/config.json` sets `forge.type` to `none`, feature backlog issue creation is disabled for that repository
 
 ### GitHub Action local entrypoints
 

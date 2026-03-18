@@ -14,23 +14,21 @@ import {
 } from "@git-ai/core";
 import { OpenAIProvider } from "@git-ai/providers";
 import dotenv from "dotenv";
+import {
+  formatCommandForDisplay,
+  loadResolvedRepositoryConfig,
+} from "./config";
+import {
+  createRepositoryForge,
+  type CreatedIssueRecord,
+  type IssueDetails,
+  type IssuePlanComment,
+  type RepositoryForge,
+} from "./forge";
 
 dotenv.config({ path: resolve(__dirname, "../../..", ".env"), quiet: true });
 
 const REPO_ROOT = resolve(__dirname, "../../..");
-
-type IssueDetails = {
-  title: string;
-  body: string;
-  url: string;
-};
-
-type IssuePlanComment = {
-  id: number;
-  body: string;
-  url: string;
-  updatedAt: string;
-};
 
 type IssueWorkspace = {
   issueDir: string;
@@ -76,13 +74,6 @@ type FeatureBacklogCommandOptions = {
   createIssues: boolean;
   maxIssues: number;
   labels: string[];
-};
-
-type CreatedIssueRecord = {
-  number: number;
-  title: string;
-  url: string;
-  status: "created" | "existing";
 };
 
 type IssueRunContext = {
@@ -141,6 +132,14 @@ function getRequiredEnv(name: string): string {
 function getOptionalEnv(name: string): string | undefined {
   const value = process.env[name]?.trim();
   return value ? value : undefined;
+}
+
+function getRepositoryConfig(repoRoot = REPO_ROOT) {
+  return loadResolvedRepositoryConfig(repoRoot);
+}
+
+function getRepositoryForge(repoRoot = REPO_ROOT): RepositoryForge {
+  return createRepositoryForge(repoRoot, getRepositoryConfig(repoRoot));
 }
 
 function readGitDiff(
@@ -640,63 +639,6 @@ export function parseFeatureBacklogCommandArgs(args: string[]): FeatureBacklogCo
   };
 }
 
-function parseGitHubRepoFromRemote(repoRoot = REPO_ROOT): { owner: string; repo: string } {
-  const gitArgs =
-    repoRoot === REPO_ROOT
-      ? ["remote", "get-url", "origin"]
-      : ["-C", repoRoot, "remote", "get-url", "origin"];
-  const remoteUrl = runCommand(
-    "git",
-    gitArgs,
-    "Failed to resolve the origin remote."
-  );
-
-  const match = remoteUrl.match(
-    /github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?$/
-  );
-
-  if (!match) {
-    throw new Error(
-      "Could not determine the GitHub repository from the origin remote."
-    );
-  }
-
-  return {
-    owner: match[1],
-    repo: match[2],
-  };
-}
-
-function tryResolveGitHubApiToken(): string | undefined {
-  const envToken = process.env.GH_TOKEN?.trim() || process.env.GITHUB_TOKEN?.trim();
-  if (envToken) {
-    return envToken;
-  }
-
-  if (!isGhAuthenticated()) {
-    return undefined;
-  }
-
-  try {
-    return runCommand(
-      "gh",
-      ["auth", "token"],
-      "Failed to read the GitHub token from gh."
-    );
-  } catch {
-    return undefined;
-  }
-}
-
-function getGitHubApiToken(requiredMessage: string): string {
-  const token = tryResolveGitHubApiToken();
-  if (!token) {
-    throw new Error(requiredMessage);
-  }
-
-  return token;
-}
-
 function stripIssuePlanCommentMarker(body: string): string {
   return body
     .split(/\r?\n/)
@@ -739,201 +681,6 @@ function renderIssueResolutionPlanComment(
 
   lines.push("");
   return lines.join("\n");
-}
-
-async function listIssueComments(
-  owner: string,
-  repo: string,
-  issueNumber: number
-): Promise<IssuePlanComment[]> {
-  const token = tryResolveGitHubApiToken();
-  const headers: Record<string, string> = {
-    Accept: "application/vnd.github+json",
-    "User-Agent": "git-ai-cli",
-  };
-
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
-
-  const response = await fetch(
-    `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}/comments?per_page=100`,
-    {
-      headers,
-    }
-  );
-
-  if (!response.ok) {
-    throw new Error(
-      `Failed to list comments for GitHub issue #${issueNumber} (${response.status} ${response.statusText}).`
-    );
-  }
-
-  const payload = (await response.json()) as Array<{
-    id?: number;
-    body?: string | null;
-    html_url?: string;
-    updated_at?: string;
-  }>;
-
-  return payload
-    .filter((comment) => comment.id && comment.body && comment.html_url && comment.updated_at)
-    .map((comment) => ({
-      id: comment.id as number,
-      body: comment.body as string,
-      url: comment.html_url as string,
-      updatedAt: comment.updated_at as string,
-    }));
-}
-
-async function fetchIssuePlanComment(
-  issueNumber: number
-): Promise<IssuePlanComment | undefined> {
-  const { owner, repo } = parseGitHubRepoFromRemote();
-  const comments = await listIssueComments(owner, repo, issueNumber);
-
-  return comments
-    .filter((comment) => comment.body.includes(ISSUE_PLAN_COMMENT_MARKER))
-    .sort(
-      (left, right) =>
-        Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
-    )[0];
-}
-
-async function createIssuePlanComment(
-  owner: string,
-  repo: string,
-  issueNumber: number,
-  body: string
-): Promise<IssuePlanComment> {
-  const token = getGitHubApiToken(
-    "Posting issue resolution plans requires GH_TOKEN or GITHUB_TOKEN to be set, or gh to be installed and authenticated."
-  );
-  const response = await fetch(
-    `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}/comments`,
-    {
-      method: "POST",
-      headers: {
-        Accept: "application/vnd.github+json",
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-        "User-Agent": "git-ai-cli",
-      },
-      body: JSON.stringify({ body }),
-    }
-  );
-
-  if (!response.ok) {
-    throw new Error(
-      `Failed to create the issue resolution plan comment for #${issueNumber} (${response.status} ${response.statusText}).`
-    );
-  }
-
-  const payload = (await response.json()) as {
-    id?: number;
-    body?: string | null;
-    html_url?: string;
-    updated_at?: string;
-  };
-
-  if (!payload.id || !payload.body || !payload.html_url || !payload.updated_at) {
-    throw new Error(
-      `GitHub issue plan comment creation for #${issueNumber} returned an incomplete payload.`
-    );
-  }
-
-  return {
-    id: payload.id,
-    body: payload.body,
-    url: payload.html_url,
-    updatedAt: payload.updated_at,
-  };
-}
-
-function tryFetchIssueWithGh(issueNumber: number): IssueDetails | undefined {
-  if (!canRunCommand("gh")) {
-    return undefined;
-  }
-
-  try {
-    const payload = runCommand(
-      "gh",
-      [
-        "issue",
-        "view",
-        String(issueNumber),
-        "--json",
-        "title,body,url",
-      ],
-      `Failed to fetch GitHub issue #${issueNumber} with gh.`
-    );
-
-    const parsed = JSON.parse(payload) as Partial<IssueDetails>;
-    if (!parsed.title || !parsed.url) {
-      throw new Error("Issue payload was incomplete.");
-    }
-
-    return {
-      title: parsed.title,
-      body: parsed.body ?? "",
-      url: parsed.url,
-    };
-  } catch {
-    return undefined;
-  }
-}
-
-async function fetchIssueWithApi(issueNumber: number): Promise<IssueDetails> {
-  const { owner, repo } = parseGitHubRepoFromRemote();
-  const token = tryResolveGitHubApiToken();
-  const headers: Record<string, string> = {
-    Accept: "application/vnd.github+json",
-    "User-Agent": "git-ai-cli",
-  };
-
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
-
-  const response = await fetch(
-    `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}`,
-    {
-      headers,
-    }
-  );
-
-  if (!response.ok) {
-    throw new Error(
-      `Failed to fetch GitHub issue #${issueNumber} via GitHub API (${response.status} ${response.statusText}).`
-    );
-  }
-
-  const payload = (await response.json()) as {
-    title?: string;
-    body?: string | null;
-    html_url?: string;
-  };
-
-  if (!payload.title || !payload.html_url) {
-    throw new Error(
-      `GitHub issue #${issueNumber} did not return the required fields.`
-    );
-  }
-
-  return {
-    title: payload.title,
-    body: payload.body ?? "",
-    url: payload.html_url,
-  };
-}
-
-async function fetchIssueDetails(issueNumber: number): Promise<IssueDetails> {
-  const ghIssue = tryFetchIssueWithGh(issueNumber);
-  if (ghIssue) {
-    return ghIssue;
-  }
-
-  return fetchIssueWithApi(issueNumber);
 }
 
 function slugifyIssueTitle(title: string): string {
@@ -1053,7 +800,8 @@ function ensureBranchDoesNotExist(branchName: string): void {
 
 function buildCodexPrompt(
   workspace: IssueWorkspace,
-  mode: IssueExecutionMode
+  mode: IssueExecutionMode,
+  buildCommand: string[]
 ): string {
   const issueFile = toRepoRelativePath(workspace.issueFilePath);
   const runDir = toRepoRelativePath(workspace.runDir);
@@ -1077,7 +825,7 @@ function buildCodexPrompt(
     "- keep code changes focused on the issue snapshot",
     "- follow existing architecture patterns",
     "- if the issue snapshot includes a resolution plan, treat it as the latest plan of record",
-    "- run `pnpm build` before finishing if code changes are made",
+    `- run \`${formatCommandForDisplay(buildCommand)}\` before finishing if code changes are made`,
     "- do not modify `.git-ai/` unless needed for local workflow artifacts",
     "- do not commit `.git-ai/` files",
   ].join("\n");
@@ -1089,10 +837,11 @@ function writeIssueWorkspaceFiles(
   planComment: IssuePlanComment | undefined,
   branchName: string,
   workspace: IssueWorkspace,
-  mode: IssueExecutionMode
+  mode: IssueExecutionMode,
+  buildCommand: string[]
 ): void {
   const createdAt = new Date().toISOString();
-  const prompt = buildCodexPrompt(workspace, mode);
+  const prompt = buildCodexPrompt(workspace, mode, buildCommand);
 
   writeFileSync(
     workspace.issueFilePath,
@@ -1264,14 +1013,14 @@ function runCodex(workspace: IssueWorkspace): void {
   }
 }
 
-function verifyBuild(outputLogPath: string): void {
-  if (!canRunCommand("pnpm")) {
-    throw new Error("The `pnpm` CLI is not available on PATH.");
+function verifyBuild(buildCommand: string[], outputLogPath: string): void {
+  if (!canRunCommand(buildCommand[0])) {
+    throw new Error(`The \`${buildCommand[0]}\` CLI is not available on PATH.`);
   }
 
   runTrackedCommand(
-    "pnpm",
-    ["build"],
+    buildCommand[0],
+    buildCommand.slice(1),
     "Build failed. Changes were not committed.",
     outputLogPath
   );
@@ -1290,54 +1039,17 @@ function commitIssueChanges(issueNumber: number): void {
   );
 }
 
-function isGhAuthenticated(): boolean {
-  if (!canRunCommand("gh")) {
-    return false;
-  }
-
-  const result = spawnSync("gh", ["auth", "status"], {
-    stdio: "ignore",
-  });
-
-  return !result.error && result.status === 0;
-}
-
-function pushBranchAndCreatePr(
+function printManualPrInstructions(
   branchName: string,
   issueNumber: number,
-  issueTitle: string,
-  outputLogPath: string
+  baseBranch: string
 ): void {
-  runTrackedCommand(
-    "git",
-    ["push", "-u", "origin", branchName],
-    `Failed to push branch "${branchName}".`,
-    outputLogPath
-  );
-  runTrackedCommand(
-    "gh",
-    [
-      "pr",
-      "create",
-      "--title",
-      `Fix: ${issueTitle}`,
-      "--body",
-      `Closes #${issueNumber}`,
-      "--base",
-      "main",
-    ],
-    "Failed to create a pull request.",
-    outputLogPath
-  );
-}
-
-function printManualPrInstructions(branchName: string, issueNumber: number): void {
   console.log("");
   console.log("GitHub CLI is unavailable or not authenticated.");
   console.log("To push and open a PR manually, run:");
   console.log(`  git push -u origin ${branchName}`);
   console.log(
-    `  gh pr create --title "Fix: <issue title>" --body "Closes #${issueNumber}" --base main`
+    `  gh pr create --title "Fix: <issue title>" --body "Closes #${issueNumber}" --base ${baseBranch}`
   );
 }
 
@@ -1449,17 +1161,6 @@ function openFileInEditor(filePath: string): void {
   if (result.status !== 0) {
     throw new Error(`Editor command "${editor}" exited with status ${result.status}.`);
   }
-}
-
-function createGitHubIssueWithGh(title: string, body: string): string {
-  const output = runCommand(
-    "gh",
-    ["issue", "create", "--title", title, "--body", body],
-    `Failed to create GitHub issue "${title}" with gh.`
-  );
-
-  const lines = output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  return lines[lines.length - 1] ?? output;
 }
 
 function toTitleCase(value: string): string {
@@ -1704,90 +1405,6 @@ function appendAdditionalDescription(body: string, additionalDescription: string
   return `${body}\n\n## Maintainer notes\n${trimmed}\n`;
 }
 
-async function listOpenIssues(
-  owner: string,
-  repo: string,
-  token: string
-): Promise<Array<{ number: number; title: string; url: string }>> {
-  const response = await fetch(
-    `https://api.github.com/repos/${owner}/${repo}/issues?state=open&per_page=100`,
-    {
-      headers: {
-        Accept: "application/vnd.github+json",
-        Authorization: `Bearer ${token}`,
-        "User-Agent": "git-ai-cli",
-      },
-    }
-  );
-
-  if (!response.ok) {
-    throw new Error(
-      `Failed to list GitHub issues (${response.status} ${response.statusText}).`
-    );
-  }
-
-  const payload = (await response.json()) as Array<{
-    number?: number;
-    title?: string;
-    html_url?: string;
-    pull_request?: unknown;
-  }>;
-
-  return payload
-    .filter((item) => !item.pull_request && item.number && item.title && item.html_url)
-    .map((item) => ({
-      number: item.number as number,
-      title: item.title as string,
-      url: item.html_url as string,
-    }));
-}
-
-async function createGitHubIssue(
-  owner: string,
-  repo: string,
-  token: string,
-  title: string,
-  body: string,
-  labels: string[]
-): Promise<{ number: number; title: string; url: string }> {
-  const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/issues`, {
-    method: "POST",
-    headers: {
-      Accept: "application/vnd.github+json",
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      "User-Agent": "git-ai-cli",
-    },
-    body: JSON.stringify({
-      title,
-      body,
-      labels,
-    }),
-  });
-
-  if (!response.ok) {
-    throw new Error(
-      `Failed to create GitHub issue "${title}" (${response.status} ${response.statusText}).`
-    );
-  }
-
-  const payload = (await response.json()) as {
-    number?: number;
-    title?: string;
-    html_url?: string;
-  };
-
-  if (!payload.number || !payload.title || !payload.html_url) {
-    throw new Error(`GitHub issue creation for "${title}" returned an incomplete payload.`);
-  }
-
-  return {
-    number: payload.number,
-    title: payload.title,
-    url: payload.html_url,
-  };
-}
-
 async function maybeCreateTestBacklogIssues(
   options: TestBacklogCommandOptions,
   analysis: Awaited<ReturnType<typeof analyzeTestBacklog>>
@@ -1796,41 +1413,17 @@ async function maybeCreateTestBacklogIssues(
     return [];
   }
 
-  const token = getGitHubApiToken(
-    "Creating GitHub issues requires GH_TOKEN or GITHUB_TOKEN to be set."
-  );
-  const { owner, repo } = parseGitHubRepoFromRemote(options.repoRoot);
-  const existingIssues = await listOpenIssues(owner, repo, token);
-  const existingByTitle = new Map(
-    existingIssues.map((issue) => [issue.title.trim().toLowerCase(), issue])
-  );
+  const forge = getRepositoryForge(options.repoRoot);
   const createdIssues: CreatedIssueRecord[] = [];
 
   for (const finding of analysis.findings.slice(0, options.maxIssues)) {
-    const existingIssue = existingByTitle.get(finding.issueTitle.trim().toLowerCase());
-    if (existingIssue) {
-      createdIssues.push({
-        ...existingIssue,
-        status: "existing",
-      });
-      continue;
-    }
-
-    const createdIssue = await createGitHubIssue(
-      owner,
-      repo,
-      token,
-      finding.issueTitle,
-      finding.issueBody,
-      options.labels
+    createdIssues.push(
+      await forge.createOrReuseIssue(
+        finding.issueTitle,
+        finding.issueBody,
+        options.labels
+      )
     );
-
-    const record: CreatedIssueRecord = {
-      ...createdIssue,
-      status: "created",
-    };
-    existingByTitle.set(record.title.trim().toLowerCase(), record);
-    createdIssues.push(record);
   }
 
   return createdIssues;
@@ -1844,14 +1437,7 @@ async function maybeCreateFeatureBacklogIssues(
     return [];
   }
 
-  const token = getGitHubApiToken(
-    "Creating GitHub issues requires GH_TOKEN or GITHUB_TOKEN to be set."
-  );
-  const { owner, repo } = parseGitHubRepoFromRemote(options.repoRoot);
-  const existingIssues = await listOpenIssues(owner, repo, token);
-  const existingByTitle = new Map(
-    existingIssues.map((issue) => [issue.title.trim().toLowerCase(), issue])
-  );
+  const forge = getRepositoryForge(options.repoRoot);
   const createdIssues: CreatedIssueRecord[] = [];
   const selectionPrompt = analysis.suggestions
     .map((suggestion, index) => `${index + 1}:${suggestion.issueTitle}`)
@@ -1887,30 +1473,13 @@ async function maybeCreateFeatureBacklogIssues(
           .filter(Boolean)
       : options.labels;
 
-    const existingIssue = existingByTitle.get(issueTitle.trim().toLowerCase());
-    if (existingIssue) {
-      createdIssues.push({
-        ...existingIssue,
-        status: "existing",
-      });
-      continue;
-    }
-
-    const createdIssue = await createGitHubIssue(
-      owner,
-      repo,
-      token,
-      issueTitle,
-      appendAdditionalDescription(suggestion.issueBody, extraDescription),
-      labels
+    createdIssues.push(
+      await forge.createOrReuseIssue(
+        issueTitle,
+        appendAdditionalDescription(suggestion.issueBody, extraDescription),
+        labels
+      )
     );
-
-    const record: CreatedIssueRecord = {
-      ...createdIssue,
-      status: "created",
-    };
-    existingByTitle.set(record.title.trim().toLowerCase(), record);
-    createdIssues.push(record);
   }
 
   return createdIssues;
@@ -1973,8 +1542,15 @@ async function runIssueDraftCommand(): Promise<void> {
   writeFileSync(draftFilePath, renderIssueDraftMarkdown(draft), "utf8");
   openFileInEditor(draftFilePath);
 
-  if (!isGhAuthenticated()) {
-    console.log("GitHub issue creation skipped because gh is unavailable or not authenticated.");
+  const forge = getRepositoryForge(REPO_ROOT);
+  if (!forge.isAuthenticated()) {
+    if (forge.type === "github") {
+      console.log("GitHub issue creation skipped because gh is unavailable or not authenticated.");
+    } else {
+      console.log(
+        "Issue creation skipped because repository forge support is disabled by .git-ai/config.json."
+      );
+    }
     return;
   }
 
@@ -1985,14 +1561,15 @@ async function runIssueDraftCommand(): Promise<void> {
   }
 
   const reviewedDraft = parseIssueDraftDocument(readFileSync(draftFilePath, "utf8"));
-  const issueUrl = createGitHubIssueWithGh(reviewedDraft.title, reviewedDraft.body);
+  const issueUrl = forge.createDraftIssue(reviewedDraft.title, reviewedDraft.body);
   console.log(`Created GitHub issue: ${issueUrl}`);
 }
 
 async function runIssuePlanCommand(issueNumber: number): Promise<void> {
+  const forge = getRepositoryForge(REPO_ROOT);
   console.log(`Fetching GitHub issue #${issueNumber}...`);
-  const issue = await fetchIssueDetails(issueNumber);
-  const existingPlanComment = await fetchIssuePlanComment(issueNumber);
+  const issue = await forge.fetchIssueDetails(issueNumber);
+  const existingPlanComment = await forge.fetchIssuePlanComment(issueNumber);
 
   if (existingPlanComment) {
     console.log(
@@ -2008,10 +1585,7 @@ async function runIssuePlanCommand(issueNumber: number): Promise<void> {
     issueBody: issue.body,
     issueUrl: issue.url,
   });
-  const { owner, repo } = parseGitHubRepoFromRemote();
-  const comment = await createIssuePlanComment(
-    owner,
-    repo,
+  const comment = await forge.createIssuePlanComment(
     issueNumber,
     renderIssueResolutionPlanComment(issueNumber, plan)
   );
@@ -2023,10 +1597,12 @@ async function prepareIssueRun(
   issueNumber: number,
   mode: IssueExecutionMode
 ): Promise<IssueRunContext> {
+  const forge = getRepositoryForge(REPO_ROOT);
+  const repositoryConfig = getRepositoryConfig(REPO_ROOT);
   ensureCleanWorkingTree();
   console.log(`Fetching GitHub issue #${issueNumber}...`);
-  const issue = await fetchIssueDetails(issueNumber);
-  const planComment = await fetchIssuePlanComment(issueNumber);
+  const issue = await forge.fetchIssueDetails(issueNumber);
+  const planComment = await forge.fetchIssuePlanComment(issueNumber);
 
   const branchName = createIssueBranchName(issueNumber, issue.title);
   ensureBranchDoesNotExist(branchName);
@@ -2037,7 +1613,8 @@ async function prepareIssueRun(
     planComment,
     branchName,
     workspace,
-    mode
+    mode,
+    repositoryConfig.buildCommand
   );
 
   console.log(`Creating branch ${branchName}...`);
@@ -2115,6 +1692,8 @@ async function runIssueCommand(): Promise<void> {
   }
 
   const context = await prepareIssueRun(issueCommand.issueNumber, issueCommand.mode);
+  const repositoryConfig = getRepositoryConfig(REPO_ROOT);
+  const forge = getRepositoryForge(REPO_ROOT);
 
   console.log("Opening an interactive Codex session in this terminal...");
   console.log("Complete the issue work in Codex.");
@@ -2122,22 +1701,27 @@ async function runIssueCommand(): Promise<void> {
   runCodex(context.workspace);
 
   console.log("Verifying build...");
-  verifyBuild(context.workspace.outputLogPath);
+  verifyBuild(repositoryConfig.buildCommand, context.workspace.outputLogPath);
 
   finalizeIssueRun(context.issueNumber);
 
-  if (isGhAuthenticated()) {
+  if (forge.isAuthenticated()) {
     console.log("Pushing branch and opening a pull request...");
-    pushBranchAndCreatePr(
-      context.branchName,
-      context.issueNumber,
-      context.issue.title,
-      context.workspace.outputLogPath
-    );
+    forge.createPullRequest({
+      branchName: context.branchName,
+      issueNumber: context.issueNumber,
+      issueTitle: context.issue.title,
+      baseBranch: repositoryConfig.baseBranch,
+      outputLogPath: context.workspace.outputLogPath,
+    });
     return;
   }
 
-  printManualPrInstructions(context.branchName, context.issueNumber);
+  printManualPrInstructions(
+    context.branchName,
+    context.issueNumber,
+    repositoryConfig.baseBranch
+  );
 }
 
 export async function run(): Promise<void> {
