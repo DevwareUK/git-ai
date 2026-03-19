@@ -14,11 +14,13 @@ The repository also includes GitHub Actions for pull request review, PR assistan
 
 ## Quick start
 
-Prerequisites:
+### Prerequisites
 
 - `git`
 - Node.js and `pnpm`
 - `OPENAI_API_KEY`
+
+### Install the CLI once
 
 Build the CLI and link it globally from this repository:
 
@@ -30,6 +32,8 @@ cd packages/cli
 pnpm link --global
 ```
 
+### Configure each target repository
+
 Create a `.env` file in the target repository:
 
 ```env
@@ -38,7 +42,9 @@ OPENAI_MODEL=gpt-4o-mini
 OPENAI_BASE_URL=https://api.openai.com/v1
 ```
 
-Then move into that target repository and try the two fastest workflows:
+### First successful run
+
+Move into that target repository and try the two fastest workflows:
 
 ```bash
 cd /path/to/your-repo
@@ -46,7 +52,7 @@ git-ai review
 git-ai issue draft
 ```
 
-Useful next commands:
+### Useful next commands
 
 ```bash
 git-ai diff
