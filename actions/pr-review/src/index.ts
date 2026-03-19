@@ -1,0 +1,131 @@
+import { appendFileSync } from "node:fs";
+import { PRReviewInput } from "@git-ai/contracts";
+import { generatePRReview } from "@git-ai/core";
+import { OpenAIProvider } from "@git-ai/providers";
+
+function getRequiredInput(name: string): string {
+  const envName = `INPUT_${name.replace(/ /g, "_").toUpperCase()}`;
+  const value = process.env[envName]?.trim();
+  if (!value) {
+    throw new Error(`Missing required input: ${name}`);
+  }
+  return value;
+}
+
+function getOptionalInput(name: string): string | undefined {
+  const envName = `INPUT_${name.replace(/ /g, "_").toUpperCase()}`;
+  const value = process.env[envName]?.trim();
+  return value ? value : undefined;
+}
+
+function setOutput(name: string, value: string): void {
+  const outputPath = process.env.GITHUB_OUTPUT;
+  if (!outputPath) {
+    console.log(`${name}=${value}`);
+    return;
+  }
+
+  const delimiter = `EOF_${name.toUpperCase()}`;
+  const payload = `${name}<<${delimiter}\n${value}\n${delimiter}\n`;
+  appendFileSync(outputPath, payload);
+}
+
+function toTitleCase(value: string): string {
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function parseOptionalIssueNumber(value: string | undefined): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  if (!/^\d+$/.test(value)) {
+    throw new Error(`Invalid issue_number input: "${value}"`);
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error(`Invalid issue_number input: "${value}"`);
+  }
+
+  return parsed;
+}
+
+function buildCommentBody(
+  review: Awaited<ReturnType<typeof generatePRReview>>,
+  issue: {
+    number?: number;
+    title?: string;
+    url?: string;
+  }
+): string {
+  const lines: string[] = [
+    "## AI PR Review",
+    "",
+    "### Summary",
+    review.summary,
+  ];
+
+  if (issue.title && issue.url) {
+    lines.push(
+      "",
+      "### Linked issue",
+      `- ${issue.number !== undefined ? `#${issue.number}: ` : ""}[${issue.title}](${issue.url})`
+    );
+  }
+
+  lines.push("", "### Line-level findings");
+
+  if (review.comments.length === 0) {
+    lines.push("- No actionable line-level concerns identified.");
+  } else {
+    for (const comment of review.comments) {
+      lines.push(
+        `- \`${comment.path}:${comment.line}\` (${toTitleCase(comment.severity)} ${comment.category}): ${comment.body}`
+      );
+      if (comment.suggestion) {
+        lines.push(`  Suggestion: ${comment.suggestion}`);
+      }
+    }
+  }
+
+  return lines.join("\n");
+}
+
+async function run(): Promise<void> {
+  const issueNumber = parseOptionalIssueNumber(getOptionalInput("issue_number"));
+  const input = PRReviewInput.parse({
+    diff: getRequiredInput("diff"),
+    prTitle: getOptionalInput("pr_title"),
+    prBody: getOptionalInput("pr_body"),
+    issueNumber,
+    issueTitle: getOptionalInput("issue_title"),
+    issueBody: getOptionalInput("issue_body"),
+    issueUrl: getOptionalInput("issue_url"),
+  });
+
+  const provider = new OpenAIProvider({
+    apiKey: getRequiredInput("openai_api_key"),
+    model: getOptionalInput("openai_model"),
+    baseUrl: getOptionalInput("openai_base_url"),
+  });
+
+  const result = await generatePRReview(provider, input);
+
+  setOutput("summary", result.summary);
+  setOutput(
+    "body",
+    buildCommentBody(result, {
+      number: issueNumber,
+      title: input.issueTitle,
+      url: input.issueUrl,
+    })
+  );
+  setOutput("comments_json", JSON.stringify(result.comments, null, 2));
+}
+
+run().catch((error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`::error::${message}`);
+  process.exitCode = 1;
+});

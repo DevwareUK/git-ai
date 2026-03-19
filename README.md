@@ -2,7 +2,7 @@
 
 AI tooling for Git workflows, including a CLI and GitHub Actions.
 
-Pull request workflows in this repo currently cover an AI PR assistant section, test suggestions, repo-wide test backlog generation, and repository feature backlog generation.
+Pull request workflows in this repo currently cover AI PR review, an AI PR assistant section, test suggestions, repo-wide test backlog generation, and repository feature backlog generation.
 
 ## Local Setup
 
@@ -71,6 +71,7 @@ Run these from the repository root.
 | `pnpm cli:diff` | Builds the CLI package and runs `git-ai diff`. |
 | `pnpm cli:feature-backlog -- <args>` | Builds the CLI package and runs `git-ai feature-backlog <args>`. |
 | `pnpm cli:issue -- <args>` | Builds the CLI package and runs `git-ai issue <args>`. |
+| `pnpm cli:review -- <args>` | Builds the CLI package and runs `git-ai review <args>`. |
 | `pnpm cli:test-backlog -- <args>` | Builds the CLI package and runs `git-ai test-backlog <args>`. |
 
 ### Package-level commands
@@ -84,10 +85,12 @@ These are useful when working on an individual workspace directly.
 | `packages/cli` | `pnpm --filter @git-ai/cli diff` | Builds the CLI package and runs `node dist/index.js diff`. |
 | `packages/cli` | `pnpm --filter @git-ai/cli feature-backlog -- <args>` | Builds the CLI package and runs `node dist/index.js feature-backlog <args>`. |
 | `packages/cli` | `pnpm --filter @git-ai/cli issue -- <args>` | Builds the CLI package and runs `node dist/index.js <args>`. Use this when testing CLI issue flows directly. |
+| `packages/cli` | `pnpm --filter @git-ai/cli review -- <args>` | Builds the CLI package and runs `node dist/index.js review <args>`. |
 | `packages/core` | `pnpm --filter @git-ai/core build` | Builds the shared core library. |
 | `packages/contracts` | `pnpm --filter @git-ai/contracts build` | Builds the shared contract/schema package. |
 | `packages/providers` | `pnpm --filter @git-ai/providers build` | Builds the provider integrations package. |
 | `actions/pr-assistant` | `pnpm --filter @git-ai/pr-assistant-action build` | Builds the PR assistant GitHub Action bundle. |
+| `actions/pr-review` | `pnpm --filter @git-ai/pr-review-action build` | Builds the PR review GitHub Action bundle. |
 | `actions/test-suggestions` | `pnpm --filter @git-ai/test-suggestions-action build` | Builds the test suggestions GitHub Action bundle. |
 
 ### `git-ai` CLI commands
@@ -161,6 +164,41 @@ Important behavior:
 - when `forge.type` is `github`, GitHub API access for issue fetching, plan comments, or issue creation uses `GH_TOKEN` or `GITHUB_TOKEN` when present
 - when `forge.type` is `github`, `git-ai issue draft` can create issues with either `gh` or a GitHub token
 - when `forge.type` is `none`, issue and PR creation features are disabled for the repository
+
+#### `git-ai review`
+
+Usage:
+
+```bash
+git-ai review [--base <git-ref>] [--head <git-ref>] [--format <markdown|json>]
+              [--issue-number <number>]
+```
+
+Flags:
+
+| Flag | What it does |
+| --- | --- |
+| `--base <git-ref>` | Reviews the diff from `<git-ref>...HEAD` by default, or `<git-ref>...<head>` when `--head` is also provided. Without `--base`, `git-ai review` uses `git diff HEAD`. |
+| `--head <git-ref>` | Optional comparison head revision. Requires `--base`. |
+| `--format markdown` | Prints a readable Markdown review report. This is the default. |
+| `--format json` | Prints the structured review payload, including line-linked comments. |
+| `--issue-number <number>` | Fetches the linked issue from the configured forge and includes it as review context. |
+
+Examples:
+
+```bash
+git-ai review
+git-ai review --base origin/main
+git-ai review --base origin/main --head HEAD --format json
+GITHUB_TOKEN=... git-ai review --issue-number 50
+```
+
+Important behavior:
+
+- `git-ai review` requires `OPENAI_API_KEY`
+- without `--base`, it reviews the current `git diff HEAD`
+- with `--issue-number`, the CLI fetches the issue title/body from the configured forge and grounds the review in that context
+- JSON output includes line-linked comment suggestions with file paths and right-side line numbers taken from the diff
 
 #### `git-ai test-backlog`
 
@@ -242,6 +280,50 @@ Important behavior:
 ### GitHub Action local entrypoints
 
 These actions are bundled for GitHub Actions, but you can also run them locally after building the workspace.
+
+#### PR review action
+
+Build:
+
+```bash
+pnpm build
+```
+
+Run locally:
+
+```bash
+INPUT_DIFF="$(git diff --unified=3 -- . ':!pnpm-lock.yaml')" \
+INPUT_PR_TITLE="Example PR title" \
+INPUT_PR_BODY="Closes #50" \
+INPUT_ISSUE_NUMBER="50" \
+INPUT_ISSUE_TITLE="Implement AI-Powered Pull Request Review Functionality" \
+INPUT_ISSUE_BODY="Create a function that utilizes AI to review pull requests line by line." \
+INPUT_ISSUE_URL="https://github.com/DevwareUK/git-ai/issues/50" \
+INPUT_OPENAI_API_KEY="<your-key>" \
+INPUT_OPENAI_MODEL="gpt-4o-mini" \
+node actions/pr-review/dist/index.js
+```
+
+Inputs:
+
+- `INPUT_DIFF` required
+- `INPUT_PR_TITLE` optional
+- `INPUT_PR_BODY` optional
+- `INPUT_ISSUE_NUMBER` optional
+- `INPUT_ISSUE_TITLE` optional
+- `INPUT_ISSUE_BODY` optional
+- `INPUT_ISSUE_URL` optional
+- `INPUT_OPENAI_API_KEY` required
+- `INPUT_OPENAI_MODEL` optional, defaults to `gpt-4o-mini`
+- `INPUT_OPENAI_BASE_URL` optional
+
+Outputs:
+
+- `summary`
+- `body`
+- `comments_json`
+
+When `GITHUB_OUTPUT` is not set, outputs are printed to stdout.
 
 #### PR assistant action
 
@@ -328,6 +410,14 @@ packages they cover using `*.test.ts` files under `packages/` and `actions/`.
 
 `.git-ai/` is local working state for issue snapshots and run artifacts. It is
 intentionally gitignored and should not be committed.
+
+## GitHub Actions pull request review workflows
+
+This repository includes three pull-request-triggered workflows:
+
+- `.github/workflows/pr-review.yml` generates an AI PR review summary, resolves the first linked closing issue when one exists, updates a managed PR comment, and posts filtered inline review comments against added lines in the diff.
+- `.github/workflows/pr-assistant.yml` updates the pull request body with a managed PR assistant section.
+- `.github/workflows/test-suggestions.yml` creates or updates a managed PR comment with suggested automated test coverage.
 
 ## GitHub Actions issue flow
 

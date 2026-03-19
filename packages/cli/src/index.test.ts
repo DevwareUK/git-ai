@@ -198,6 +198,23 @@ function createIssueResolutionPlanResult() {
   };
 }
 
+function createPRReviewResult() {
+  return {
+    summary:
+      "The change largely matches the requested behavior, but one new branch still needs a guard.",
+    comments: [
+      {
+        path: "packages/cli/src/index.ts",
+        line: 412,
+        severity: "high" as const,
+        category: "correctness" as const,
+        body: "This path assumes the issue number flag was populated and will blow up on malformed input.",
+        suggestion: "Validate the flag before using it so the CLI fails with a clear error.",
+      },
+    ],
+  };
+}
+
 function createFetchResponse(
   payload: unknown,
   init: { ok?: boolean; status?: number; statusText?: string } = {}
@@ -293,6 +310,7 @@ async function loadCli(options: {
   featureAnalysisResult?: ReturnType<typeof createFeatureBacklogAnalysis>;
   issueDraftResult?: ReturnType<typeof createIssueDraftResult>;
   issueResolutionPlanResult?: ReturnType<typeof createIssueResolutionPlanResult>;
+  prReviewResult?: ReturnType<typeof createPRReviewResult>;
   readlineAnswers?: string[];
   execFileSyncImpl?: (command: string, args: string[]) => string;
   spawnSyncImpl?: (
@@ -319,6 +337,10 @@ async function loadCli(options: {
   const generateIssueResolutionPlan = vi.fn();
   if (options.issueResolutionPlanResult) {
     generateIssueResolutionPlan.mockResolvedValue(options.issueResolutionPlanResult);
+  }
+  const generatePRReview = vi.fn();
+  if (options.prReviewResult) {
+    generatePRReview.mockResolvedValue(options.prReviewResult);
   }
 
   const execFileSync = vi.fn((command: string, args: string[]) => {
@@ -363,6 +385,7 @@ async function loadCli(options: {
     generateCommitMessage: vi.fn(),
     generateDiffSummary: vi.fn(),
     generateIssueDraft,
+    generatePRReview,
     generateIssueResolutionPlan,
     resolveRepositoryConfig: vi.fn((config?: {
       baseBranch?: string;
@@ -398,6 +421,7 @@ async function loadCli(options: {
     analyzeFeatureBacklog,
     analyzeTestBacklog,
     generateIssueDraft,
+    generatePRReview,
     generateIssueResolutionPlan,
     execFileSync,
     spawnSync,
@@ -496,6 +520,29 @@ describe("CLI integration", () => {
     expect(options.maxIssues).toBe(4);
     expect(options.labels).toEqual(["product", "backlog", "discovery"]);
     expect(options.repoRoot).toMatch(/packages\/cli$/);
+  });
+
+  it("parses review flags for local PR review", async () => {
+    process.env.GIT_AI_DISABLE_AUTO_RUN = "1";
+    const { parseReviewCommandArgs } = await import("./index");
+
+    const options = parseReviewCommandArgs([
+      "review",
+      "--base",
+      "origin/main",
+      "--head",
+      "HEAD",
+      "--format=json",
+      "--issue-number",
+      "50",
+    ]);
+
+    expect(options).toEqual({
+      base: "origin/main",
+      head: "HEAD",
+      format: "json",
+      issueNumber: 50,
+    });
   });
 
   it("runs test-backlog in JSON mode and reuses duplicate GitHub issues", async () => {
@@ -614,6 +661,66 @@ describe("CLI integration", () => {
     expect(stdout.output()).toContain(
       "- Draft issue title: Add CLI integration coverage for git-ai issue prepare"
     );
+  });
+
+  it("runs review in markdown mode with linked issue context", async () => {
+    const review = createPRReviewResult();
+    const { run, generatePRReview } = await loadCli({
+      prReviewResult: review,
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "diff") {
+          return [
+            "diff --git a/packages/cli/src/index.ts b/packages/cli/src/index.ts",
+            "+++ b/packages/cli/src/index.ts",
+            "@@ -410,0 +412,1 @@",
+            "+const issueNumber = rawValue;",
+          ].join("\n");
+        }
+
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/git-ai.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+      spawnSyncImpl: (command, args) => {
+        if (command === "gh" && args[0] === "--version") {
+          return { status: 1, error: new Error("gh is unavailable") };
+        }
+
+        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          title: "Implement AI-Powered Pull Request Review Functionality",
+          body: "Review pull requests line by line and use the linked issue as context.",
+          html_url: "https://github.com/DevwareUK/git-ai/issues/50",
+        })
+      )
+      .mockResolvedValueOnce(createFetchResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.GITHUB_TOKEN = "test-token";
+    process.argv = ["node", "git-ai", "review", "--issue-number", "50"];
+
+    const stdout = captureStdout();
+    await run();
+
+    expect(generatePRReview).toHaveBeenCalledWith(expect.any(Object), {
+      diff: expect.stringContaining("packages/cli/src/index.ts"),
+      issueNumber: 50,
+      issueTitle: "Implement AI-Powered Pull Request Review Functionality",
+      issueBody: "Review pull requests line by line and use the linked issue as context.",
+      issueUrl: "https://github.com/DevwareUK/git-ai/issues/50",
+    });
+    expect(stdout.output()).toContain("# AI PR Review");
+    expect(stdout.output()).toContain("## Linked issue");
+    expect(stdout.output()).toContain("packages/cli/src/index.ts:412");
   });
 
   it("fails test-backlog issue creation clearly when no GitHub token is configured", async () => {

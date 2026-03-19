@@ -10,6 +10,7 @@ import {
   generateCommitMessage,
   generateDiffSummary,
   generateIssueDraft,
+  generatePRReview,
   generateIssueResolutionPlan,
 } from "@git-ai/core";
 import { OpenAIProvider } from "@git-ai/providers";
@@ -54,6 +55,15 @@ type GeneratedIssueResolutionPlan = Awaited<
 >;
 
 type BacklogOutputFormat = "json" | "markdown";
+
+type ReviewOutputFormat = "json" | "markdown";
+
+type ReviewCommandOptions = {
+  base?: string;
+  head?: string;
+  format: ReviewOutputFormat;
+  issueNumber?: number;
+};
 
 type TestBacklogCommandOptions = {
   repoRoot: string;
@@ -105,6 +115,12 @@ const FEATURE_BACKLOG_USAGE = [
   "  git-ai feature-backlog [repo-path] [--format <markdown|json>] [--top <count>]",
   "                          [--create-issues] [--max-issues <count>]",
   "                          [--label <name>] [--labels <a,b>]",
+].join("\n");
+
+const REVIEW_USAGE = [
+  "Usage:",
+  "  git-ai review [--base <git-ref>] [--head <git-ref>] [--format <markdown|json>]",
+  "                [--issue-number <number>]",
 ].join("\n");
 
 function getCliArgs(): string[] {
@@ -211,6 +227,29 @@ function readHeadDiff(): string {
     "No changes found in git diff HEAD. Make a change before generating a diff summary.",
     "HEAD",
     "git diff HEAD requires at least one commit. Create an initial commit before generating a diff summary."
+  );
+}
+
+function readReviewDiff(base?: string, head?: string): string {
+  if (head && !base) {
+    throw new Error(`--head requires --base. ${REVIEW_USAGE}`);
+  }
+
+  if (!base) {
+    return readGitDiff(
+      ["diff", "--unified=3", "HEAD"],
+      "No changes found in git diff HEAD. Make a change before generating a PR review.",
+      "HEAD",
+      "git diff HEAD requires at least one commit. Create an initial commit before generating a PR review."
+    );
+  }
+
+  const range = head ? `${base}...${head}` : `${base}...HEAD`;
+  return readGitDiff(
+    ["diff", "--unified=3", range],
+    `No changes found in git diff ${range}. Make a change before generating a PR review.`,
+    range,
+    `git diff ${range} requires the referenced revisions to exist before generating a PR review.`
   );
 }
 
@@ -644,6 +683,95 @@ export function parseFeatureBacklogCommandArgs(args: string[]): FeatureBacklogCo
     createIssues,
     maxIssues: Math.min(maxIssues, top),
     labels: [...labels],
+  };
+}
+
+export function parseReviewCommandArgs(args: string[]): ReviewCommandOptions {
+  const optionArgs = args.slice(1);
+  let base: string | undefined;
+  let head: string | undefined;
+  let format: ReviewOutputFormat = "markdown";
+  let issueNumber: number | undefined;
+
+  for (let index = 0; index < optionArgs.length; index += 1) {
+    const rawArg = optionArgs[index];
+
+    if (rawArg === "--base") {
+      base = optionArgs[index + 1]?.trim();
+      if (!base) {
+        throw new Error(`Missing value for --base. ${REVIEW_USAGE}`);
+      }
+      index += 1;
+      continue;
+    }
+
+    if (rawArg.startsWith("--base=")) {
+      base = rawArg.slice("--base=".length).trim();
+      if (!base) {
+        throw new Error(`Missing value for --base. ${REVIEW_USAGE}`);
+      }
+      continue;
+    }
+
+    if (rawArg === "--head") {
+      head = optionArgs[index + 1]?.trim();
+      if (!head) {
+        throw new Error(`Missing value for --head. ${REVIEW_USAGE}`);
+      }
+      index += 1;
+      continue;
+    }
+
+    if (rawArg.startsWith("--head=")) {
+      head = rawArg.slice("--head=".length).trim();
+      if (!head) {
+        throw new Error(`Missing value for --head. ${REVIEW_USAGE}`);
+      }
+      continue;
+    }
+
+    if (rawArg === "--format") {
+      const rawFormat = optionArgs[index + 1];
+      if (rawFormat !== "json" && rawFormat !== "markdown") {
+        throw new Error(`Invalid format "${rawFormat ?? ""}". ${REVIEW_USAGE}`);
+      }
+      format = rawFormat;
+      index += 1;
+      continue;
+    }
+
+    if (rawArg.startsWith("--format=")) {
+      const rawFormat = rawArg.slice("--format=".length);
+      if (rawFormat !== "json" && rawFormat !== "markdown") {
+        throw new Error(`Invalid format "${rawFormat}". ${REVIEW_USAGE}`);
+      }
+      format = rawFormat;
+      continue;
+    }
+
+    if (rawArg === "--issue-number") {
+      issueNumber = parseIssueNumber(optionArgs[index + 1]);
+      index += 1;
+      continue;
+    }
+
+    if (rawArg.startsWith("--issue-number=")) {
+      issueNumber = parseIssueNumber(rawArg.slice("--issue-number=".length));
+      continue;
+    }
+
+    throw new Error(`Unknown review option "${rawArg}". ${REVIEW_USAGE}`);
+  }
+
+  if (head && !base) {
+    throw new Error(`--head requires --base. ${REVIEW_USAGE}`);
+  }
+
+  return {
+    base,
+    head,
+    format,
+    issueNumber,
   };
 }
 
@@ -1208,6 +1336,45 @@ function formatDiffSummary(
   return sections.join("\n");
 }
 
+function formatPRReviewMarkdown(
+  review: Awaited<ReturnType<typeof generatePRReview>>,
+  issue?: IssueDetails,
+  issueNumber?: number
+): string {
+  const lines: string[] = [
+    "# AI PR Review",
+    "",
+    "## Summary",
+    review.summary,
+  ];
+
+  if (issue) {
+    lines.push(
+      "",
+      "## Linked issue",
+      `- ${issueNumber !== undefined ? `#${issueNumber}: ` : ""}[${issue.title}](${issue.url})`
+    );
+  }
+
+  lines.push("", "## Line-level findings");
+
+  if (review.comments.length === 0) {
+    lines.push("No actionable line-level review comments identified.");
+  } else {
+    for (const comment of review.comments) {
+      lines.push(
+        `- \`${comment.path}:${comment.line}\` (${toTitleCase(comment.severity)} ${comment.category}): ${comment.body}`
+      );
+      if (comment.suggestion) {
+        lines.push(`  Suggestion: ${comment.suggestion}`);
+      }
+    }
+  }
+
+  lines.push("");
+  return lines.join("\n");
+}
+
 function createProvider(): OpenAIProvider {
   loadRepoEnv(getDefaultRepoRoot());
   return new OpenAIProvider({
@@ -1215,6 +1382,40 @@ function createProvider(): OpenAIProvider {
     model: getOptionalEnv("OPENAI_MODEL"),
     baseUrl: getOptionalEnv("OPENAI_BASE_URL"),
   });
+}
+
+async function runReviewCommand(): Promise<void> {
+  const options = parseReviewCommandArgs(getCliArgs());
+  const diff = readReviewDiff(options.base, options.head);
+  const provider = createProvider();
+  const issue =
+    options.issueNumber !== undefined
+      ? await getRepositoryForge().fetchIssueDetails(options.issueNumber)
+      : undefined;
+  const result = await generatePRReview(provider, {
+    diff,
+    issueNumber: options.issueNumber,
+    issueTitle: issue?.title,
+    issueBody: issue?.body,
+    issueUrl: issue?.url,
+  });
+  const output = {
+    ...result,
+    issue: issue
+      ? {
+          number: options.issueNumber,
+          title: issue.title,
+          url: issue.url,
+        }
+      : undefined,
+  };
+
+  if (options.format === "json") {
+    process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+    return;
+  }
+
+  process.stdout.write(`${formatPRReviewMarkdown(result, issue, options.issueNumber)}\n`);
 }
 
 function formatTestBacklogMarkdown(
@@ -1766,11 +1967,12 @@ export async function run(): Promise<void> {
     command !== "commit" &&
     command !== "diff" &&
     command !== "issue" &&
+    command !== "review" &&
     command !== "test-backlog" &&
     command !== "feature-backlog"
   ) {
     throw new Error(
-      `Unknown command: ${command}. Supported commands: "commit", "diff", "issue", "test-backlog", "feature-backlog".`
+      `Unknown command: ${command}. Supported commands: "commit", "diff", "issue", "review", "test-backlog", "feature-backlog".`
     );
   }
 
@@ -1784,6 +1986,11 @@ export async function run(): Promise<void> {
 
   if (command === "issue") {
     await runIssueCommand();
+    return;
+  }
+
+  if (command === "review") {
+    await runReviewCommand();
     return;
   }
 
