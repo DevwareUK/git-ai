@@ -1,0 +1,47 @@
+name: "AI PR Review"
+description: "Generate an AI pull request review summary and line-linked review comments"
+
+inputs:
+  diff:
+    description: "Unified git diff for the pull request"
+    required: true
+  pr_title:
+    description: "Optional pull request title"
+    required: false
+  pr_body:
+    description: "Optional current pull request body"
+    required: false
+  issue_number:
+    description: "Optional linked issue number"
+    required: false
+  issue_title:
+    description: "Optional linked issue title"
+    required: false
+  issue_body:
+    description: "Optional linked issue body"
+    required: false
+  issue_url:
+    description: "Optional linked issue URL"
+    required: false
+  openai_api_key:
+    description: "OpenAI API key"
+    required: true
+  openai_model:
+    description: "OpenAI model name"
+    required: false
+    default: "gpt-4o-mini"
+  openai_base_url:
+    description: "Optional OpenAI-compatible API base URL"
+    required: false
+
+outputs:
+  summary:
+    description: "Generated PR review summary"
+  body:
+    description: "Generated managed PR review comment body"
+  comments_json:
+    description: "JSON array of line-linked review comments"
+
+runs:
+  using: "node20"
+  main: "dist/index.js"
