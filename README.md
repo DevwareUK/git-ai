@@ -1,69 +1,132 @@
 # git-ai
 
-`git-ai` is AI tooling for Git workflows. It ships a local CLI for working inside a Git repository, Node-based GitHub Actions for pull request review, pull request assistance, and test suggestions, plus workflow-driven issue-to-PR and backlog automation.
+`git-ai` brings AI-assisted Git workflows into the repositories you already work in. Build the CLI from this monorepo once, link it globally, then run commands like `git-ai review` or `git-ai issue draft` inside any Git repository you want to analyze.
 
-The repository serves two audiences:
+Core capabilities:
 
-- users who want to run `git-ai` against another repository
-- contributors who want to develop the `git-ai` monorepo itself
+- issue drafting and issue-plan generation
+- local diff summaries and PR-style review
+- issue-to-PR automation for GitHub-backed repositories
+- pull request review, PR assistant, and test-suggestion GitHub Actions
+- repository backlog analysis for testing gaps and feature opportunities
 
-## How to use
+## Quick start
 
-### What `git-ai` does
-
-The CLI currently supports these workflows:
-
-- `git-ai commit` generates a commit message from the staged diff
-- `git-ai diff` summarizes the current `git diff HEAD`
-- `git-ai review` reviews a local diff or branch comparison
-- `git-ai issue ...` drafts issues, generates issue plans, and runs issue-to-PR flows
-- `git-ai test-backlog` scans a repository for high-value testing gaps
-- `git-ai feature-backlog` scans a repository for high-value feature opportunities
-
-### Prerequisites
+Prerequisites:
 
 - `git`
 - Node.js and `pnpm`
 - `OPENAI_API_KEY`
-- `codex` on `PATH` for full local `git-ai issue <number>` runs
-- `gh`, `GH_TOKEN`, or `GITHUB_TOKEN` for GitHub-backed issue and pull request flows
 
-### Install the CLI for another repository
-
-Build the CLI from this repository:
+Build the CLI and link it globally from this repository:
 
 ```bash
 cd /path/to/ai-actions
 pnpm install
-pnpm --filter @git-ai/cli build
+pnpm --filter @git-ai/cli... build
+cd packages/cli
+pnpm link --global
 ```
 
-Then move to the repository you want to analyze and run the built CLI from there:
+Create a `.env` file in the repository you want to analyze:
+
+```env
+OPENAI_API_KEY=your_key_here
+OPENAI_MODEL=gpt-4o-mini
+OPENAI_BASE_URL=https://api.openai.com/v1
+```
+
+Then move into that repository and run your first review:
 
 ```bash
 cd /path/to/your-repo
-node /path/to/ai-actions/packages/cli/dist/index.js review
-```
-
-If you want a shorter command while working in another repository, add a shell alias:
-
-```bash
-alias git-ai='node /path/to/ai-actions/packages/cli/dist/index.js'
-```
-
-Then you can run:
-
-```bash
 git-ai review
-git-ai test-backlog
-git-ai feature-backlog .
 ```
 
-The CLI resolves the active repository from the current Git working tree at runtime with `git rev-parse --show-toplevel`. `.env` and `.git-ai/config.json` are loaded from that repository root, not from the CLI build location.
+Useful next commands:
 
-### Set up the target repository
+```bash
+git-ai diff
+git-ai issue draft
+git-ai test-backlog --top 5
+```
 
-Create a `.env` file in the target repository root:
+You only need extra tooling for advanced workflows:
+
+- `codex` on `PATH` for full local `git-ai issue <number>` runs
+- `gh`, `GH_TOKEN`, or `GITHUB_TOKEN` for GitHub-backed issue and pull request flows
+
+`git-ai` resolves the active repository from your current Git working tree at runtime. It loads `.env` and `.git-ai/config.json` from that repository root, not from the CLI build location.
+
+## What `git-ai` does
+
+The CLI supports these user-facing workflows:
+
+- `git-ai commit`: generate a commit message from staged changes
+- `git-ai diff`: summarize `git diff HEAD`
+- `git-ai review`: produce a PR-style review for the current diff or a branch comparison
+- `git-ai issue ...`: draft issues, generate issue plans, and run issue-to-PR flows
+- `git-ai test-backlog`: find high-value automated testing gaps
+- `git-ai feature-backlog`: find high-value feature opportunities
+
+The repository also includes Node-based GitHub Actions for PR review, PR assistance, and test suggestions.
+
+## Typical workflows
+
+### Daily local usage
+
+```bash
+git-ai commit
+git-ai diff
+git-ai review --base origin/main
+```
+
+Use these when you want commit help, a high-level diff summary, or a PR-style review before opening a pull request.
+
+### Issue drafting and planning
+
+```bash
+git-ai issue draft
+git-ai issue plan 54
+```
+
+Use `draft` to turn a feature idea into a structured issue. Use `plan` to generate or refresh the managed issue-resolution plan comment for an existing GitHub issue.
+
+### Full issue-to-PR flow
+
+```bash
+git-ai issue 54
+```
+
+This full local workflow fetches the configured issue, creates the working branch, writes `.git-ai/` run artifacts, opens Codex, runs the configured build command, commits the result, and opens a pull request when the configured forge supports it.
+
+If you need separate setup and completion steps:
+
+```bash
+git-ai issue prepare 54
+git-ai issue finalize 54
+```
+
+For GitHub Actions runs:
+
+```bash
+git-ai issue prepare 54 --mode github-action
+```
+
+### Repository backlog analysis
+
+```bash
+git-ai test-backlog --top 5
+git-ai feature-backlog . --top 5
+```
+
+Add `--create-issues` to create or reuse GitHub issues for the highest-priority findings when the repository uses the GitHub forge integration.
+
+## Configuration
+
+### `.env`
+
+Create `.env` in the target repository root:
 
 ```env
 OPENAI_API_KEY=your_key_here
@@ -73,7 +136,9 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 
 `OPENAI_MODEL` and `OPENAI_BASE_URL` are optional. The CLI defaults to `gpt-4o-mini` and `https://api.openai.com/v1`.
 
-Optional: create `.git-ai/config.json` in the target repository root to override repository-specific defaults:
+### `.git-ai/config.json`
+
+Optional repository-specific defaults live in `.git-ai/config.json`:
 
 ```json
 {
@@ -95,81 +160,27 @@ Optional: create `.git-ai/config.json` in the target repository root to override
 }
 ```
 
-Supported config fields:
+Supported fields:
 
-- `aiContext.excludePaths`: repository-relative glob patterns excluded from AI diff and repository context. These exclusions apply to `git-ai commit`, `git-ai diff`, `git-ai review`, PR automation, and repo-wide backlog scans. Bare filename globs like `*.map` match by basename anywhere in the repository. Defaults: `["**/node_modules/**", "**/vendor/**", "**/dist/**", "**/build/**", "*.map"]`.
+- `aiContext.excludePaths`: repository-relative glob patterns excluded from AI diff and repository context. These exclusions apply across `git-ai commit`, `git-ai diff`, `git-ai review`, issue-to-PR flows, and repository backlog scans. Bare filename globs like `*.map` match by basename anywhere in the repository. Defaults: `["**/node_modules/**", "**/vendor/**", "**/dist/**", "**/build/**", "*.map"]`.
 - `baseBranch`: default pull request base branch for `git-ai issue <number>`. Default: `main`.
 - `buildCommand`: command run after Codex exits during full local `git-ai issue <number>` flows. Default: `["pnpm", "build"]`.
-- `forge.type`: forge integration. Use `"github"` for GitHub-backed issue and PR flows or `"none"` to disable those features for the repository.
+- `forge.type`: forge integration. Use `"github"` for GitHub-backed issue and PR flows or `"none"` to disable forge-backed issue and PR features for the repository.
 
-### What `.git-ai/` is
+### `.git-ai/`
 
 `.git-ai/` is repository-local working state used by issue and backlog workflows. It is intentionally gitignored and should not be committed.
 
-Typical contents include:
+Typical contents:
 
 - `.git-ai/issues/`: issue snapshots and generated drafts
 - `.git-ai/runs/`: run prompts, metadata, and logs for automated issue work
 
-### Typical workflows
+## CLI command reference
 
-#### Daily local usage
+All diff-driven and repository-analysis commands respect `.git-ai/config.json` `aiContext.excludePaths`.
 
-```bash
-git-ai commit
-git-ai diff
-git-ai review --base origin/main
-```
-
-Use these when you want commit help, a high-level diff summary, or a PR-style review before opening a pull request.
-
-#### Issue-to-PR workflow
-
-1. Draft an issue when the work does not exist yet:
-
-   ```bash
-   git-ai issue draft
-   ```
-
-2. Generate or refresh the issue resolution plan for an existing issue:
-
-   ```bash
-   git-ai issue plan 54
-   ```
-
-3. Run the full local issue flow:
-
-   ```bash
-   git-ai issue 54
-   ```
-
-   This fetches the issue, creates the branch, writes `.git-ai/` run artifacts, opens Codex, runs the configured build command, commits the result, and opens a PR if the configured forge supports it.
-
-4. If you need a split workflow for automation or manual control, prepare and finalize separately:
-
-   ```bash
-   git-ai issue prepare 54
-   git-ai issue finalize 54
-   ```
-
-5. For GitHub Actions runs, prepare with the GitHub Actions prompt mode:
-
-   ```bash
-   git-ai issue prepare 54 --mode github-action
-   ```
-
-#### Repository backlog workflows
-
-```bash
-git-ai test-backlog --top 5
-git-ai feature-backlog . --top 5
-```
-
-Add `--create-issues` to create or reuse GitHub issues for the highest-value findings when the target repository uses the GitHub forge integration.
-
-### CLI command reference
-
-#### `git-ai commit`
+### `git-ai commit`
 
 ```bash
 git-ai commit
@@ -181,9 +192,8 @@ Requirements:
 
 - staged changes must exist
 - `OPENAI_API_KEY` must be set
-- `.git-ai/config.json` `aiContext.excludePaths` is applied before the staged diff is sent to AI
 
-#### `git-ai diff`
+### `git-ai diff`
 
 ```bash
 git-ai diff
@@ -196,9 +206,8 @@ Requirements:
 - the repository must already have at least one commit
 - there must be changes in `git diff HEAD`
 - `OPENAI_API_KEY` must be set
-- `.git-ai/config.json` `aiContext.excludePaths` is applied before the diff is summarized
 
-#### `git-ai issue`
+### `git-ai issue`
 
 Usage:
 
@@ -210,7 +219,7 @@ git-ai issue prepare <number> [--mode <local|github-action>]
 git-ai issue finalize <number>
 ```
 
-Available modes and subcommands:
+Available subcommands:
 
 | Command | What it does |
 | --- | --- |
@@ -225,10 +234,9 @@ Important behavior:
 
 - `git-ai issue` requires a clean working tree before it starts
 - `git-ai issue plan <number>` requires `OPENAI_API_KEY` the first time it generates a plan comment
-- issue metadata and run artifacts are written under `.git-ai/`
-- local full runs require the `codex` CLI on `PATH`
-- full local issue runs execute the configured `.git-ai/config.json` `buildCommand`, defaulting to `pnpm build`
-- PR creation uses the configured `.git-ai/config.json` `baseBranch`, defaulting to `main`
+- local full issue runs require the `codex` CLI on `PATH`
+- full local issue runs execute the configured `buildCommand`, defaulting to `pnpm build`
+- PR creation uses the configured `baseBranch`, defaulting to `main`
 - GitHub-backed PR creation requires `gh` to be installed and authenticated
 - GitHub-backed issue plan comments require `GH_TOKEN` or `GITHUB_TOKEN`, or an authenticated `gh` session, when they are created
 - if an issue resolution plan comment exists, `git-ai issue prepare <number>` and full `git-ai issue <number>` runs copy the latest edited plan into the generated issue snapshot
@@ -237,7 +245,7 @@ Important behavior:
 - when `forge.type` is `github`, `git-ai issue draft` can create issues with either `gh` or a GitHub token
 - when `forge.type` is `none`, issue and PR creation features are disabled for the repository
 
-#### `git-ai review`
+### `git-ai review`
 
 Usage:
 
@@ -269,11 +277,10 @@ Important behavior:
 
 - `git-ai review` requires `OPENAI_API_KEY`
 - without `--base`, it reviews the current `git diff HEAD`
-- with `--issue-number`, the CLI fetches the issue title/body from the configured forge and grounds the review in that context
+- with `--issue-number`, the CLI fetches the issue title and body from the configured forge and grounds the review in that context
 - JSON output includes line-linked comment suggestions with file paths and right-side line numbers taken from the diff
-- `.git-ai/config.json` `aiContext.excludePaths` is applied before the review diff is generated
 
-#### `git-ai test-backlog`
+### `git-ai test-backlog`
 
 Usage:
 
@@ -306,11 +313,12 @@ git-ai test-backlog --label testing --label backlog
 git-ai test-backlog --labels testing,backlog
 ```
 
-When `--create-issues` is enabled, `git-ai` checks for matching open issue titles first so it can reuse existing backlog items instead of creating duplicates.
-If `.git-ai/config.json` sets `forge.type` to `none`, backlog issue creation is disabled for that repository.
-Repository scans also respect `.git-ai/config.json` `aiContext.excludePaths`.
+Important behavior:
 
-#### `git-ai feature-backlog`
+- when `--create-issues` is enabled, `git-ai` checks for matching open issue titles first so it can reuse existing backlog items instead of creating duplicates
+- if `forge.type` is `none`, backlog issue creation is disabled for that repository
+
+### `git-ai feature-backlog`
 
 Usage:
 
@@ -349,10 +357,11 @@ Important behavior:
 - with the default GitHub forge integration, issue creation targets the analyzed repository's `origin` remote, not just the current working directory
 - before each issue is created, `git-ai` prompts for the final title, optional extra description, and labels
 - if an open GitHub issue already exists with the chosen title, `git-ai` reuses it instead of creating a duplicate
-- if `.git-ai/config.json` sets `forge.type` to `none`, feature backlog issue creation is disabled for that repository
-- repository scans respect `.git-ai/config.json` `aiContext.excludePaths`
+- if `forge.type` is `none`, feature backlog issue creation is disabled for that repository
 
 ## Developing `git-ai`
+
+This section is for contributors working on this monorepo rather than users running the CLI in another repository.
 
 ### Monorepo layout
 
