@@ -1071,6 +1071,8 @@ describe("CLI integration", () => {
       "Read the pull request review fix snapshot"
     );
     expect(readFileSync(promptFilePath, "utf8")).toContain("keep code changes focused");
+    expect(readFileSync(promptFilePath, "utf8")).toContain("✅ Implementation complete");
+    expect(readFileSync(promptFilePath, "utf8")).toContain("[2] Commit changes");
     expect(readFileSync(outputLogPath, "utf8")).toContain("# git-ai pr fix-comments run log");
     expect(JSON.parse(readFileSync(metadataFilePath, "utf8"))).toMatchObject({
       prNumber: 88,
@@ -1369,6 +1371,8 @@ describe("CLI integration", () => {
     expect(readFileSync(promptFilePath, "utf8")).toContain(
       "implementing automated tests for the selected areas"
     );
+    expect(readFileSync(promptFilePath, "utf8")).toContain("✅ Implementation complete");
+    expect(readFileSync(promptFilePath, "utf8")).toContain("[2] Commit changes");
     expect(readFileSync(outputLogPath, "utf8")).toContain("# git-ai pr fix-tests run log");
     expect(JSON.parse(readFileSync(metadataFilePath, "utf8"))).toMatchObject({
       prNumber: 91,
@@ -2393,6 +2397,13 @@ describe("CLI integration", () => {
     expect(readFileSync(promptFilePath, "utf8")).toContain(
       `Read the issue snapshot at \`${output.issueFile}\` before making changes.`
     );
+    expect(readFileSync(promptFilePath, "utf8")).toContain("✅ Implementation complete");
+    expect(readFileSync(promptFilePath, "utf8")).toContain(
+      "Ready for the next automation step"
+    );
+    expect(readFileSync(promptFilePath, "utf8")).toContain(
+      "do not ask for input or wait for a reply after printing the done state"
+    );
     expect(readFileSync(outputLogPath, "utf8")).toContain("# git-ai issue run log");
     expect(JSON.parse(readFileSync(metadataFilePath, "utf8"))).toMatchObject({
       issueNumber,
@@ -2405,8 +2416,105 @@ describe("CLI integration", () => {
         `https://github.com/DevwareUK/git-ai/issues/${issueNumber}#issuecomment-613`,
       mode: "github-action",
     });
+    expect(JSON.parse(readFileSync(metadataFilePath, "utf8"))).toMatchObject({
+      completionFile: `${output.runDir}/codex-result.json`,
+    });
     expect(readFileSync(githubOutputPath, "utf8")).toContain("branch_name<<");
     expect(readFileSync(githubOutputPath, "utf8")).toContain(output.branchName);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("skips build, commit, and PR creation when Codex exits a full issue run", async () => {
+    const issueNumber = 145;
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          title: "Respect exit from interactive issue runs",
+          body: "The outer issue workflow should not auto-commit after /exit.",
+          html_url: `https://github.com/DevwareUK/git-ai/issues/${issueNumber}`,
+        })
+      )
+      .mockResolvedValueOnce(createFetchResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { run, spawnSync } = await loadCli({
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "status") {
+          return "";
+        }
+
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/git-ai.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+      spawnSyncImpl: (command, args) => {
+        if (command === "gh" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "gh" && args[0] === "auth" && args[1] === "status") {
+          return { status: 0 };
+        }
+
+        if (command === "gh" && args[0] === "issue" && args[1] === "view") {
+          return {
+            status: 1,
+            error: new Error("force API fallback"),
+          };
+        }
+
+        if (command === "git" && args[0] === "rev-parse") {
+          return { status: 1 };
+        }
+
+        if (command === "git" && args[0] === "checkout" && args[1] === "-b") {
+          return { status: 0 };
+        }
+
+        if (command === "codex" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "codex") {
+          const latestRunDir = listRunDirectories().at(-1);
+          if (!latestRunDir) {
+            throw new Error("Expected an issue run directory before launching Codex.");
+          }
+
+          writeFileSync(
+            resolve(REPO_ROOT, ".git-ai", "runs", latestRunDir, "codex-result.json"),
+            `${JSON.stringify({ action: "exit" })}\n`
+          );
+
+          return { status: 0 };
+        }
+
+        if (
+          command === "pnpm" ||
+          (command === "git" && ["add", "commit", "push"].includes(args[0] ?? "")) ||
+          (command === "gh" && args[0] === "pr" && args[1] === "create")
+        ) {
+          throw new Error(`Unexpected post-exit command: ${command} ${args.join(" ")}`);
+        }
+
+        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.argv = ["node", "git-ai", "issue", String(issueNumber)];
+    await run();
+
+    expect(spawnSync).toHaveBeenCalledWith(
+      "codex",
+      expect.any(Array),
+      expect.objectContaining({
+        cwd: REPO_ROOT,
+        stdio: "inherit",
+      })
+    );
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
