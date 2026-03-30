@@ -1284,6 +1284,24 @@ function ensureBranchDoesNotExist(repoRoot: string, branchName: string): void {
   }
 }
 
+function syncIssueBaseBranch(repoRoot: string, baseBranch: string): void {
+  console.log(`Switching to base branch ${baseBranch}...`);
+  runInteractiveCommand(
+    "git",
+    ["checkout", baseBranch],
+    `Failed to switch to base branch "${baseBranch}".`,
+    repoRoot
+  );
+
+  console.log(`Pulling latest changes for ${baseBranch}...`);
+  runInteractiveCommand(
+    "git",
+    ["pull"],
+    `Failed to pull latest changes for base branch "${baseBranch}".`,
+    repoRoot
+  );
+}
+
 function buildCodexPrompt(
   repoRoot: string,
   workspace: IssueWorkspace,
@@ -2383,6 +2401,7 @@ async function prepareIssueRun(
 
   const branchName = createIssueBranchName(issueNumber, issue.title);
   ensureBranchDoesNotExist(repoRoot, branchName);
+  syncIssueBaseBranch(repoRoot, repositoryConfig.baseBranch);
   const workspace = createIssueWorkspace(repoRoot, issueNumber, issue);
   writeIssueWorkspaceFiles(
     repoRoot,

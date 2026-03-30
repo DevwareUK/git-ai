@@ -116,7 +116,7 @@ Use `draft` to turn a rough idea into a guided, repository-aware issue specifica
 git-ai issue 54
 ```
 
-This full local workflow fetches the configured issue, creates the working branch, writes `.git-ai/` run artifacts, opens Codex, and then follows the final action chosen inside Codex. Choosing commit exits Codex, runs the configured build command, commits the result, and opens a pull request when the configured forge supports it. Choosing exit leaves the branch and any generated changes uncommitted without opening a pull request.
+This full local workflow fetches the configured issue, switches to the configured `baseBranch`, pulls the latest changes, creates the working branch, writes `.git-ai/` run artifacts, opens Codex, and then follows the final action chosen inside Codex. Choosing commit exits Codex, runs the configured build command, commits the result, and opens a pull request when the configured forge supports it. Choosing exit leaves the branch and any generated changes uncommitted without opening a pull request.
 
 At the end of a successful local Codex run, the generated prompt asks Codex to finish with an explicit done-state summary plus next-step options for refining, committing, or exiting. Selecting commit now records the action and closes Codex immediately so the outer `git-ai issue` flow can resume automatically without a separate `/exit`.
 
@@ -203,7 +203,7 @@ Optional repository-specific defaults live in `.git-ai/config.json`. `git-ai set
 Supported fields:
 
 - `aiContext.excludePaths`: repository-relative glob patterns excluded from AI diff and repository context. These exclusions apply across `git-ai commit`, `git-ai diff`, `git-ai review`, issue-to-PR flows, and repository backlog scans. Bare filename globs like `*.map` match by basename anywhere in the repository. Defaults: `["**/node_modules/**", "**/vendor/**", "**/dist/**", "**/build/**", "*.map"]`.
-- `baseBranch`: default pull request base branch for `git-ai issue <number>`. Default: `main`.
+- `baseBranch`: base branch used by `git-ai issue <number>` and `git-ai issue prepare <number>` when switching, pulling, and opening pull requests. Default: `main`.
 - `buildCommand`: command run after Codex exits during full local `git-ai issue <number>`, `git-ai pr fix-comments <pr-number>`, and `git-ai pr fix-tests <pr-number>` flows. Default: `["pnpm", "build"]`.
 - `forge.type`: forge integration. Use `"github"` for GitHub-backed issue and PR flows or `"none"` to disable forge-backed issue and PR features for the repository.
 
@@ -275,10 +275,10 @@ Available subcommands:
 
 | Command | What it does |
 | --- | --- |
-| `git-ai issue <number>` | Full local issue-to-PR flow for the current Git repository. Fetches the configured forge issue, creates a branch, writes `.git-ai/` workspace files, opens an interactive Codex session, and then follows the final action chosen inside Codex. Commit exits Codex, runs the configured build command, creates the commit, and opens a PR if the configured forge supports it. Exit leaves the branch uncommitted and skips PR creation. |
+| `git-ai issue <number>` | Full local issue-to-PR flow for the current Git repository. Fetches the configured forge issue, switches to the configured `baseBranch`, pulls the latest changes, creates the issue branch, writes `.git-ai/` workspace files, opens an interactive Codex session, and then follows the final action chosen inside Codex. Commit exits Codex, runs the configured build command, creates the commit, and opens a PR if the configured forge supports it. Exit leaves the branch uncommitted and skips PR creation. |
 | `git-ai issue draft` | Guided issue-specification flow. Prompts for a rough idea, gathers repository context from built-in repo summaries plus a targeted Codex inspection when available, asks targeted follow-up questions until the issue is specific enough, writes a Markdown issue draft, opens it in `$VISUAL`, `$EDITOR`, or `vim`, and can create the issue through the configured forge when GitHub support is enabled. |
 | `git-ai issue plan <number>` | Generates an issue resolution plan for the configured forge issue and posts it as a managed comment. If an editable plan comment already exists, the command reuses it instead of overwriting collaborator edits. |
-| `git-ai issue prepare <number>` | Prepares the issue branch and `.git-ai/` workspace artifacts, then prints machine-readable JSON describing the run. |
+| `git-ai issue prepare <number>` | Switches to the configured `baseBranch`, pulls the latest changes, prepares the issue branch and `.git-ai/` workspace artifacts, and then prints machine-readable JSON describing the run. |
 | `git-ai issue prepare <number> --mode github-action` | Same preparation flow, but writes prompt instructions tailored for non-interactive GitHub Actions runs. |
 | `git-ai issue finalize <number>` | Commits generated changes with `feat: address issue #<number>`. |
 
@@ -293,6 +293,7 @@ Important behavior:
 - local interactive Codex prompts end with an explicit done-state summary instead of silently stopping
 - choosing `Commit & create PR` inside a local issue run exits Codex automatically before `git-ai` resumes the build, commit, and PR steps
 - for local full issue runs, choosing `Exit` inside Codex skips the automatic build, commit, and PR steps
+- issue preparation checks out and pulls the configured `baseBranch`, defaulting to `main`
 - PR creation uses the configured `baseBranch`, defaulting to `main`
 - GitHub-backed PR creation requires `gh` to be installed and authenticated
 - GitHub-backed issue plan comments require `GH_TOKEN` or `GITHUB_TOKEN`, or an authenticated `gh` session, when they are created

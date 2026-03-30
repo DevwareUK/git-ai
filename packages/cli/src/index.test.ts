@@ -2481,6 +2481,7 @@ describe("CLI integration", () => {
     const githubOutputPath = resolve(outputDir, "github-output.txt");
     writeFileSync(githubOutputPath, "");
     cleanupTargets.add(outputDir);
+    const gitCommands: string[][] = [];
 
     const fetchMock = vi
       .fn()
@@ -2527,10 +2528,22 @@ describe("CLI integration", () => {
         }
 
         if (command === "git" && args[0] === "rev-parse") {
+          gitCommands.push(args);
           return { status: 1 };
         }
 
+        if (command === "git" && args[0] === "checkout" && args[1] === "main") {
+          gitCommands.push(args);
+          return { status: 0 };
+        }
+
+        if (command === "git" && args[0] === "pull") {
+          gitCommands.push(args);
+          return { status: 0 };
+        }
+
         if (command === "git" && args[0] === "checkout" && args[1] === "-b") {
+          gitCommands.push(args);
           return { status: 0 };
         }
 
@@ -2570,6 +2583,12 @@ describe("CLI integration", () => {
     cleanupTargets.add(dirname(issueFilePath));
     cleanupTargets.add(runDirPath);
 
+    expect(gitCommands).toEqual([
+      ["rev-parse", "--verify", "feat/issue-91234-cli-issue-prepare-integration-fixture"],
+      ["checkout", "main"],
+      ["pull"],
+      ["checkout", "-b", "feat/issue-91234-cli-issue-prepare-integration-fixture"],
+    ]);
     expect(output.branchName).toBe("feat/issue-91234-cli-issue-prepare-integration-fixture");
     expect(output.mode).toBe("github-action");
     expect(readFileSync(issueFilePath, "utf8")).toContain(`- Issue number: ${issueNumber}`);
@@ -2647,6 +2666,14 @@ describe("CLI integration", () => {
 
         if (command === "git" && args[0] === "rev-parse") {
           return { status: 1 };
+        }
+
+        if (command === "git" && args[0] === "checkout" && args[1] === "main") {
+          return { status: 0 };
+        }
+
+        if (command === "git" && args[0] === "pull") {
+          return { status: 0 };
         }
 
         if (command === "git" && args[0] === "checkout" && args[1] === "-b") {
@@ -2732,6 +2759,14 @@ describe("CLI integration", () => {
           return { status: 1 };
         }
 
+        if (command === "git" && args[0] === "checkout" && args[1] === "main") {
+          return { status: 0 };
+        }
+
+        if (command === "git" && args[0] === "pull") {
+          return { status: 0 };
+        }
+
         if (command === "git" && args[0] === "checkout" && args[1] === "-b") {
           return { status: 0 };
         }
@@ -2799,6 +2834,7 @@ describe("CLI integration", () => {
     );
 
     let gitStatusCallCount = 0;
+    const gitCommands: string[][] = [];
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
@@ -2842,10 +2878,22 @@ describe("CLI integration", () => {
           }
 
           if (command === "git" && args[0] === "rev-parse") {
+            gitCommands.push(args);
             return { status: 1 };
           }
 
+          if (command === "git" && args[0] === "checkout" && args[1] === "develop") {
+            gitCommands.push(args);
+            return { status: 0 };
+          }
+
+          if (command === "git" && args[0] === "pull") {
+            gitCommands.push(args);
+            return { status: 0 };
+          }
+
           if (command === "git" && args[0] === "checkout" && args[1] === "-b") {
+            gitCommands.push(args);
             return { status: 0 };
           }
 
@@ -2884,6 +2932,12 @@ describe("CLI integration", () => {
       process.argv = ["node", "git-ai", "issue", String(issueNumber)];
       await run();
 
+      expect(gitCommands).toEqual([
+        ["rev-parse", "--verify", "feat/issue-144-use-repository-config-in-issue-runs"],
+        ["checkout", "develop"],
+        ["pull"],
+        ["checkout", "-b", "feat/issue-144-use-repository-config-in-issue-runs"],
+      ]);
       expect(spawnSync).toHaveBeenCalledWith(
         "npm",
         ["run", "verify"],
@@ -2914,6 +2968,65 @@ describe("CLI integration", () => {
         rmSync(configPath, { force: true });
       }
     }
+  });
+
+  it("fails issue preparation clearly when pulling the configured base branch fails", async () => {
+    const issueNumber = 146;
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          title: "Surface git pull failures during issue prep",
+          body: "The issue workflow should stop if updating the base branch fails.",
+          html_url: `https://github.com/DevwareUK/git-ai/issues/${issueNumber}`,
+        })
+      )
+      .mockResolvedValueOnce(createFetchResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { run } = await loadCli({
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "status") {
+          return "";
+        }
+
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/git-ai.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+      spawnSyncImpl: (command, args) => {
+        if (command === "gh" && args[0] === "--version") {
+          return { status: 1, error: new Error("gh is unavailable") };
+        }
+
+        if (command === "git" && args[0] === "rev-parse") {
+          return { status: 1 };
+        }
+
+        if (command === "git" && args[0] === "checkout" && args[1] === "main") {
+          return { status: 0 };
+        }
+
+        if (command === "git" && args[0] === "pull") {
+          return { status: 1 };
+        }
+
+        if (command === "git" && args[0] === "checkout" && args[1] === "-b") {
+          throw new Error("Issue branch should not be created after a failed pull.");
+        }
+
+        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.argv = ["node", "git-ai", "issue", "prepare", String(issueNumber)];
+
+    await expect(run()).rejects.toThrow(
+      'Failed to pull latest changes for base branch "main".'
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("fails clearly when .git-ai/config.json contains malformed JSON", async () => {
