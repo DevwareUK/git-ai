@@ -5,10 +5,13 @@ import {
   appendFileSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import {
@@ -116,6 +119,7 @@ type IssueRunContext = {
 
 const ISSUE_PLAN_COMMENT_MARKER = "<!-- git-ai:issue-plan -->";
 const ISSUE_DRAFT_MAX_CONTEXT_CHARS = 4000;
+const ISSUE_DRAFT_CODEX_SUMMARY_MAX_CHARS = 6000;
 const ISSUE_DRAFT_MAX_CLARIFICATION_ROUNDS = 4;
 const ISSUE_DRAFT_MAX_WORKSPACE_ENTRIES = 8;
 
@@ -1113,6 +1117,100 @@ function collectIssueDraftRepositoryContext(repoRoot: string): string {
   }
 
   return sections.join("\n");
+}
+
+function buildIssueDraftRepositoryContextPrompt(
+  featureIdea: string,
+  baselineContext: string,
+  excludePaths: string[]
+): string {
+  const sections = [
+    "You are preparing repository-aware context for `git-ai issue draft`.",
+    "Inspect the repository only as needed for the feature idea below.",
+    "Use repository search and file reads to identify the most relevant implementation touchpoints.",
+    "Focus on concrete repository facts: related files, existing patterns, architecture notes, and constraints.",
+    "Avoid generated output, dependency directories, and the excluded paths when possible.",
+    "Do not ask clarifying questions and do not propose a full implementation plan.",
+    "Return plain text with these exact markdown headings:",
+    "## Relevant files",
+    "## Existing patterns",
+    "## Architecture notes",
+    "## Open questions",
+    "",
+    "Keep the response concise, repository-grounded, and specific to this idea.",
+    "Mention repo-relative paths and explain briefly why each one matters.",
+    "",
+    "Feature idea:",
+    featureIdea,
+  ];
+
+  if (excludePaths.length > 0) {
+    sections.push("", "Repository context exclusions:");
+    for (const path of excludePaths) {
+      sections.push(`- ${path}`);
+    }
+  }
+
+  sections.push("", "Baseline repository context:", baselineContext);
+
+  return sections.join("\n");
+}
+
+function buildRepositoryContext(
+  repoRoot: string,
+  featureIdea: string,
+  excludePaths: string[]
+): string {
+  const baselineContext = collectIssueDraftRepositoryContext(repoRoot);
+  if (!canRunCommand("codex")) {
+    return baselineContext;
+  }
+
+  const tempDir = mkdtempSync(resolve(tmpdir(), "git-ai-issue-draft-context-"));
+  const outputPath = resolve(tempDir, "codex-last-message.txt");
+
+  try {
+    const prompt = buildIssueDraftRepositoryContextPrompt(
+      featureIdea,
+      baselineContext,
+      excludePaths
+    );
+    const result = spawnSync(
+      "codex",
+      [
+        "exec",
+        "--sandbox",
+        "read-only",
+        "--cd",
+        repoRoot,
+        "--output-last-message",
+        outputPath,
+        prompt,
+      ],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+        maxBuffer: 10 * 1024 * 1024,
+        stdio: ["ignore", "pipe", "pipe"],
+      }
+    );
+
+    if (result.error || result.status !== 0 || !existsSync(outputPath)) {
+      return baselineContext;
+    }
+
+    const codexSummary = truncateContext(
+      readFileSync(outputPath, "utf8"),
+      ISSUE_DRAFT_CODEX_SUMMARY_MAX_CHARS
+    );
+    if (!codexSummary) {
+      return baselineContext;
+    }
+
+    return [baselineContext, "", "Repository-aware analysis:", codexSummary].join("\n");
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 }
 
 function createIssueWorkspace(
@@ -2204,10 +2302,15 @@ async function runFeatureBacklogCommand(): Promise<void> {
 
 async function runIssueDraftCommand(): Promise<void> {
   const repoRoot = getDefaultRepoRoot();
+  const repositoryConfig = getRepositoryConfig(repoRoot);
   const featureIdea = await promptForRequiredLine("Rough idea: ");
   const additionalContext = (await promptForLine("Optional context: ")).trim();
   console.log("Gathering repository context...");
-  const repositoryContext = collectIssueDraftRepositoryContext(repoRoot);
+  const repositoryContext = buildRepositoryContext(
+    repoRoot,
+    featureIdea,
+    repositoryConfig.aiContext.excludePaths
+  );
   const provider = createProvider();
   const clarificationAnswers = await collectIssueDraftClarifications(
     provider,

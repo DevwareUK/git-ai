@@ -2040,43 +2040,96 @@ describe("CLI integration", () => {
   it("generates a local issue draft and saves it under .git-ai/issues", async () => {
     const beforeDrafts = listIssueDraftFiles();
     const issueDraft = createIssueDraftResult();
-    const { run, generateIssueDraft, generateIssueDraftGuidance } = await loadCli({
-      issueDraftResult: issueDraft,
-      issueDraftGuidanceResults: [createIssueDraftGuidanceReadyResult()],
-      readlineAnswers: [
-        "Combine PR description and review summary into a single PR assistant action.",
-        "Should update the PR body rather than replacing it.",
-      ],
-      spawnSyncImpl: (command, args) => {
-        if (command === "gh" && args[0] === "--version") {
-          return { status: 1, error: new Error("gh is unavailable") };
-        }
+    let codexPrompt = "";
 
-        if (command.startsWith("vim ")) {
-          return { status: 0 };
-        }
+    await withRepositoryConfig(
+      JSON.stringify({
+        aiContext: {
+          excludePaths: ["generated/**"],
+        },
+      }),
+      async () => {
+        const { run, generateIssueDraft, generateIssueDraftGuidance } = await loadCli({
+          issueDraftResult: issueDraft,
+          issueDraftGuidanceResults: [createIssueDraftGuidanceReadyResult()],
+          readlineAnswers: [
+            "Combine PR description and review summary into a single PR assistant action.",
+            "Should update the PR body rather than replacing it.",
+          ],
+          spawnSyncImpl: (command, args) => {
+            if (command === "codex" && args[0] === "--version") {
+              return { status: 0 };
+            }
 
-        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
-      },
-    });
+            if (command === "codex" && args[0] === "exec") {
+              codexPrompt = args[args.length - 1] ?? "";
+              const outputPathFlagIndex = args.indexOf("--output-last-message");
+              if (outputPathFlagIndex === -1) {
+                throw new Error("Expected codex exec to include --output-last-message");
+              }
 
-    process.env.OPENAI_API_KEY = "test-key";
-    process.argv = ["node", "git-ai", "issue", "draft"];
+              writeFileSync(
+                args[outputPathFlagIndex + 1],
+                [
+                  "## Relevant files",
+                  "- packages/cli/src/index.ts: owns the issue draft workflow and repository context collection.",
+                  "- README.md: documents the issue draft UX and command expectations.",
+                  "",
+                  "## Existing patterns",
+                  "- The CLI already builds lightweight repository context from package scripts and top-level docs before prompting the model.",
+                  "",
+                  "## Architecture notes",
+                  "- Issue drafting uses OpenAI for clarification and final draft generation, so repository inspection should enrich that prompt instead of replacing the CLI flow.",
+                  "",
+                  "## Open questions",
+                  "- Whether codex should remain optional when repository inspection is unavailable.",
+                ].join("\n"),
+                "utf8"
+              );
 
-    await run();
+              return { status: 0, stdout: "", stderr: "" };
+            }
 
-    expect(generateIssueDraftGuidance).toHaveBeenCalledWith(expect.any(Object), {
-      featureIdea: "Combine PR description and review summary into a single PR assistant action.",
-      additionalContext: "Should update the PR body rather than replacing it.",
-      repositoryContext: expect.stringContaining("README.md excerpt:"),
-      answers: [],
-    });
-    expect(generateIssueDraft).toHaveBeenCalledWith(expect.any(Object), {
-      featureIdea: "Combine PR description and review summary into a single PR assistant action.",
-      additionalContext: "Should update the PR body rather than replacing it.",
-      repositoryContext: expect.stringContaining("README.md excerpt:"),
-      clarificationTranscript: undefined,
-    });
+            if (command === "gh" && args[0] === "--version") {
+              return { status: 1, error: new Error("gh is unavailable") };
+            }
+
+            if (command.startsWith("vim ")) {
+              return { status: 0 };
+            }
+
+            throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+          },
+        });
+
+        process.env.OPENAI_API_KEY = "test-key";
+        process.argv = ["node", "git-ai", "issue", "draft"];
+
+        await run();
+
+        expect(generateIssueDraftGuidance).toHaveBeenCalledWith(expect.any(Object), {
+          featureIdea:
+            "Combine PR description and review summary into a single PR assistant action.",
+          additionalContext: "Should update the PR body rather than replacing it.",
+          repositoryContext: expect.stringContaining("Repository-aware analysis:"),
+          answers: [],
+        });
+        expect(generateIssueDraft).toHaveBeenCalledWith(expect.any(Object), {
+          featureIdea:
+            "Combine PR description and review summary into a single PR assistant action.",
+          additionalContext: "Should update the PR body rather than replacing it.",
+          repositoryContext: expect.stringContaining(
+            "packages/cli/src/index.ts: owns the issue draft workflow"
+          ),
+          clarificationTranscript: undefined,
+        });
+      }
+    );
+
+    expect(codexPrompt).toContain(
+      "Combine PR description and review summary into a single PR assistant action."
+    );
+    expect(codexPrompt).toContain("generated/**");
 
     const createdDraft = listIssueDraftFiles().find((entry) => !beforeDrafts.includes(entry));
     expect(createdDraft).toBeDefined();
@@ -2110,6 +2163,10 @@ describe("CLI integration", () => {
         throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
       },
       spawnSyncImpl: (command, args) => {
+        if (command === "codex" && args[0] === "--version") {
+          return { status: 1, error: new Error("codex is unavailable") };
+        }
+
         if (command === "gh" && args[0] === "--version") {
           return { status: 0 };
         }
@@ -2166,6 +2223,10 @@ describe("CLI integration", () => {
         "Keep the current sections for now, but add technical considerations if the model has concrete ones.",
       ],
       spawnSyncImpl: (command, args) => {
+        if (command === "codex" && args[0] === "--version") {
+          return { status: 1, error: new Error("codex is unavailable") };
+        }
+
         if (command === "gh" && args[0] === "--version") {
           return { status: 1, error: new Error("gh is unavailable") };
         }
@@ -2189,6 +2250,9 @@ describe("CLI integration", () => {
       repositoryContext: expect.stringContaining("README.md excerpt:"),
       answers: [],
     });
+    expect(generateIssueDraftGuidance.mock.calls[0]?.[1]?.repositoryContext).not.toContain(
+      "Repository-aware analysis:"
+    );
     expect(generateIssueDraftGuidance).toHaveBeenNthCalledWith(2, expect.any(Object), {
       featureIdea: "Turn issue draft into a guided specification workflow.",
       additionalContext: undefined,
@@ -2240,6 +2304,10 @@ describe("CLI integration", () => {
         throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
       },
       spawnSyncImpl: (command, args) => {
+        if (command === "codex" && args[0] === "--version") {
+          return { status: 1, error: new Error("codex is unavailable") };
+        }
+
         if (command === "gh" && args[0] === "--version") {
           return { status: 1, error: new Error("gh is unavailable") };
         }
@@ -3059,7 +3127,11 @@ describe("CLI integration", () => {
           issueDraftResult: issueDraft,
           issueDraftGuidanceResults: [createIssueDraftGuidanceReadyResult()],
           readlineAnswers: ["Unify PR assistant outputs.", ""],
-          spawnSyncImpl: (command) => {
+          spawnSyncImpl: (command, args) => {
+            if (command === "codex" && args[0] === "--version") {
+              return { status: 1, error: new Error("codex is unavailable") };
+            }
+
             if (command.startsWith("vim ")) {
               return { status: 0 };
             }
