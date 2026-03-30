@@ -53,4 +53,35 @@ describe("Issue draft schemas", () => {
 
     expect(parsed.status).toBe("clarify");
   });
+
+  it("accepts clarification guidance output when missingInformation is empty", () => {
+    const parsed = IssueDraftGuidanceOutput.parse({
+      status: "clarify",
+      assistantSummary: "The rough idea is usable, but the workflow details still need one follow-up.",
+      missingInformation: [],
+      questions: [
+        "Should the first version stop after generating the local draft, or should it also create the GitHub issue automatically?",
+      ],
+    });
+
+    expect(parsed).toMatchObject({
+      status: "clarify",
+      missingInformation: [],
+    });
+  });
+
+  it("defaults missingInformation to an empty array when it is omitted", () => {
+    const parsed = IssueDraftGuidanceOutput.parse({
+      status: "clarify",
+      assistantSummary: "The rough idea is usable, but one implementation decision still needs confirmation.",
+      questions: [
+        "Should the flow keep the current markdown sections, or should it add a technical considerations section when needed?",
+      ],
+    });
+
+    expect(parsed).toMatchObject({
+      status: "clarify",
+      missingInformation: [],
+    });
+  });
 });

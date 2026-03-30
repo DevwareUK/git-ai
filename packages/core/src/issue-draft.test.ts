@@ -101,4 +101,65 @@ describe("generateIssueDraft", () => {
       ],
     });
   });
+
+  it("accepts clarification guidance when missingInformation is empty", async () => {
+    const result = await generateIssueDraftGuidance(
+      {
+        generateText: async () =>
+          JSON.stringify({
+            status: "clarify",
+            assistantSummary:
+              "The rough idea is usable, but one workflow decision still needs confirmation.",
+            missingInformation: [],
+            questions: [
+              "Should the first version stop after saving the local draft, or should it also create the GitHub issue automatically?",
+            ],
+          }),
+      },
+      {
+        featureIdea: "Turn issue draft into a guided issue-spec workflow.",
+        repositoryContext: "CLI lives in packages/cli and issue drafting logic lives in packages/core.",
+      }
+    );
+
+    expect(result).toEqual({
+      status: "clarify",
+      assistantSummary:
+        "The rough idea is usable, but one workflow decision still needs confirmation.",
+      missingInformation: [],
+      questions: [
+        "Should the first version stop after saving the local draft, or should it also create the GitHub issue automatically?",
+      ],
+    });
+  });
+
+  it("defaults missingInformation when the model omits it from a clarify response", async () => {
+    const result = await generateIssueDraftGuidance(
+      {
+        generateText: async () =>
+          JSON.stringify({
+            status: "clarify",
+            assistantSummary:
+              "The rough idea is usable, but one formatting decision still needs confirmation.",
+            questions: [
+              "Should the generated draft keep the current sections only, or add technical considerations when the repository context suggests them?",
+            ],
+          }),
+      },
+      {
+        featureIdea: "Turn issue draft into a guided issue-spec workflow.",
+        repositoryContext: "CLI lives in packages/cli and issue drafting logic lives in packages/core.",
+      }
+    );
+
+    expect(result).toEqual({
+      status: "clarify",
+      assistantSummary:
+        "The rough idea is usable, but one formatting decision still needs confirmation.",
+      missingInformation: [],
+      questions: [
+        "Should the generated draft keep the current sections only, or add technical considerations when the repository context suggests them?",
+      ],
+    });
+  });
 });

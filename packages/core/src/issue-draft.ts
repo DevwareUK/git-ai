@@ -92,6 +92,7 @@ function buildGuidancePrompt(input: IssueDraftGuidanceInputType): string {
     "}",
     "",
     'Use "clarify" only when genuinely important implementation details are still missing.',
+    'When using "clarify", include one or more concrete "missingInformation" items where practical, but return an empty array if the follow-up questions are still useful and no concise items fit.',
     'Use "ready" when the issue is sufficiently specified for a strong implementation-ready draft.',
     "Do not wrap JSON in markdown fences.",
     "",
