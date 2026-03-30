@@ -54,7 +54,7 @@ export const IssueDraftGuidanceClarify = z.object({
     .min(1, "assistantSummary must be non-empty"),
   missingInformation: z
     .array(z.string().trim().min(1, "missingInformation items must be non-empty"))
-    .min(1, "missingInformation must contain at least one item"),
+    .default([]),
   questions: z
     .array(z.string().trim().min(1, "questions items must be non-empty"))
     .min(1, "questions must contain at least one item")
