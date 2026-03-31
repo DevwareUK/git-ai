@@ -44,7 +44,6 @@ function buildPullRequestFixCodexPrompt(
   const doneStateInstructions = buildCodexDoneStateInstructions({
     mode: "interactive",
     readyLabel: "Ready to commit",
-    primaryActionLabel: "Commit changes",
   });
 
   return [

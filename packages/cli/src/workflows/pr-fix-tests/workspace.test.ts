@@ -124,8 +124,12 @@ describe("pr-fix-tests workspace", () => {
     expect(prompt).toContain("- keep code changes focused on implementing automated tests");
     expect(prompt).toContain("- run `pnpm build` before finishing if code changes are made");
     expect(prompt).toContain("✅ Implementation complete");
-    expect(prompt).toContain("[2] Commit changes");
-    expect(prompt).toContain("treat `/continue`, `/commit`, and `/exit` as valid follow-up replies");
+    expect(prompt).toContain("add a short explanation of how to see the change in action");
+    expect(prompt).toContain(
+      "continue by giving further instruction or type `/exit` when they are satisfied and want to hand control back to `git-ai`"
+    );
+    expect(prompt).not.toContain("[2] Commit changes");
+    expect(prompt).not.toContain("/commit");
 
     expect(metadata.prNumber).toBe(71);
     expect(metadata.linkedIssues).toEqual([
