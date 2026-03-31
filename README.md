@@ -116,9 +116,9 @@ Use `draft` to hand a rough idea to an interactive Codex-led issue drafting flow
 git-ai issue 54
 ```
 
-This full local workflow fetches the configured issue, switches to the configured `baseBranch`, pulls the latest changes, creates the working branch, writes `.git-ai/` run artifacts, opens Codex, and then follows the final action chosen inside Codex. Choosing commit exits Codex, runs the configured build command, commits the result, and opens a pull request when the configured forge supports it. Choosing exit leaves the branch and any generated changes uncommitted without opening a pull request.
+This full local workflow fetches the configured issue, switches to the configured `baseBranch`, pulls the latest changes, creates the working branch, writes `.git-ai/` run artifacts, opens Codex, and resumes automatically when you exit the Codex session. After Codex returns control, `git-ai` runs the configured build command, commits the result, and opens a pull request when the configured forge supports it.
 
-At the end of a successful local Codex run, the generated prompt asks Codex to finish with an explicit done-state summary plus next-step options for refining, committing, or exiting. Selecting commit now records the action and closes Codex immediately so the outer `git-ai issue` flow can resume automatically without a separate `/exit`.
+At the end of a successful local Codex run, the generated prompt asks Codex to finish with an explicit done-state summary, a short note about how to see the result in action or what was verified, and plain-language next steps. If you want more changes, keep talking to Codex. When you are satisfied and want `git-ai` to resume, type `/exit`.
 
 If you need separate setup and completion steps:
 
@@ -290,9 +290,8 @@ Important behavior:
 - `git-ai issue plan <number>` requires `OPENAI_API_KEY` the first time it generates a plan comment
 - local full issue runs require the `codex` CLI on `PATH`
 - full local issue runs execute the configured `buildCommand`, defaulting to `pnpm build`
-- local interactive Codex prompts end with an explicit done-state summary instead of silently stopping
-- choosing `Commit & create PR` inside a local issue run exits Codex automatically before `git-ai` resumes the build, commit, and PR steps
-- for local full issue runs, choosing `Exit` inside Codex skips the automatic build, commit, and PR steps
+- local interactive Codex prompts end with an explicit done-state summary, a short note about how to see the result or what was verified, and plain-language next steps
+- for local full issue runs, `git-ai` resumes the build, commit, and PR steps after you exit Codex
 - issue preparation checks out and pulls the configured `baseBranch`, defaulting to `main`
 - PR creation uses the configured `baseBranch`, defaulting to `main`
 - GitHub-backed PR creation requires `gh` to be installed and authenticated
@@ -326,7 +325,7 @@ Important behavior:
 - local PR comment-fix runs require the `codex` CLI on `PATH`
 - local PR test-fix runs require the `codex` CLI on `PATH`
 - PR comment-fix and test-fix runs execute the configured `buildCommand`, defaulting to `pnpm build`
-- local interactive Codex prompts end with an explicit done-state summary and commit/exit options
+- local interactive Codex prompts end with an explicit done-state summary, a short note about how to see the result or what was verified, and plain-language next steps
 - the command expects the relevant PR branch to already be checked out locally before Codex starts editing
 - the interactive selector accepts numbered thread choices and, when available, grouped task choices like `g1`; `all` still selects every individual thread
 - `git-ai pr fix-tests <pr-number>` accepts `all`, `none`, or a comma-separated suggestion list like `1,2`

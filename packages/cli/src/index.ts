@@ -53,11 +53,9 @@ type IssueWorkspace = {
   promptFilePath: string;
   metadataFilePath: string;
   outputLogPath: string;
-  completionFilePath: string;
 };
 
 type IssueExecutionMode = "local" | "github-action";
-type IssueCompletionAction = "commit" | "exit";
 type IssueDraftWorkspace = {
   runDir: string;
   draftFilePath: string;
@@ -1079,7 +1077,6 @@ function createIssueWorkspace(
     promptFilePath: resolve(runDir, "prompt.md"),
     metadataFilePath: resolve(runDir, "metadata.json"),
     outputLogPath: resolve(runDir, "output.log"),
-    completionFilePath: resolve(runDir, "codex-result.json"),
   };
 }
 
@@ -1159,24 +1156,10 @@ function buildCodexPrompt(
           "Do not wait for interactive user input.",
         ]
       : [];
-  const interactiveCompletionInstructions =
-    mode === "local"
-      ? [
-          `When the user chooses \`/commit\` or \`/exit\`, write the final choice to \`${toRepoRelativePath(
-            repoRoot,
-            workspace.completionFilePath
-          )}\` as JSON before you stop.`,
-          '- for `/commit`, write `{"action":"commit"}` and then exit Codex immediately so `git-ai` can resume the build, commit, and PR flow',
-          '- for `/exit`, write `{"action":"exit"}` and then exit Codex immediately',
-          "- for `/continue`, keep working and do not write the final action file yet",
-        ]
-      : [];
   const doneStateInstructions = buildCodexDoneStateInstructions({
     mode: mode === "github-action" ? "non-interactive" : "interactive",
     readyLabel:
       mode === "github-action" ? "Ready for the next automation step" : "Ready to commit",
-    primaryActionLabel:
-      mode === "github-action" ? "Exit" : "Commit & create PR",
   });
 
   return [
@@ -1196,9 +1179,6 @@ function buildCodexPrompt(
     "- do not commit `.git-ai/` files",
     "",
     ...doneStateInstructions,
-    ...(interactiveCompletionInstructions.length > 0
-      ? ["", ...interactiveCompletionInstructions]
-      : []),
   ].join("\n");
 }
 
@@ -1235,7 +1215,6 @@ function writeIssueWorkspaceFiles(
         issueDir: toRepoRelativePath(repoRoot, workspace.issueDir),
         issueFile: toRepoRelativePath(repoRoot, workspace.issueFilePath),
         promptFile: toRepoRelativePath(repoRoot, workspace.promptFilePath),
-        completionFile: toRepoRelativePath(repoRoot, workspace.completionFilePath),
         outputLog: toRepoRelativePath(repoRoot, workspace.outputLogPath),
       },
       null,
@@ -1348,9 +1327,8 @@ function runCodex(
   workspace: {
     promptFilePath: string;
     outputLogPath: string;
-    completionFilePath?: string;
   }
-): IssueCompletionAction | undefined {
+): void {
   if (!canRunCommand("codex")) {
     throw new Error(
       "The `codex` CLI is not available on PATH. Install it before running interactive git-ai Codex workflows."
@@ -1394,46 +1372,6 @@ function runCodex(
       "The interactive Codex session did not complete successfully."
     );
   }
-
-  if (!workspace.completionFilePath || !existsSync(workspace.completionFilePath)) {
-    return undefined;
-  }
-
-  const rawResult = readFileSync(workspace.completionFilePath, "utf8").trim();
-  if (!rawResult) {
-    return undefined;
-  }
-
-  let parsedResult: unknown;
-  try {
-    parsedResult = JSON.parse(rawResult);
-  } catch {
-    throw new Error(
-      `Invalid Codex completion result in ${toRepoRelativePath(
-        repoRoot,
-        workspace.completionFilePath
-      )}. Expected JSON like {"action":"commit"} or {"action":"exit"}.`
-    );
-  }
-
-  const action =
-    typeof parsedResult === "object" &&
-    parsedResult !== null &&
-    "action" in parsedResult &&
-    typeof parsedResult.action === "string"
-      ? parsedResult.action
-      : undefined;
-
-  if (action !== "commit" && action !== "exit") {
-    throw new Error(
-      `Invalid Codex completion action in ${toRepoRelativePath(
-        repoRoot,
-        workspace.completionFilePath
-      )}. Expected "commit" or "exit".`
-    );
-  }
-
-  return action;
 }
 
 function verifyBuild(repoRoot: string, buildCommand: string[], outputLogPath: string): void {
@@ -2250,16 +2188,7 @@ async function runIssueCommand(): Promise<void> {
   console.log("Opening an interactive Codex session in this terminal...");
   console.log("Complete the issue work in Codex.");
   console.log("When Codex exits, git-ai will resume with build and commit steps.");
-  const completionAction = runCodex(repoRoot, context.workspace);
-
-  if (completionAction === "exit") {
-    console.log("Leaving the generated changes uncommitted because Codex selected exit.");
-    return;
-  }
-
-  if (!completionAction) {
-    console.log("Codex did not record an explicit final action. Continuing with commit flow.");
-  }
+  runCodex(repoRoot, context.workspace);
 
   console.log("Verifying build...");
   verifyBuild(repoRoot, repositoryConfig.buildCommand, context.workspace.outputLogPath);

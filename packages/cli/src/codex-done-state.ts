@@ -3,7 +3,6 @@ type CodexDoneStateMode = "interactive" | "non-interactive";
 type CodexDoneStateOptions = {
   mode: CodexDoneStateMode;
   readyLabel: string;
-  primaryActionLabel: string;
 };
 
 export function buildCodexDoneStateInstructions(
@@ -18,6 +17,7 @@ export function buildCodexDoneStateInstructions(
     `- ${options.readyLabel}`,
     "```",
     "- keep the summary high level and avoid dumping a full diff",
+    "- after the done-state block, add a short explanation of how to see the change in action, or if the work is not user-visible, what you verified or changed in practical terms",
   ];
 
   if (options.mode === "non-interactive") {
@@ -29,13 +29,7 @@ export function buildCodexDoneStateInstructions(
 
   return [
     ...sharedLines,
-    "Then present these next-step options exactly:",
-    "```text",
-    "[1] Continue refining",
-    `[2] ${options.primaryActionLabel}`,
-    "[3] Exit",
-    "```",
-    "- after printing the done state, stop and wait for the user's next instruction",
-    "- treat `/continue`, `/commit`, and `/exit` as valid follow-up replies",
+    "- after that explanation, end with plain-language next steps telling the user they can continue by giving further instruction or type `/exit` when they are satisfied and want to hand control back to `git-ai`",
+    "- do not present numbered menus or tell the user to pick from fixed option labels",
   ];
 }
