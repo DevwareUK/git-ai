@@ -1,5 +1,9 @@
 import { z } from "zod";
 import { AIProvider } from "@git-ai/providers";
+import {
+  StructuredGenerationError,
+  type StructuredGenerationValidationIssue,
+} from "./structured-generation-error";
 
 interface GenerateStructuredOutputOptions<TSchema extends z.ZodTypeAny> {
   provider: AIProvider;
@@ -31,6 +35,40 @@ function parseModelJson(raw: string): unknown {
   }
 }
 
+function formatValidationIssuePath(path: (string | number)[]): string {
+  if (path.length === 0) {
+    return "(root)";
+  }
+
+  let formattedPath = "";
+  for (const segment of path) {
+    if (typeof segment === "number") {
+      formattedPath += `[${segment}]`;
+      continue;
+    }
+
+    formattedPath += formattedPath ? `.${segment}` : segment;
+  }
+
+  return formattedPath;
+}
+
+function toValidationIssue(
+  issue: z.ZodIssue
+): StructuredGenerationValidationIssue {
+  return {
+    path: formatValidationIssuePath(issue.path),
+    message: issue.message,
+    code: issue.code,
+  };
+}
+
+function formatValidationIssues(
+  issues: StructuredGenerationValidationIssue[]
+): string {
+  return issues.map((issue) => `- ${issue.path}: ${issue.message}`).join("\n");
+}
+
 export function normalizeNullableFields(
   value: unknown,
   fieldNames: string[]
@@ -58,15 +96,32 @@ export async function generateStructuredOutput<TSchema extends z.ZodTypeAny>(
     temperature: options.temperature ?? 0.2,
   });
 
-  const parsedJson = parseModelJson(rawResponse);
+  let parsedJson: unknown;
+  try {
+    parsedJson = parseModelJson(rawResponse);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new StructuredGenerationError({
+      kind: "json_parse",
+      message,
+      rawResponse,
+    });
+  }
+
   const normalizedJson = options.normalizeParsedJson
     ? options.normalizeParsedJson(parsedJson)
     : parsedJson;
   const validated = options.schema.safeParse(normalizedJson);
   if (!validated.success) {
-    throw new Error(
-      `${options.validationErrorPrefix}: ${validated.error.message}`
-    );
+    const validationIssues = validated.error.issues.map(toValidationIssue);
+    throw new StructuredGenerationError({
+      kind: "schema_validation",
+      message: `${options.validationErrorPrefix}:\n${formatValidationIssues(validationIssues)}`,
+      rawResponse,
+      parsedJson,
+      normalizedJson,
+      validationIssues,
+    });
   }
 
   return validated.data;
