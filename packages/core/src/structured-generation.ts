@@ -31,8 +31,29 @@ function parseModelJson(raw: string): unknown {
     return JSON.parse(normalized);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Failed to parse model output as JSON: ${message}`);
+    throw new Error(message);
   }
+}
+
+function inferStructuredOutputLabel(
+  validationErrorPrefix: string
+): string | undefined {
+  const match = validationErrorPrefix.match(
+    /^Model output failed (.+) schema validation$/
+  );
+  return match?.[1];
+}
+
+function formatJsonParseFailureMessage(
+  validationErrorPrefix: string,
+  parseErrorMessage: string
+): string {
+  const outputLabel = inferStructuredOutputLabel(validationErrorPrefix);
+  if (!outputLabel) {
+    return `Failed to parse model output as JSON: ${parseErrorMessage}`;
+  }
+
+  return `Failed to parse ${outputLabel} model output as JSON: ${parseErrorMessage}`;
 }
 
 function formatValidationIssuePath(path: (string | number)[]): string {
@@ -103,7 +124,10 @@ export async function generateStructuredOutput<TSchema extends z.ZodTypeAny>(
     const message = error instanceof Error ? error.message : String(error);
     throw new StructuredGenerationError({
       kind: "json_parse",
-      message,
+      message: formatJsonParseFailureMessage(
+        options.validationErrorPrefix,
+        message
+      ),
       rawResponse,
     });
   }

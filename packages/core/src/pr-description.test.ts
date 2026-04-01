@@ -17,7 +17,9 @@ describe("generatePRDescription", () => {
       name: "StructuredGenerationError",
       kind: "json_parse",
       rawResponse: '{"title":"feat: broken"',
-      message: expect.stringContaining("Failed to parse model output as JSON"),
+      message: expect.stringContaining(
+        "Failed to parse PR description model output as JSON"
+      ),
     });
   });
 
