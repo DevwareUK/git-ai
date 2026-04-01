@@ -9,6 +9,7 @@ import {
   readFileSync,
   writeFileSync,
 } from "node:fs";
+import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import {
@@ -50,7 +51,12 @@ import {
   validateCommitMessage,
 } from "./generated-text-review";
 import { resolveRuntimeRepoRoot } from "./repo-root";
-import { formatRunTimestamp, toRepoRelativePath } from "./run-artifacts";
+import {
+  formatRunTimestamp,
+  getIssueSessionStateFilePath,
+  getIssueStateDir,
+  toRepoRelativePath,
+} from "./run-artifacts";
 import { parseSetupCommandArgs, runSetupCommand } from "./setup";
 import { runPrFixCommentsCommand } from "./workflows/pr-fix-comments/run";
 import { runPrFixTestsCommand } from "./workflows/pr-fix-tests/run";
@@ -125,6 +131,32 @@ type IssueRunContext = {
   branchName: string;
   workspace: IssueWorkspace;
   mode: IssueExecutionMode;
+  codex: {
+    invocation: "new" | "resume";
+    sessionId?: string;
+    sessionStateFilePath: string;
+  };
+};
+
+type IssueSessionState = {
+  issueNumber: number;
+  branchName: string;
+  issueDir: string;
+  runDir: string;
+  promptFile: string;
+  outputLog: string;
+  sessionId: string;
+  sandboxMode: string;
+  approvalPolicy: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type CodexSessionRecord = {
+  id: string;
+  timestamp: string;
+  cwd: string;
+  filePath: string;
 };
 
 type FinalizeIssueRunResult =
@@ -145,6 +177,8 @@ type GeneratedIssuePullRequest = {
 };
 
 const ISSUE_PLAN_COMMENT_MARKER = "<!-- git-ai:issue-plan -->";
+const CODEX_SANDBOX_MODE = "workspace-write";
+const CODEX_APPROVAL_POLICY = "on-request";
 
 const ISSUE_USAGE = [
   "Usage:",
@@ -1094,13 +1128,182 @@ function writeIssueDraftWorkspaceFiles(
   );
 }
 
+function getCodexHome(): string {
+  return process.env.CODEX_HOME?.trim() || resolve(homedir(), ".codex");
+}
+
+function listFilesRecursively(rootDir: string): string[] {
+  if (!existsSync(rootDir)) {
+    return [];
+  }
+
+  const files: string[] = [];
+  const visitDirectory = (directory: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const entryPath = resolve(directory, entry.name);
+      if (entry.isDirectory()) {
+        visitDirectory(entryPath);
+        continue;
+      }
+
+      if (entry.isFile()) {
+        files.push(entryPath);
+      }
+    }
+  };
+
+  visitDirectory(rootDir);
+  return files.sort();
+}
+
+function readCodexSessionRecord(filePath: string): CodexSessionRecord | undefined {
+  try {
+    const content = readFileSync(filePath, "utf8");
+    const firstLine = content.split(/\r?\n/, 1)[0];
+    if (!firstLine) {
+      return undefined;
+    }
+
+    const parsed = JSON.parse(firstLine) as {
+      type?: string;
+      payload?: {
+        id?: string;
+        timestamp?: string;
+        cwd?: string;
+      };
+    };
+
+    if (
+      parsed.type !== "session_meta" ||
+      !parsed.payload?.id ||
+      !parsed.payload.timestamp ||
+      !parsed.payload.cwd
+    ) {
+      return undefined;
+    }
+
+    return {
+      id: parsed.payload.id,
+      timestamp: parsed.payload.timestamp,
+      cwd: parsed.payload.cwd,
+      filePath,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function listCodexSessionRecords(repoRoot: string): CodexSessionRecord[] {
+  const sessionsRoot = resolve(getCodexHome(), "sessions");
+  return listFilesRecursively(sessionsRoot)
+    .filter((filePath) => filePath.endsWith(".jsonl"))
+    .map((filePath) => readCodexSessionRecord(filePath))
+    .filter(
+      (record): record is CodexSessionRecord =>
+        record !== undefined && record.cwd === repoRoot
+    )
+    .sort((left, right) => left.timestamp.localeCompare(right.timestamp));
+}
+
+function findCodexSessionById(
+  repoRoot: string,
+  sessionId: string
+): CodexSessionRecord | undefined {
+  return listCodexSessionRecords(repoRoot).find((record) => record.id === sessionId);
+}
+
+function findNewCodexSessionId(
+  repoRoot: string,
+  previousSessionFilePaths: Set<string>,
+  startedAt: number
+): string | undefined {
+  const sessionRecords = listCodexSessionRecords(repoRoot);
+  const newlyCreatedSessions = sessionRecords.filter(
+    (record) => !previousSessionFilePaths.has(record.filePath)
+  );
+
+  if (newlyCreatedSessions.length > 0) {
+    return newlyCreatedSessions.at(-1)?.id;
+  }
+
+  return sessionRecords
+    .filter((record) => Date.parse(record.timestamp) >= startedAt - 1000)
+    .at(-1)?.id;
+}
+
+function loadIssueSessionState(
+  repoRoot: string,
+  issueNumber: number
+): IssueSessionState | undefined {
+  const stateFilePath = getIssueSessionStateFilePath(repoRoot, issueNumber);
+  if (!existsSync(stateFilePath)) {
+    return undefined;
+  }
+
+  const parsed = JSON.parse(readFileSync(stateFilePath, "utf8")) as Partial<IssueSessionState>;
+  if (
+    parsed.issueNumber !== issueNumber ||
+    typeof parsed.branchName !== "string" ||
+    typeof parsed.issueDir !== "string" ||
+    typeof parsed.runDir !== "string" ||
+    typeof parsed.promptFile !== "string" ||
+    typeof parsed.outputLog !== "string" ||
+    typeof parsed.sessionId !== "string" ||
+    typeof parsed.sandboxMode !== "string" ||
+    typeof parsed.approvalPolicy !== "string" ||
+    typeof parsed.createdAt !== "string" ||
+    typeof parsed.updatedAt !== "string"
+  ) {
+    throw new Error(
+      `Issue session state at ${toRepoRelativePath(
+        repoRoot,
+        stateFilePath
+      )} is malformed. Remove it and rerun \`git-ai issue ${issueNumber}\` to start a fresh session.`
+    );
+  }
+
+  return parsed as IssueSessionState;
+}
+
+function writeIssueSessionState(
+  repoRoot: string,
+  state: IssueSessionState
+): void {
+  const stateDir = getIssueStateDir(repoRoot, state.issueNumber);
+  mkdirSync(stateDir, { recursive: true });
+  writeFileSync(
+    getIssueSessionStateFilePath(repoRoot, state.issueNumber),
+    `${JSON.stringify(state, null, 2)}\n`,
+    "utf8"
+  );
+}
+
+function buildIssueResumeRecoveryMessage(
+  repoRoot: string,
+  issueNumber: number,
+  detail: string
+): string {
+  const stateFile = toRepoRelativePath(
+    repoRoot,
+    getIssueSessionStateFilePath(repoRoot, issueNumber)
+  );
+
+  return [
+    detail,
+    `Recovery: remove ${stateFile} and rerun \`git-ai issue ${issueNumber}\` to start a fresh session.`,
+  ].join(" ");
+}
+
 function createIssueWorkspace(
   repoRoot: string,
   issueNumber: number,
-  issue: IssueDetails
+  issue: IssueDetails,
+  issueDirOverride?: string
 ): IssueWorkspace {
   const slug = slugifyIssueTitle(issue.title) || `issue-${issueNumber}`;
-  const issueDir = resolve(repoRoot, ".git-ai", "issues", `${issueNumber}-${slug}`);
+  const issueDir =
+    issueDirOverride ??
+    resolve(repoRoot, ".git-ai", "issues", `${issueNumber}-${slug}`);
   const runDir = resolve(
     repoRoot,
     ".git-ai",
@@ -1154,14 +1357,32 @@ function formatIssueSnapshot(
   return lines.join("\n");
 }
 
-function ensureBranchDoesNotExist(repoRoot: string, branchName: string): void {
-  const result = spawnSync("git", ["-C", repoRoot, "rev-parse", "--verify", branchName], {
-    stdio: "ignore",
-  });
+function localBranchExists(repoRoot: string, branchName: string): boolean {
+  const result = spawnSync(
+    "git",
+    ["-C", repoRoot, "rev-parse", "--verify", branchName],
+    {
+      stdio: "ignore",
+    }
+  );
 
-  if (!result.error && result.status === 0) {
+  return !result.error && result.status === 0;
+}
+
+function ensureBranchDoesNotExist(repoRoot: string, branchName: string): void {
+  if (localBranchExists(repoRoot, branchName)) {
     throw new Error(`Branch "${branchName}" already exists.`);
   }
+}
+
+function switchToExistingIssueBranch(repoRoot: string, branchName: string): void {
+  console.log(`Switching to existing issue branch ${branchName}...`);
+  runInteractiveCommand(
+    "git",
+    ["checkout", branchName],
+    `Failed to switch to existing issue branch "${branchName}".`,
+    repoRoot
+  );
 }
 
 function syncIssueBaseBranch(repoRoot: string, baseBranch: string): void {
@@ -1180,6 +1401,51 @@ function syncIssueBaseBranch(repoRoot: string, baseBranch: string): void {
     `Failed to pull latest changes for base branch "${baseBranch}".`,
     repoRoot
   );
+}
+
+function updateIssueWorkspaceMetadata(
+  workspace: IssueWorkspace,
+  updater: (currentMetadata: Record<string, unknown>) => Record<string, unknown>
+): void {
+  const currentMetadata = JSON.parse(
+    readFileSync(workspace.metadataFilePath, "utf8")
+  ) as Record<string, unknown>;
+  writeFileSync(
+    workspace.metadataFilePath,
+    `${JSON.stringify(updater(currentMetadata), null, 2)}\n`,
+    "utf8"
+  );
+}
+
+function createIssueSessionState(
+  repoRoot: string,
+  context: IssueRunContext,
+  sessionId: string
+): IssueSessionState {
+  const previousState = loadIssueSessionState(repoRoot, context.issueNumber);
+  const createdAt = previousState?.createdAt ?? new Date().toISOString();
+
+  return {
+    issueNumber: context.issueNumber,
+    branchName: context.branchName,
+    issueDir: toRepoRelativePath(repoRoot, context.workspace.issueDir),
+    runDir: toRepoRelativePath(repoRoot, context.workspace.runDir),
+    promptFile: toRepoRelativePath(repoRoot, context.workspace.promptFilePath),
+    outputLog: toRepoRelativePath(repoRoot, context.workspace.outputLogPath),
+    sessionId,
+    sandboxMode: CODEX_SANDBOX_MODE,
+    approvalPolicy: CODEX_APPROVAL_POLICY,
+    createdAt,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function persistIssueSessionState(
+  repoRoot: string,
+  context: IssueRunContext,
+  sessionId: string
+): void {
+  writeIssueSessionState(repoRoot, createIssueSessionState(repoRoot, context, sessionId));
 }
 
 function buildCodexPrompt(
@@ -1231,7 +1497,9 @@ function writeIssueWorkspaceFiles(
   branchName: string,
   workspace: IssueWorkspace,
   mode: IssueExecutionMode,
-  buildCommand: string[]
+  buildCommand: string[],
+  codexInvocation: "new" | "resume",
+  sessionId?: string
 ): void {
   const createdAt = new Date().toISOString();
   const prompt = buildCodexPrompt(repoRoot, workspace, mode, buildCommand);
@@ -1257,6 +1525,13 @@ function writeIssueWorkspaceFiles(
         issueFile: toRepoRelativePath(repoRoot, workspace.issueFilePath),
         promptFile: toRepoRelativePath(repoRoot, workspace.promptFilePath),
         outputLog: toRepoRelativePath(repoRoot, workspace.outputLogPath),
+        runDir: toRepoRelativePath(repoRoot, workspace.runDir),
+        codex: {
+          invocation: codexInvocation,
+          sessionId,
+          sandboxMode: CODEX_SANDBOX_MODE,
+          approvalPolicy: CODEX_APPROVAL_POLICY,
+        },
       },
       null,
       2
@@ -1271,6 +1546,8 @@ function writeIssueWorkspaceFiles(
       `Created: ${createdAt}`,
       `Issue snapshot: ${toRepoRelativePath(repoRoot, workspace.issueFilePath)}`,
       `Prompt file: ${toRepoRelativePath(repoRoot, workspace.promptFilePath)}`,
+      `Codex invocation: ${codexInvocation}`,
+      ...(sessionId ? [`Codex session: ${sessionId}`] : []),
       "",
     ].join("\n"),
     "utf8"
@@ -1368,7 +1645,11 @@ function runCodex(
   workspace: {
     promptFilePath: string;
     outputLogPath: string;
-  }
+  },
+  options: {
+    resumeSessionId?: string;
+    onNewSessionRecorded?: (sessionId: string) => void;
+  } = {}
 ): void {
   if (!canRunCommand("codex")) {
     throw new Error(
@@ -1376,18 +1657,37 @@ function runCodex(
     );
   }
 
-  const args = [
-    "--sandbox",
-    "workspace-write",
-    "--ask-for-approval",
-    "on-request",
-    "--cd",
+  const prompt = `Read and follow the instructions in ${toRepoRelativePath(
     repoRoot,
-    `Read and follow the instructions in ${toRepoRelativePath(
-      repoRoot,
-      workspace.promptFilePath
-    )}.`,
-  ];
+    workspace.promptFilePath
+  )}.`;
+  const args = options.resumeSessionId
+    ? [
+        "resume",
+        options.resumeSessionId,
+        "--sandbox",
+        CODEX_SANDBOX_MODE,
+        "--ask-for-approval",
+        CODEX_APPROVAL_POLICY,
+        "--cd",
+        repoRoot,
+        prompt,
+      ]
+    : [
+        "--sandbox",
+        CODEX_SANDBOX_MODE,
+        "--ask-for-approval",
+        CODEX_APPROVAL_POLICY,
+        "--cd",
+        repoRoot,
+        prompt,
+      ];
+  const startedAt = Date.now();
+  const previousSessionFilePaths = new Set(
+    options.resumeSessionId
+      ? []
+      : listCodexSessionRecords(repoRoot).map((record) => record.filePath)
+  );
 
   appendRunLog(
     workspace.outputLogPath,
@@ -1412,6 +1712,27 @@ function runCodex(
     throw new Error(
       "The interactive Codex session did not complete successfully."
     );
+  }
+
+  if (!options.resumeSessionId && options.onNewSessionRecorded) {
+    const sessionId = findNewCodexSessionId(
+      repoRoot,
+      previousSessionFilePaths,
+      startedAt
+    );
+    if (!sessionId) {
+      appendFileSync(
+        workspace.outputLogPath,
+        [
+          "Warning: git-ai could not determine the new Codex session id for future resume support.",
+          "",
+        ].join("\n"),
+        "utf8"
+      );
+      return;
+    }
+
+    options.onNewSessionRecorded(sessionId);
   }
 }
 
@@ -2272,7 +2593,10 @@ async function runIssuePlanCommand(issueNumber: number): Promise<void> {
 
 async function prepareIssueRun(
   issueNumber: number,
-  mode: IssueExecutionMode
+  mode: IssueExecutionMode,
+  options: {
+    allowResume?: boolean;
+  } = {}
 ): Promise<IssueRunContext> {
   const repoRoot = getDefaultRepoRoot();
   const forge = getRepositoryForge(repoRoot);
@@ -2286,6 +2610,68 @@ async function prepareIssueRun(
   console.log(`Fetching issue #${issueNumber}...`);
   const issue = await forge.fetchIssueDetails(issueNumber);
   const planComment = await forge.fetchIssuePlanComment(issueNumber);
+  const sessionStateFilePath = getIssueSessionStateFilePath(repoRoot, issueNumber);
+  const existingSessionState =
+    options.allowResume && mode === "local"
+      ? loadIssueSessionState(repoRoot, issueNumber)
+      : undefined;
+
+  if (existingSessionState) {
+    const savedSession = findCodexSessionById(repoRoot, existingSessionState.sessionId);
+    if (!savedSession) {
+      throw new Error(
+        buildIssueResumeRecoveryMessage(
+          repoRoot,
+          issueNumber,
+          `Saved Codex session ${existingSessionState.sessionId} for issue #${issueNumber} is no longer available.`
+        )
+      );
+    }
+
+    if (!localBranchExists(repoRoot, existingSessionState.branchName)) {
+      throw new Error(
+        buildIssueResumeRecoveryMessage(
+          repoRoot,
+          issueNumber,
+          `Saved issue branch "${existingSessionState.branchName}" for issue #${issueNumber} no longer exists locally.`
+        )
+      );
+    }
+
+    switchToExistingIssueBranch(repoRoot, existingSessionState.branchName);
+    const workspace = createIssueWorkspace(
+      repoRoot,
+      issueNumber,
+      issue,
+      resolve(repoRoot, existingSessionState.issueDir)
+    );
+    writeIssueWorkspaceFiles(
+      repoRoot,
+      issueNumber,
+      issue,
+      planComment,
+      existingSessionState.branchName,
+      workspace,
+      mode,
+      repositoryConfig.buildCommand,
+      "resume",
+      existingSessionState.sessionId
+    );
+
+    return {
+      issueNumber,
+      issue,
+      planComment,
+      branchName: existingSessionState.branchName,
+      workspace,
+      mode,
+      codex: {
+        invocation: "resume",
+        sessionId: existingSessionState.sessionId,
+        sessionStateFilePath,
+      },
+    };
+  }
 
   const branchName = createIssueBranchName(issueNumber, issue.title);
   ensureBranchDoesNotExist(repoRoot, branchName);
@@ -2299,7 +2685,8 @@ async function prepareIssueRun(
     branchName,
     workspace,
     mode,
-    repositoryConfig.buildCommand
+    repositoryConfig.buildCommand,
+    "new"
   );
 
   console.log(`Creating branch ${branchName}...`);
@@ -2317,6 +2704,10 @@ async function prepareIssueRun(
     branchName,
     workspace,
     mode,
+    codex: {
+      invocation: "new",
+      sessionStateFilePath,
+    },
   };
 }
 
@@ -2405,14 +2796,38 @@ async function runIssueCommand(): Promise<void> {
     );
   }
 
-  const context = await prepareIssueRun(issueCommand.issueNumber, issueCommand.mode);
+  const context = await prepareIssueRun(issueCommand.issueNumber, issueCommand.mode, {
+    allowResume: true,
+  });
   const repositoryConfig = getRepositoryConfig(repoRoot);
   const forge = getRepositoryForge(repoRoot);
 
-  console.log("Opening an interactive Codex session in this terminal...");
+  console.log(
+    context.codex.invocation === "resume"
+      ? "Resuming the saved interactive Codex session in this terminal..."
+      : "Opening an interactive Codex session in this terminal..."
+  );
   console.log("Complete the issue work in Codex.");
   console.log("When Codex exits, git-ai will resume with build and commit steps.");
-  runCodex(repoRoot, context.workspace);
+  runCodex(repoRoot, context.workspace, {
+    resumeSessionId: context.codex.sessionId,
+    onNewSessionRecorded: (sessionId) => {
+      persistIssueSessionState(repoRoot, context, sessionId);
+      updateIssueWorkspaceMetadata(context.workspace, (currentMetadata) => ({
+        ...currentMetadata,
+        codex: {
+          invocation: "new",
+          sessionId,
+          sandboxMode: CODEX_SANDBOX_MODE,
+          approvalPolicy: CODEX_APPROVAL_POLICY,
+        },
+      }));
+    },
+  });
+
+  if (context.codex.invocation === "resume" && context.codex.sessionId) {
+    persistIssueSessionState(repoRoot, context, context.codex.sessionId);
+  }
 
   console.log("Verifying build...");
   verifyBuild(repoRoot, repositoryConfig.buildCommand, context.workspace.outputLogPath);
