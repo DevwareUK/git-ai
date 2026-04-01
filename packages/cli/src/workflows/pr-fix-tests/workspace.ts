@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { buildCodexDoneStateInstructions } from "../../codex-done-state";
 import { formatCommandForDisplay } from "../../config";
+import { buildDoneStateInstructions } from "../../done-state";
 import type { PullRequestDetails } from "../../forge";
 import { formatRunTimestamp, toRepoRelativePath } from "../../run-artifacts";
 import { formatPullRequestTestSuggestionsSnapshot } from "./snapshot";
@@ -34,14 +34,14 @@ export function createPullRequestFixTestsWorkspace(
   };
 }
 
-function buildPullRequestFixTestsCodexPrompt(
+function buildPullRequestFixTestsRuntimePrompt(
   repoRoot: string,
   workspace: PullRequestFixTestsWorkspace,
   buildCommand: string[]
 ): string {
   const snapshotFile = toRepoRelativePath(repoRoot, workspace.snapshotFilePath);
   const runDir = toRepoRelativePath(repoRoot, workspace.runDir);
-  const doneStateInstructions = buildCodexDoneStateInstructions({
+  const doneStateInstructions = buildDoneStateInstructions({
     mode: "interactive",
     readyLabel: "Ready to commit",
   });
@@ -52,7 +52,7 @@ function buildPullRequestFixTestsCodexPrompt(
     `Read the pull request test suggestions fix snapshot at \`${snapshotFile}\` before making changes.`,
     `Use \`${runDir}\` for run artifacts created by this workflow.`,
     "",
-    "Instructions to Codex:",
+    "Instructions to the coding agent:",
     "- analyze the repository only as needed for the selected test suggestions",
     "- keep code changes focused on implementing automated tests for the selected areas",
     "- follow existing architecture and test patterns",
@@ -76,7 +76,11 @@ export function writePullRequestFixTestsWorkspaceFiles(
   linkedIssues: PullRequestLinkedIssueContext[]
 ): void {
   const createdAt = new Date().toISOString();
-  const prompt = buildPullRequestFixTestsCodexPrompt(repoRoot, workspace, buildCommand);
+  const prompt = buildPullRequestFixTestsRuntimePrompt(
+    repoRoot,
+    workspace,
+    buildCommand
+  );
 
   writeFileSync(
     workspace.snapshotFilePath,

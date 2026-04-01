@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildCodexDoneStateInstructions } from "./codex-done-state";
+import { buildDoneStateInstructions } from "./done-state";
 
-describe("buildCodexDoneStateInstructions", () => {
+describe("buildDoneStateInstructions", () => {
   it("uses plain-language next steps for interactive prompts", () => {
-    const instructions = buildCodexDoneStateInstructions({
+    const instructions = buildDoneStateInstructions({
       mode: "interactive",
       readyLabel: "Ready to commit",
     }).join("\n");
@@ -23,7 +23,7 @@ describe("buildCodexDoneStateInstructions", () => {
   });
 
   it("keeps non-interactive prompts from asking for more input", () => {
-    const instructions = buildCodexDoneStateInstructions({
+    const instructions = buildDoneStateInstructions({
       mode: "non-interactive",
       readyLabel: "Ready for the next automation step",
     }).join("\n");

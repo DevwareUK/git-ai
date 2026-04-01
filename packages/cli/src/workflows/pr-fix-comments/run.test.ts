@@ -126,13 +126,13 @@ describe("runPrFixCommentsCommand", () => {
     rmSync(repoRoot, { recursive: true, force: true });
   });
 
-  it("fetches PR review context, runs Codex, verifies the build, and commits the reviewed message", async () => {
+  it("fetches PR review context, runs the selected runtime, verifies the build, and commits the reviewed message", async () => {
     const { forge, fetchPullRequestDetails, fetchPullRequestReviewComments } = createForge([
       createReviewComment("Guard against an empty comment selection before starting Codex."),
     ]);
     const promptForLine = vi.fn().mockResolvedValueOnce("1").mockResolvedValueOnce("y");
     const ensureCleanWorkingTree = vi.fn();
-    const runCodex = vi.fn();
+    const launch = vi.fn();
     const verifyBuild = vi.fn();
     const hasChanges = vi.fn().mockReturnValue(true);
     const commitGeneratedChanges = vi.fn();
@@ -141,10 +141,15 @@ describe("runPrFixCommentsCommand", () => {
       prNumber: 88,
       repoRoot,
       buildCommand: ["pnpm", "build"],
+      runtime: {
+        resolve: () => ({
+          displayName: "Codex",
+          launch,
+        }),
+      },
       forge,
       ensureCleanWorkingTree,
       promptForLine,
-      runCodex,
       verifyBuild,
       hasChanges,
       commitGeneratedChanges,
@@ -175,7 +180,7 @@ describe("runPrFixCommentsCommand", () => {
         }),
       ]
     );
-    expect(runCodex).toHaveBeenCalledWith(repoRoot, workspace);
+    expect(launch).toHaveBeenCalledWith(repoRoot, workspace);
     expect(verifyBuild).toHaveBeenCalledWith(repoRoot, ["pnpm", "build"], workspace.outputLogPath);
     expect(hasChanges).toHaveBeenCalledWith(repoRoot);
     expect(commitGeneratedChanges).toHaveBeenCalledWith(
@@ -200,7 +205,7 @@ describe("runPrFixCommentsCommand", () => {
       createReviewComment("Guard against an empty comment selection before starting Codex."),
     ]);
     const promptForLine = vi.fn().mockResolvedValueOnce("1").mockResolvedValueOnce("n");
-    const runCodex = vi.fn();
+    const launch = vi.fn();
     const verifyBuild = vi.fn();
     const hasChanges = vi.fn().mockReturnValue(true);
     const commitGeneratedChanges = vi.fn();
@@ -209,16 +214,21 @@ describe("runPrFixCommentsCommand", () => {
       prNumber: 88,
       repoRoot,
       buildCommand: ["pnpm", "build"],
+      runtime: {
+        resolve: () => ({
+          displayName: "Codex",
+          launch,
+        }),
+      },
       forge,
       ensureCleanWorkingTree: vi.fn(),
       promptForLine,
-      runCodex,
       verifyBuild,
       hasChanges,
       commitGeneratedChanges,
     });
 
-    expect(runCodex).toHaveBeenCalledWith(repoRoot, workspace);
+    expect(launch).toHaveBeenCalledWith(repoRoot, workspace);
     expect(verifyBuild).toHaveBeenCalledWith(repoRoot, ["pnpm", "build"], workspace.outputLogPath);
     expect(hasChanges).toHaveBeenCalledWith(repoRoot);
     expect(commitGeneratedChanges).not.toHaveBeenCalled();
@@ -229,7 +239,7 @@ describe("runPrFixCommentsCommand", () => {
       createReviewComment("Guard against an empty comment selection before starting Codex."),
     ]);
     const promptForLine = vi.fn().mockResolvedValueOnce("1").mockResolvedValueOnce("m").mockResolvedValueOnce("y");
-    const runCodex = vi.fn();
+    const launch = vi.fn();
     const verifyBuild = vi.fn();
     const hasChanges = vi.fn().mockReturnValue(true);
     const commitGeneratedChanges = vi.fn();
@@ -248,10 +258,15 @@ describe("runPrFixCommentsCommand", () => {
       prNumber: 88,
       repoRoot,
       buildCommand: ["pnpm", "build"],
+      runtime: {
+        resolve: () => ({
+          displayName: "Codex",
+          launch,
+        }),
+      },
       forge,
       ensureCleanWorkingTree: vi.fn(),
       promptForLine,
-      runCodex,
       verifyBuild,
       hasChanges,
       commitGeneratedChanges,

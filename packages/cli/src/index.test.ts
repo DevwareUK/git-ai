@@ -263,11 +263,75 @@ function createFetchResponse(
 
 function parseMockRepositoryConfig(value?: unknown): Record<string, unknown> {
   const config = (value ?? {}) as {
+    ai?: {
+      runtime?: { type?: unknown };
+      provider?: {
+        type?: unknown;
+        model?: unknown;
+        baseUrl?: unknown;
+        region?: unknown;
+      };
+    };
     aiContext?: { excludePaths?: unknown };
     baseBranch?: unknown;
     buildCommand?: unknown;
     forge?: { type?: unknown };
   };
+
+  if (config.ai?.runtime !== undefined) {
+    if (
+      typeof config.ai.runtime !== "object" ||
+      config.ai.runtime === null ||
+      (config.ai.runtime.type !== "codex" && config.ai.runtime.type !== "claude-code")
+    ) {
+      throw new Error("ai.runtime.type must be codex or claude-code");
+    }
+  }
+
+  if (config.ai?.provider !== undefined) {
+    if (typeof config.ai.provider !== "object" || config.ai.provider === null) {
+      throw new Error("ai.provider must be an object");
+    }
+
+    if (
+      config.ai.provider.type !== "openai" &&
+      config.ai.provider.type !== "bedrock-claude"
+    ) {
+      throw new Error("ai.provider.type must be openai or bedrock-claude");
+    }
+
+    if (
+      config.ai.provider.model !== undefined &&
+      (typeof config.ai.provider.model !== "string" ||
+        config.ai.provider.model.trim().length === 0)
+    ) {
+      throw new Error("ai.provider.model must be a non-empty string");
+    }
+
+    if (
+      config.ai.provider.baseUrl !== undefined &&
+      (typeof config.ai.provider.baseUrl !== "string" ||
+        config.ai.provider.baseUrl.trim().length === 0)
+    ) {
+      throw new Error("ai.provider.baseUrl must be a non-empty string");
+    }
+
+    if (
+      config.ai.provider.region !== undefined &&
+      (typeof config.ai.provider.region !== "string" ||
+        config.ai.provider.region.trim().length === 0)
+    ) {
+      throw new Error("ai.provider.region must be a non-empty string");
+    }
+
+    if (
+      config.ai.provider.type === "bedrock-claude" &&
+      (typeof config.ai.provider.model !== "string" ||
+        config.ai.provider.model.trim().length === 0)
+    ) {
+      throw new Error("ai.provider.model is required for bedrock-claude");
+    }
+  }
 
   if (config.aiContext?.excludePaths !== undefined) {
     if (
@@ -620,11 +684,25 @@ async function loadCli(options: {
     mergePRAssistantSection: prAssistantBody.mergePRAssistantSection,
     StructuredGenerationError,
     resolveRepositoryConfig: vi.fn((config?: {
+      ai?: {
+        runtime?: { type?: "codex" | "claude-code" };
+        provider?:
+          | { type?: "openai"; model?: string; baseUrl?: string }
+          | { type?: "bedrock-claude"; model?: string; region?: string };
+      };
       aiContext?: { excludePaths?: string[] };
       baseBranch?: string;
       buildCommand?: string[];
       forge?: { type?: "github" | "none" };
     }) => ({
+      ai: {
+        runtime: config?.ai?.runtime ?? {
+          type: "codex",
+        },
+        provider: config?.ai?.provider ?? {
+          type: "openai",
+        },
+      },
       aiContext: {
         excludePaths: [
           ...new Set([
@@ -645,6 +723,57 @@ async function loadCli(options: {
     RepositoryConfig: {
       parse: vi.fn((value?: unknown) => parseMockRepositoryConfig(value)),
     },
+  }));
+  vi.doMock("@git-ai/providers", () => ({
+    createProviderFromConfig: vi.fn(async (config: { type: string }, environment: {
+      openaiApiKey?: string;
+      openaiModel?: string;
+      openaiBaseUrl?: string;
+      awsRegion?: string;
+      awsDefaultRegion?: string;
+    }) => {
+      if (config.type === "openai") {
+        if (!environment.openaiApiKey) {
+          throw new Error(
+            "OpenAI provider requires OPENAI_API_KEY. Set it in your environment or in a .env file."
+          );
+        }
+
+        return {
+          providerType: "openai",
+        };
+      }
+
+      const region = environment.awsRegion ?? environment.awsDefaultRegion;
+      if (!("model" in config) || typeof config.model !== "string" || !config.model.trim()) {
+        throw new Error(
+          "Bedrock Claude provider requires an explicit model in `.git-ai/config.json` under `ai.provider.model`."
+        );
+      }
+
+      if (!region && !("region" in config && typeof config.region === "string")) {
+        throw new Error(
+          "Bedrock Claude provider requires a region. Set `ai.provider.region`, `AWS_REGION`, or `AWS_DEFAULT_REGION`."
+        );
+      }
+
+      if (!process.env.AWS_ACCESS_KEY_ID && !process.env.AWS_PROFILE) {
+        throw new Error(
+          "Bedrock Claude provider could not resolve AWS credentials using the standard AWS provider chain. credentials missing"
+        );
+      }
+
+      return {
+        providerType: "bedrock-claude",
+      };
+    }),
+    readProviderEnvironment: vi.fn(() => ({
+      openaiApiKey: process.env.OPENAI_API_KEY?.trim() || undefined,
+      openaiModel: process.env.OPENAI_MODEL?.trim() || undefined,
+      openaiBaseUrl: process.env.OPENAI_BASE_URL?.trim() || undefined,
+      awsRegion: process.env.AWS_REGION?.trim() || undefined,
+      awsDefaultRegion: process.env.AWS_DEFAULT_REGION?.trim() || undefined,
+    })),
   }));
   vi.doMock("node:child_process", () => ({
     execFileSync,
@@ -2203,10 +2332,10 @@ describe("CLI integration", () => {
     expect(agentsContent).toContain("`none`");
   });
 
-  it("launches a Codex-led issue draft workflow and saves the draft under .git-ai/issues", async () => {
+  it("launches the default issue draft runtime workflow and saves the draft under .git-ai/issues", async () => {
     const beforeDrafts = listIssueDraftFiles();
     const beforeRuns = listRunDirectories();
-    let codexPrompt = "";
+    let runtimePrompt = "";
 
     const { run } = await loadCli({
       readlineAnswers: [
@@ -2219,7 +2348,7 @@ describe("CLI integration", () => {
 
         if (command === "codex") {
           const { metadata } = readLatestRunMetadata();
-          codexPrompt = readFileSync(
+          runtimePrompt = readFileSync(
             resolve(REPO_ROOT, metadata.promptFile as string),
             "utf8"
           );
@@ -2261,14 +2390,14 @@ describe("CLI integration", () => {
     process.argv = ["node", "git-ai", "issue", "draft"];
     await run();
 
-    expect(codexPrompt).toContain(
+    expect(runtimePrompt).toContain(
       "Combine PR description and review summary into a single PR assistant action."
     );
-    expect(codexPrompt).toContain("ask the user targeted clarifying questions");
-    expect(codexPrompt).toContain(
+    expect(runtimePrompt).toContain("ask the user targeted clarifying questions");
+    expect(runtimePrompt).toContain(
       "avoid asking questions that are already answerable from the codebase"
     );
-    expect(codexPrompt).toContain("Write the final Markdown issue draft");
+    expect(runtimePrompt).toContain("Write the final Markdown issue draft");
 
     const createdDraft = listIssueDraftFiles().find((entry) => !beforeDrafts.includes(entry));
     expect(createdDraft).toBeDefined();
@@ -2289,6 +2418,9 @@ describe("CLI integration", () => {
       draftFile: string;
       promptFile: string;
       runDir: string;
+      runtime?: {
+        type: string;
+      };
     };
     expect(metadata).toMatchObject({
       flow: "issue-draft",
@@ -2297,6 +2429,9 @@ describe("CLI integration", () => {
       draftFile: `.git-ai/issues/${createdDraft}`,
       promptFile: `.git-ai/runs/${createdRunDir}/prompt.md`,
       runDir: `.git-ai/runs/${createdRunDir}`,
+      runtime: {
+        type: "codex",
+      },
     });
 
     const content = readFileSync(
@@ -2305,6 +2440,87 @@ describe("CLI integration", () => {
     );
     expect(content).toContain("# Merge PR description and review summary into one PR assistant action");
     expect(content).toContain("## Acceptance criteria");
+  });
+
+  it("uses the configured Claude Code runtime for issue draft workflows", async () => {
+    const beforeDrafts = listIssueDraftFiles();
+    const beforeRuns = listRunDirectories();
+    let runtimePrompt = "";
+
+    await withRepositoryConfig(
+      JSON.stringify(
+        {
+          ai: {
+            runtime: {
+              type: "claude-code",
+            },
+          },
+        },
+        null,
+        2
+      ),
+      async () => {
+        const { run } = await loadCli({
+          readlineAnswers: ["Draft the Claude Code runtime support issue."],
+          spawnSyncImpl: (command, args) => {
+            if (command === "claude" && args[0] === "--version") {
+              return { status: 0 };
+            }
+
+            if (command === "claude") {
+              const { metadata } = readLatestRunMetadata();
+              runtimePrompt = readFileSync(
+                resolve(REPO_ROOT, metadata.promptFile as string),
+                "utf8"
+              );
+              writeFileSync(
+                resolve(REPO_ROOT, metadata.draftFile as string),
+                "# Add Claude Code runtime support\n\n## Summary\nLaunch Claude Code for local issue drafting.\n",
+                "utf8"
+              );
+              return { status: 0 };
+            }
+
+            if (command === "gh" && args[0] === "--version") {
+              return { status: 1, error: new Error("gh is unavailable") };
+            }
+
+            throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+          },
+        });
+
+        process.argv = ["node", "git-ai", "issue", "draft"];
+        await run();
+      }
+    );
+
+    const createdDraft = listIssueDraftFiles().find((entry) => !beforeDrafts.includes(entry));
+    expect(createdDraft).toBeDefined();
+    cleanupTargets.add(resolve(REPO_ROOT, ".git-ai", "issues", createdDraft as string));
+
+    const createdRunDir = listRunDirectories().find((entry) => !beforeRuns.includes(entry));
+    expect(createdRunDir).toBeDefined();
+    cleanupTargets.add(resolve(REPO_ROOT, ".git-ai", "runs", createdRunDir as string));
+
+    expect(runtimePrompt).toContain("Draft the Claude Code runtime support issue.");
+
+    const metadata = JSON.parse(
+      readFileSync(
+        resolve(REPO_ROOT, ".git-ai", "runs", createdRunDir as string, "metadata.json"),
+        "utf8"
+      )
+    ) as {
+      runtime?: {
+        type?: string;
+        command?: string;
+      };
+    };
+    expect(metadata).toMatchObject({
+      runtime: {
+        type: "claude-code",
+        command: "claude",
+      },
+    });
   });
 
   it("requires the codex CLI for issue draft workflows", async () => {
@@ -2322,7 +2538,7 @@ describe("CLI integration", () => {
     process.argv = ["node", "git-ai", "issue", "draft"];
 
     await expect(run()).rejects.toThrow(
-      "The `codex` CLI is not available on PATH. Install it before running interactive git-ai Codex workflows."
+      'Configured runtime "Codex" is unavailable because the `codex` CLI is not available on PATH. Install the missing dependency before running interactive git-ai workflows.'
     );
   });
 
@@ -2956,7 +3172,7 @@ describe("CLI integration", () => {
     expect(readFileSync(issueFilePath, "utf8")).toContain("## Resolution Plan");
     expect(readFileSync(issueFilePath, "utf8")).toContain("Edited plan from GitHub.");
     expect(readFileSync(promptFilePath, "utf8")).toContain(
-      "You are running inside a GitHub Actions workflow via Codex."
+      "You are running inside a GitHub Actions workflow via the configured interactive coding runtime."
     );
     expect(readFileSync(promptFilePath, "utf8")).toContain(
       "if the issue snapshot includes a resolution plan, treat it as the latest plan of record"
@@ -3204,6 +3420,7 @@ describe("CLI integration", () => {
     cleanupTargets.add(resolve(REPO_ROOT, ".git-ai", "runs", createdRunDir as string));
 
     const sessionState = JSON.parse(readFileSync(sessionStatePath, "utf8")) as {
+      runtimeType: string;
       branchName: string;
       sessionId: string;
       runDir: string;
@@ -3213,6 +3430,7 @@ describe("CLI integration", () => {
     };
     expect(sessionState).toMatchObject({
       issueNumber,
+      runtimeType: "codex",
       branchName,
       sessionId,
       runDir: `.git-ai/runs/${createdRunDir}`,
@@ -3226,7 +3444,8 @@ describe("CLI integration", () => {
     const metadata = JSON.parse(
       readFileSync(resolve(REPO_ROOT, ".git-ai", "runs", createdRunDir as string, "metadata.json"), "utf8")
     ) as {
-      codex?: {
+      runtime?: {
+        type?: string;
         invocation?: string;
         sessionId?: string;
       };
@@ -3234,7 +3453,8 @@ describe("CLI integration", () => {
     };
     expect(metadata).toMatchObject({
       branchName,
-      codex: {
+      runtime: {
+        type: "codex",
         invocation: "new",
         sessionId,
       },
@@ -3267,6 +3487,7 @@ describe("CLI integration", () => {
       `${JSON.stringify(
         {
           issueNumber,
+          runtimeType: "codex",
           branchName,
           issueDir: `.git-ai/issues/${issueNumber}-resume-saved-codex-sessions`,
           runDir: ".git-ai/runs/20260401T090000000Z-issue-149",
@@ -3416,13 +3637,15 @@ describe("CLI integration", () => {
     const metadata = JSON.parse(
       readFileSync(resolve(REPO_ROOT, ".git-ai", "runs", createdRunDir as string, "metadata.json"), "utf8")
     ) as {
-      codex?: {
+      runtime?: {
+        type?: string;
         invocation?: string;
         sessionId?: string;
       };
     };
     expect(metadata).toMatchObject({
-      codex: {
+      runtime: {
+        type: "codex",
         invocation: "resume",
         sessionId,
       },
@@ -3454,6 +3677,7 @@ describe("CLI integration", () => {
       `${JSON.stringify(
         {
           issueNumber,
+          runtimeType: "codex",
           branchName,
           issueDir: `.git-ai/issues/${issueNumber}-stale-codex-session-state`,
           runDir: ".git-ai/runs/20260401T092500000Z-issue-150",
@@ -3535,7 +3759,7 @@ describe("CLI integration", () => {
     );
     expect(spawnSync).not.toHaveBeenCalledWith(
       "codex",
-      expect.any(Array),
+      expect.arrayContaining(["resume", "019d5002-0000-7111-8222-933344445555"]),
       expect.any(Object)
     );
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -3543,6 +3767,17 @@ describe("CLI integration", () => {
 
   it("continues with build and commit flow when Codex exits a full issue run", async () => {
     const issueNumber = 145;
+    const sessionStateDir = resolve(REPO_ROOT, ".git-ai", "issues", String(issueNumber));
+    const issueWorkspaceDir = resolve(
+      REPO_ROOT,
+      ".git-ai",
+      "issues",
+      "145-resume-issue-automation-after-the-codex-session"
+    );
+    rmSync(sessionStateDir, { recursive: true, force: true });
+    rmSync(issueWorkspaceDir, { recursive: true, force: true });
+    cleanupTargets.add(sessionStateDir);
+    cleanupTargets.add(issueWorkspaceDir);
     let gitStatusCallCount = 0;
     const fetchMock = vi
       .fn()
@@ -3688,6 +3923,17 @@ describe("CLI integration", () => {
   it("writes a PR description diagnostic artifact during full issue runs when schema validation fails", async () => {
     const beforeRuns = listRunDirectories();
     const issueNumber = 147;
+    const sessionStateDir = resolve(REPO_ROOT, ".git-ai", "issues", String(issueNumber));
+    const issueWorkspaceDir = resolve(
+      REPO_ROOT,
+      ".git-ai",
+      "issues",
+      "147-persist-pr-description-diagnostics-in-issue-runs"
+    );
+    rmSync(sessionStateDir, { recursive: true, force: true });
+    rmSync(issueWorkspaceDir, { recursive: true, force: true });
+    cleanupTargets.add(sessionStateDir);
+    cleanupTargets.add(issueWorkspaceDir);
     let gitStatusCallCount = 0;
     const fetchMock = vi
       .fn()
@@ -3888,6 +4134,17 @@ describe("CLI integration", () => {
 
   it("uses repository config for issue build verification and pull request base branch", async () => {
     const issueNumber = 144;
+    const sessionStateDir = resolve(REPO_ROOT, ".git-ai", "issues", String(issueNumber));
+    const issueWorkspaceDir = resolve(
+      REPO_ROOT,
+      ".git-ai",
+      "issues",
+      "144-use-repository-config-in-issue-runs"
+    );
+    rmSync(sessionStateDir, { recursive: true, force: true });
+    rmSync(issueWorkspaceDir, { recursive: true, force: true });
+    cleanupTargets.add(sessionStateDir);
+    cleanupTargets.add(issueWorkspaceDir);
     const configPath = resolve(REPO_ROOT, ".git-ai", "config.json");
     const hadOriginalConfig = existsSync(configPath);
     const originalConfig = hadOriginalConfig ? readFileSync(configPath, "utf8") : undefined;
@@ -4457,7 +4714,7 @@ describe("CLI integration", () => {
     process.argv = ["node", "git-ai", "issue", "finalize", "29"];
 
     await expect(run()).rejects.toThrow(
-      "Codex completed without producing any file changes to commit."
+      "The interactive runtime completed without producing any file changes to commit."
     );
   });
 });
