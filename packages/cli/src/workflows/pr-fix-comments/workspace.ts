@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { buildCodexDoneStateInstructions } from "../../codex-done-state";
 import { formatCommandForDisplay } from "../../config";
+import { buildDoneStateInstructions } from "../../done-state";
 import type { PullRequestDetails } from "../../forge";
 import { formatRunTimestamp, toRepoRelativePath } from "../../run-artifacts";
 import { getReviewCommentDisplayLine } from "./selection";
@@ -34,14 +34,14 @@ export function createPullRequestFixWorkspace(
   };
 }
 
-function buildPullRequestFixCodexPrompt(
+function buildPullRequestFixRuntimePrompt(
   repoRoot: string,
   workspace: PullRequestFixWorkspace,
   buildCommand: string[]
 ): string {
   const snapshotFile = toRepoRelativePath(repoRoot, workspace.snapshotFilePath);
   const runDir = toRepoRelativePath(repoRoot, workspace.runDir);
-  const doneStateInstructions = buildCodexDoneStateInstructions({
+  const doneStateInstructions = buildDoneStateInstructions({
     mode: "interactive",
     readyLabel: "Ready to commit",
   });
@@ -52,7 +52,7 @@ function buildPullRequestFixCodexPrompt(
     `Read the pull request review fix snapshot at \`${snapshotFile}\` before making changes.`,
     `Use \`${runDir}\` for run artifacts created by this workflow.`,
     "",
-    "Instructions to Codex:",
+    "Instructions to the coding agent:",
     "- analyze the repository only as needed for the selected review tasks",
     "- keep code changes focused on addressing the selected review tasks",
     "- follow existing architecture patterns",
@@ -74,7 +74,7 @@ export function writePullRequestFixWorkspaceFiles(
   linkedIssues: PullRequestLinkedIssueContext[]
 ): void {
   const createdAt = new Date().toISOString();
-  const prompt = buildPullRequestFixCodexPrompt(repoRoot, workspace, buildCommand);
+  const prompt = buildPullRequestFixRuntimePrompt(repoRoot, workspace, buildCommand);
   const selectedComments = tasks.flatMap((task) => task.comments);
 
   writeFileSync(

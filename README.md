@@ -9,8 +9,8 @@ Build the CLI from this monorepo once, link it globally, then use it inside any 
 - turn rough ideas into structured issues
 - generate issue-resolution plans
 - run issue-to-PR workflows with AI
-- apply selected pull request review comments with Codex
-- implement selected AI pull request test suggestions with Codex
+- apply selected pull request review comments with the configured interactive runtime
+- implement selected AI pull request test suggestions with the configured interactive runtime
 - analyze backlog opportunities for testing and product work
 
 The repository also includes GitHub Actions for pull request review, PR assistance, and test suggestions.
@@ -21,7 +21,8 @@ The repository also includes GitHub Actions for pull request review, PR assistan
 
 - `git`
 - Node.js and `pnpm`
-- `OPENAI_API_KEY`
+- one configured AI provider:
+  `OPENAI_API_KEY` for the default OpenAI provider, or AWS credentials plus region for `bedrock-claude`
 
 ### Install the CLI once
 
@@ -43,7 +44,10 @@ Create a `.env` file in the target repository:
 OPENAI_API_KEY=your_key_here
 OPENAI_MODEL=gpt-4o-mini
 OPENAI_BASE_URL=https://api.openai.com/v1
+AWS_REGION=eu-west-1
 ```
+
+`OPENAI_*` is used by the default `openai` provider. `AWS_REGION` or `AWS_DEFAULT_REGION` plus standard AWS credentials is used when `.git-ai/config.json` selects the `bedrock-claude` provider.
 
 Then run the guided repository setup:
 
@@ -72,7 +76,9 @@ git-ai test-backlog --top 5
 
 You only need extra tooling for advanced workflows:
 
-- `codex` on `PATH` for `git-ai issue draft`, full local `git-ai issue <number>` runs, `git-ai pr fix-comments <pr-number>`, and `git-ai pr fix-tests <pr-number>`
+- the configured interactive runtime on `PATH` for `git-ai issue draft`, full local `git-ai issue <number>` runs, `git-ai pr fix-comments <pr-number>`, and `git-ai pr fix-tests <pr-number>`
+  default: `codex`
+  `ai.runtime.type: "claude-code"`: `claude`
 - `gh`, `GH_TOKEN`, or `GITHUB_TOKEN` for GitHub-backed issue and pull request flows
 
 `git-ai` resolves the active repository from your current Git working tree at runtime. It loads `.env` and `.git-ai/config.json` from that repository root, not from the CLI build location.
@@ -108,7 +114,7 @@ git-ai issue draft
 git-ai issue plan 54
 ```
 
-Use `draft` to hand a rough idea to an interactive Codex-led issue drafting flow. The CLI writes `.git-ai/` run artifacts, launches Codex so it can inspect the repository, ask only the follow-up questions it still needs, and write the draft under `.git-ai/issues/`, then prints the draft in the terminal and lets you create it as-is, open it in `$VISUAL`, `$EDITOR`, or `vim` to modify it first, or keep the draft file on disk without creating the issue. Use `plan` to generate or refresh the managed issue-resolution plan comment for an existing GitHub issue.
+Use `draft` to hand a rough idea to the configured interactive runtime. The CLI writes `.git-ai/` run artifacts, launches the runtime so it can inspect the repository, ask only the follow-up questions it still needs, and write the draft under `.git-ai/issues/`, then prints the draft in the terminal and lets you create it as-is, open it in `$VISUAL`, `$EDITOR`, or `vim` to modify it first, or keep the draft file on disk without creating the issue. Use `plan` to generate or refresh the managed issue-resolution plan comment for an existing GitHub issue through the configured text-generation provider.
 
 ### Full issue-to-PR flow
 
@@ -117,10 +123,11 @@ git-ai issue 54
 ```
 
 On the first local run for an issue, `git-ai issue 54` fetches the configured issue, switches to the configured `baseBranch`, pulls the latest changes, creates the working branch, writes `.git-ai/` run artifacts, and opens a new interactive Codex session. After Codex returns control, `git-ai` runs the configured build command, generates a proposed commit message from the completed diff, lets you commit it as-is or edit it first, and then generates a reviewer-ready PR title/body from the diff before opening a pull request when the configured forge supports it. The generated PR body includes both an issue-closing reference such as `Closes #54` and the managed PR assistant section markers used by the PR assistant automation.
+On the first local run for an issue, `git-ai issue 54` fetches the configured issue, switches to the configured `baseBranch`, pulls the latest changes, creates the working branch, writes `.git-ai/` run artifacts, and opens a new interactive runtime session. After the runtime returns control, `git-ai` runs the configured build command, generates a proposed commit message from the completed diff, lets you commit it as-is or edit it first, and then generates a reviewer-ready PR title/body from the diff before opening a pull request when the configured forge supports it. The generated PR body includes both an issue-closing reference such as `Closes #54` and the managed PR assistant section markers used by the PR assistant automation.
 
-Later `git-ai issue 54` runs look up the saved issue-scoped Codex session under `.git-ai/`, switch back to the saved issue branch, and resume that same interactive Codex session instead of trying to create a fresh branch again. Each resumed run still writes a new `.git-ai/runs/...` trace for that issue. If the saved session or branch is no longer valid, the command fails with a recovery message that tells you which `.git-ai/issues/<number>/session.json` file to remove before starting a fresh issue run.
+Later `git-ai issue 54` runs switch back to the saved issue branch and continue from the saved `.git-ai/` issue state. With the default `codex` runtime, `git-ai` also resumes the saved Codex session when it is still available. With `claude-code`, later runs reopen the saved branch and start a fresh Claude Code session against the current issue prompt. If the saved branch or tracked runtime session is no longer valid, the command fails with a recovery message that tells you which `.git-ai/issues/<number>/session.json` file to remove before starting a fresh issue run.
 
-At the end of a successful local Codex run, the generated prompt asks Codex to finish with an explicit done-state summary, a short note about how to see the result in action or what was verified, and plain-language next steps. If you want more changes, keep talking to Codex. When you are satisfied and want `git-ai` to resume, type `/exit`.
+At the end of a successful local runtime session, the generated prompt asks the agent to finish with an explicit done-state summary, a short note about how to see the result in action or what was verified, and plain-language next steps. If you want more changes, keep talking to the runtime. When you are satisfied and want `git-ai` to resume, type `/exit`.
 
 If you need separate setup and completion steps:
 
@@ -141,7 +148,7 @@ git-ai issue prepare 54 --mode github-action
 git-ai pr fix-comments 88
 ```
 
-Use this when the PR branch is already checked out locally and you want `git-ai` to fetch the PR review comments, let you choose which actionable comments to address, open Codex with a focused prompt, run the configured build command, and then review, edit, or skip the proposed commit message before committing the result.
+Use this when the PR branch is already checked out locally and you want `git-ai` to fetch the PR review comments, let you choose which actionable comments to address, open the configured interactive runtime with a focused prompt, run the configured build command, and then review, edit, or skip the proposed commit message before committing the result.
 
 Nearby comments on the same file are grouped into optional review tasks, non-trivial reply comments are kept as thread context, and the generated `.git-ai/runs/.../pr-review-comments.md` snapshot includes linked issue context plus local file excerpts when available.
 
@@ -151,7 +158,7 @@ Nearby comments on the same file are grouped into optional review tasks, non-tri
 git-ai pr fix-tests 88
 ```
 
-Use this when the PR branch is already checked out locally and you want `git-ai` to fetch the managed AI Test Suggestions comment, let you choose which structured test suggestions to implement, open Codex with a focused test-oriented prompt, run the configured build command, and then review, edit, or skip the proposed commit message before committing the result.
+Use this when the PR branch is already checked out locally and you want `git-ai` to fetch the managed AI Test Suggestions comment, let you choose which structured test suggestions to implement, open the configured interactive runtime with a focused test-oriented prompt, run the configured build command, and then review, edit, or skip the proposed commit message before committing the result.
 
 The command parses the managed `<!-- git-ai-test-suggestions -->` PR comment conservatively, keeps the selected suggestion areas plus likely file locations in `.git-ai/runs/.../pr-test-suggestions.md`, and fails clearly if the managed comment is missing or malformed.
 
@@ -174,9 +181,10 @@ Create `.env` in the target repository root:
 OPENAI_API_KEY=your_key_here
 OPENAI_MODEL=gpt-4o-mini
 OPENAI_BASE_URL=https://api.openai.com/v1
+AWS_REGION=eu-west-1
 ```
 
-`OPENAI_MODEL` and `OPENAI_BASE_URL` are optional. The CLI defaults to `gpt-4o-mini` and `https://api.openai.com/v1`.
+`OPENAI_MODEL` and `OPENAI_BASE_URL` are optional. The CLI defaults to `gpt-4o-mini` and `https://api.openai.com/v1` when `ai.provider.type` is `openai`. `AWS_REGION` or `AWS_DEFAULT_REGION` is used when `ai.provider.type` is `bedrock-claude`, and AWS credentials are resolved through the standard AWS provider chain.
 
 ### `.git-ai/config.json`
 
@@ -184,6 +192,14 @@ Optional repository-specific defaults live in `.git-ai/config.json`. `git-ai set
 
 ```json
 {
+  "ai": {
+    "runtime": {
+      "type": "codex"
+    },
+    "provider": {
+      "type": "openai"
+    }
+  },
   "aiContext": {
     "excludePaths": [
       "vendor/**",
@@ -204,10 +220,23 @@ Optional repository-specific defaults live in `.git-ai/config.json`. `git-ai set
 
 Supported fields:
 
+- `ai.runtime.type`: interactive runtime used by `git-ai issue draft`, local `git-ai issue <number>`, `git-ai pr fix-comments <pr-number>`, and `git-ai pr fix-tests <pr-number>`. Supported values: `"codex"` and `"claude-code"`. Default: `"codex"`.
+- `ai.provider.type`: structured text provider used by `git-ai commit`, `git-ai diff`, `git-ai review`, `git-ai issue plan <number>`, and commit/PR generation inside `git-ai issue <number>` and `git-ai issue finalize <number>`. Supported values: `"openai"` and `"bedrock-claude"`. Default: `"openai"`.
+- `ai.provider.model`: optional for `"openai"`, required for `"bedrock-claude"`.
+- `ai.provider.baseUrl`: optional override for `"openai"`.
+- `ai.provider.region`: optional explicit AWS region for `"bedrock-claude"`. Falls back to `AWS_REGION` or `AWS_DEFAULT_REGION`.
 - `aiContext.excludePaths`: repository-relative glob patterns excluded from AI diff and repository context. These exclusions apply across `git-ai commit`, `git-ai diff`, `git-ai review`, issue-to-PR flows, and repository backlog scans. Bare filename globs like `*.map` match by basename anywhere in the repository. Defaults: `["**/node_modules/**", "**/vendor/**", "**/dist/**", "**/build/**", "*.map"]`.
 - `baseBranch`: base branch used by `git-ai issue <number>` and `git-ai issue prepare <number>` when switching, pulling, and opening pull requests. Default: `main`.
-- `buildCommand`: command run after Codex exits during full local `git-ai issue <number>`, `git-ai pr fix-comments <pr-number>`, and `git-ai pr fix-tests <pr-number>` flows. Default: `["pnpm", "build"]`.
+- `buildCommand`: command run after the interactive runtime exits during full local `git-ai issue <number>`, `git-ai pr fix-comments <pr-number>`, and `git-ai pr fix-tests <pr-number>` flows. Default: `["pnpm", "build"]`.
 - `forge.type`: forge integration. Use `"github"` for GitHub-backed issue and PR flows or `"none"` to disable forge-backed issue and PR features for the repository.
+
+Runtime and provider fallback behavior:
+
+- if no `ai.runtime` config is present, `git-ai` uses `codex`
+- if no `ai.provider` config is present, `git-ai` uses `openai`
+- if a configured runtime is unavailable, `git-ai` falls back to `codex` when possible and prints a clear fallback message
+- if a configured provider is unavailable, `git-ai` falls back to `openai` when possible and prints a clear fallback message
+- if neither the configured choice nor the default choice is usable, the command fails with an actionable error
 
 ### `.git-ai/`
 
@@ -277,9 +306,9 @@ Available subcommands:
 
 | Command | What it does |
 | --- | --- |
-| `git-ai issue <number>` | Full local issue-to-PR flow for the current Git repository. Fetches the configured forge issue, switches to the configured `baseBranch`, pulls the latest changes, creates the issue branch, writes `.git-ai/` workspace files, opens an interactive Codex session, runs the configured build command after Codex exits, generates a proposed commit message from the completed diff for review, and then either creates the commit plus an AI-authored PR title/body or leaves the branch uncommitted. Generated PR bodies include an issue-closing reference and the managed PR assistant section markers. |
-| `git-ai issue draft` | Codex-led interactive issue drafting flow. Prompts for a rough idea, creates `.git-ai/` draft-run artifacts, launches Codex so it can inspect the repository and ask targeted follow-up questions itself, expects Codex to write the Markdown draft under `.git-ai/issues/`, previews the draft in the terminal, and lets you create it as-is, modify it in `$VISUAL`, `$EDITOR`, or `vim`, or keep it on disk without creating the issue. |
-| `git-ai issue plan <number>` | Generates an issue resolution plan for the configured forge issue and posts it as a managed comment. If an editable plan comment already exists, the command reuses it instead of overwriting collaborator edits. |
+| `git-ai issue <number>` | Full local issue-to-PR flow for the current Git repository. Fetches the configured forge issue, switches to the configured `baseBranch`, pulls the latest changes, creates the issue branch, writes `.git-ai/` workspace files, opens the configured interactive runtime, runs the configured build command after that runtime exits, generates a proposed commit message from the completed diff for review through the configured text provider, and then either creates the commit plus an AI-authored PR title/body or leaves the branch uncommitted. Generated PR bodies include an issue-closing reference and the managed PR assistant section markers. |
+| `git-ai issue draft` | Interactive issue drafting flow. Prompts for a rough idea, creates `.git-ai/` draft-run artifacts, launches the configured runtime so it can inspect the repository and ask targeted follow-up questions itself, expects the runtime to write the Markdown draft under `.git-ai/issues/`, previews the draft in the terminal, and lets you create it as-is, modify it in `$VISUAL`, `$EDITOR`, or `vim`, or keep it on disk without creating the issue. |
+| `git-ai issue plan <number>` | Generates an issue resolution plan for the configured forge issue through the configured text provider and posts it as a managed comment. If an editable plan comment already exists, the command reuses it instead of overwriting collaborator edits. |
 | `git-ai issue prepare <number>` | Switches to the configured `baseBranch`, pulls the latest changes, prepares the issue branch and `.git-ai/` workspace artifacts, and then prints machine-readable JSON describing the run. |
 | `git-ai issue prepare <number> --mode github-action` | Same preparation flow, but writes prompt instructions tailored for non-interactive GitHub Actions runs. |
 | `git-ai issue finalize <number>` | Generates a proposed commit message from the current repository diff, lets you preview, edit, or skip it, and creates the commit only after confirmation. |
@@ -288,13 +317,13 @@ Important behavior:
 
 - `git-ai issue` requires a clean working tree before it starts
 - `git-ai issue draft` previews the generated draft in the terminal and only opens `$VISUAL`, `$EDITOR`, or `vim` when you explicitly choose modify
-- `git-ai issue draft` requires the `codex` CLI on `PATH`
-- `git-ai issue plan <number>` requires `OPENAI_API_KEY` the first time it generates a plan comment
-- local full issue runs require the `codex` CLI on `PATH`
+- `git-ai issue draft` requires the configured runtime CLI on `PATH`
+- `git-ai issue plan <number>` requires the configured provider to be usable, defaulting to `OPENAI_API_KEY`
+- local full issue runs require the configured runtime CLI on `PATH`
 - full local issue runs execute the configured `buildCommand`, defaulting to `pnpm build`
 - local full issue runs preview the proposed commit message and let you edit or skip it before committing
-- local interactive Codex prompts end with an explicit done-state summary, a short note about how to see the result or what was verified, and plain-language next steps
-- for local full issue runs, `git-ai` resumes the build, commit, and PR steps after you exit Codex
+- local interactive runtime prompts end with an explicit done-state summary, a short note about how to see the result or what was verified, and plain-language next steps
+- for local full issue runs, `git-ai` resumes the build, commit, and PR steps after you exit the runtime
 - issue preparation checks out and pulls the configured `baseBranch`, defaulting to `main`
 - PR creation uses the configured `baseBranch`, defaulting to `main`
 - GitHub-backed PR creation requires `gh` to be installed and authenticated
@@ -318,18 +347,18 @@ Available subcommands:
 
 | Command | What it does |
 | --- | --- |
-| `git-ai pr fix-comments <pr-number>` | Fetches pull request metadata and review comments from the configured forge, filters out obviously non-actionable comments, groups nearby threads into selectable review tasks, preserves non-trivial replies as thread context, writes richer `.git-ai/` run artifacts, opens an interactive Codex session, runs the configured build command, and then previews a proposed commit message that you can edit, accept, or skip. |
-| `git-ai pr fix-tests <pr-number>` | Fetches pull request metadata and PR issue comments from the configured forge, finds the managed AI Test Suggestions comment, parses structured suggestion areas into selectable tasks, writes focused `.git-ai/` run artifacts, opens an interactive Codex session, runs the configured build command, and then previews a proposed commit message that you can edit, accept, or skip. |
+| `git-ai pr fix-comments <pr-number>` | Fetches pull request metadata and review comments from the configured forge, filters out obviously non-actionable comments, groups nearby threads into selectable review tasks, preserves non-trivial replies as thread context, writes richer `.git-ai/` run artifacts, opens the configured interactive runtime, runs the configured build command, and then previews a proposed commit message that you can edit, accept, or skip. |
+| `git-ai pr fix-tests <pr-number>` | Fetches pull request metadata and PR issue comments from the configured forge, finds the managed AI Test Suggestions comment, parses structured suggestion areas into selectable tasks, writes focused `.git-ai/` run artifacts, opens the configured interactive runtime, runs the configured build command, and then previews a proposed commit message that you can edit, accept, or skip. |
 
 Important behavior:
 
 - `git-ai pr fix-comments <pr-number>` requires a clean working tree before it starts
 - `git-ai pr fix-tests <pr-number>` requires a clean working tree before it starts
-- local PR comment-fix runs require the `codex` CLI on `PATH`
-- local PR test-fix runs require the `codex` CLI on `PATH`
+- local PR comment-fix runs require the configured runtime CLI on `PATH`
+- local PR test-fix runs require the configured runtime CLI on `PATH`
 - PR comment-fix and test-fix runs execute the configured `buildCommand`, defaulting to `pnpm build`
-- local interactive Codex prompts end with an explicit done-state summary, a short note about how to see the result or what was verified, and plain-language next steps
-- the command expects the relevant PR branch to already be checked out locally before Codex starts editing
+- local interactive runtime prompts end with an explicit done-state summary, a short note about how to see the result or what was verified, and plain-language next steps
+- the command expects the relevant PR branch to already be checked out locally before the runtime starts editing
 - the interactive selector accepts numbered thread choices and, when available, grouped task choices like `g1`; `all` still selects every individual thread
 - `git-ai pr fix-tests <pr-number>` accepts `all`, `none`, or a comma-separated suggestion list like `1,2`
 - when `forge.type` is `github`, PR fetching uses `gh pr view` when available, otherwise the GitHub API
@@ -366,7 +395,7 @@ GITHUB_TOKEN=... git-ai review --issue-number 50
 
 Important behavior:
 
-- `git-ai review` requires `OPENAI_API_KEY`
+- `git-ai review` requires the configured provider to be usable, defaulting to `OPENAI_API_KEY`
 - without `--base`, it reviews the current `git diff HEAD`
 - with `--issue-number`, the CLI fetches the issue title and body from the configured forge and grounds the review in that context
 - JSON output includes higher-level findings plus line-linked comment suggestions with file paths and right-side line numbers taken from the diff
@@ -461,7 +490,7 @@ This section is for contributors working on this monorepo rather than users runn
 | `packages/cli` | The `git-ai` CLI entrypoint, argument parsing, repository config loading, forge integration, and local issue workflow orchestration. |
 | `packages/core` | Shared workflow logic for commit messages, diff summaries, PR review, issue drafting, issue planning, and backlog analysis. |
 | `packages/contracts` | Shared Zod contracts and schema types for workflow inputs and outputs. |
-| `packages/providers` | AI provider integrations, currently including the OpenAI-backed provider used by the CLI and actions. |
+| `packages/providers` | AI provider integrations, including OpenAI and Bedrock Claude adapters plus shared provider selection helpers. |
 | `actions/pr-review` | GitHub Action bundle for AI pull request review. |
 | `actions/pr-assistant` | GitHub Action bundle for managed pull request assistant sections. |
 | `actions/test-suggestions` | GitHub Action bundle for AI test suggestions on pull requests. |

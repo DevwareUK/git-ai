@@ -25,13 +25,18 @@ type RunPrFixTestsCommandOptions = {
   prNumber: number;
   repoRoot: string;
   buildCommand: string[];
+  runtime: {
+    resolve(): {
+      displayName: string;
+      launch(
+        repoRoot: string,
+        workspace: Pick<PullRequestFixTestsWorkspace, "promptFilePath" | "outputLogPath">
+      ): void;
+    };
+  };
   forge: RepositoryForge;
   ensureCleanWorkingTree(repoRoot: string): void;
   promptForLine(prompt: string): Promise<string>;
-  runCodex(
-    repoRoot: string,
-    workspace: Pick<PullRequestFixTestsWorkspace, "promptFilePath" | "outputLogPath">
-  ): void;
   verifyBuild(repoRoot: string, buildCommand: string[], outputLogPath: string): void;
   hasChanges(repoRoot: string): boolean;
   commitGeneratedChanges(repoRoot: string, commitMessage: ReviewedGeneratedText): void;
@@ -114,10 +119,17 @@ export async function runPrFixTestsCommand(
     linkedIssues
   );
 
-  console.log("Opening an interactive Codex session in this terminal...");
-  console.log("Complete the selected automated test changes in Codex.");
-  console.log("When Codex exits, git-ai will resume with build and commit steps.");
-  options.runCodex(options.repoRoot, workspace);
+  const runtime = options.runtime.resolve();
+  console.log(
+    `Opening an interactive ${runtime.displayName} session in this terminal...`
+  );
+  console.log(
+    `Complete the selected automated test changes in ${runtime.displayName}.`
+  );
+  console.log(
+    `When ${runtime.displayName} exits, git-ai will resume with build and commit steps.`
+  );
+  runtime.launch(options.repoRoot, workspace);
 
   console.log("Verifying build...");
   options.verifyBuild(
@@ -127,7 +139,9 @@ export async function runPrFixTestsCommand(
   );
 
   if (!options.hasChanges(options.repoRoot)) {
-    throw new Error("Codex completed without producing any file changes to commit.");
+    throw new Error(
+      `${runtime.displayName} completed without producing any file changes to commit.`
+    );
   }
 
   const reviewedCommitMessage = await reviewGeneratedText({

@@ -8,6 +8,8 @@ import {
 export const DEFAULT_REPOSITORY_BASE_BRANCH = "main";
 export const DEFAULT_REPOSITORY_BUILD_COMMAND = ["pnpm", "build"] as const;
 export const DEFAULT_REPOSITORY_FORGE_TYPE = "github" as const;
+export const DEFAULT_REPOSITORY_AI_RUNTIME_TYPE = "codex" as const;
+export const DEFAULT_REPOSITORY_AI_PROVIDER_TYPE = "openai" as const;
 export const DEFAULT_REPOSITORY_AI_CONTEXT_EXCLUDE_PATHS = [
   "**/node_modules/**",
   "**/vendor/**",
@@ -26,6 +28,14 @@ export function resolveRepositoryConfig(
   const parsedConfig = RepositoryConfig.parse(config ?? {});
 
   return ResolvedRepositoryConfig.parse({
+    ai: {
+      runtime: parsedConfig.ai?.runtime ?? {
+        type: DEFAULT_REPOSITORY_AI_RUNTIME_TYPE,
+      },
+      provider: parsedConfig.ai?.provider ?? {
+        type: DEFAULT_REPOSITORY_AI_PROVIDER_TYPE,
+      },
+    },
     aiContext: {
       excludePaths: uniquePaths([
         ...DEFAULT_REPOSITORY_AI_CONTEXT_EXCLUDE_PATHS,
