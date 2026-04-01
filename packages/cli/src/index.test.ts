@@ -349,7 +349,11 @@ function readLatestRunMetadata(): {
     runDir?: string;
   };
 } {
-  const runDir = listRunDirectories().at(-1);
+  const runDir = [...listRunDirectories()]
+    .reverse()
+    .find((entry) =>
+      existsSync(resolve(REPO_ROOT, ".git-ai", "runs", entry, "metadata.json"))
+    );
   if (!runDir) {
     throw new Error("Expected a run directory.");
   }
@@ -364,6 +368,49 @@ function readLatestRunMetadata(): {
       runDir?: string;
     },
   };
+}
+
+function createMockCodexHome(): string {
+  const codexHome = mkdtempSync(resolve(tmpdir(), "git-ai-codex-home-"));
+  mkdirSync(resolve(codexHome, "sessions"), { recursive: true });
+  cleanupTargets.add(codexHome);
+  process.env.CODEX_HOME = codexHome;
+  return codexHome;
+}
+
+function writeMockCodexSession(
+  codexHome: string,
+  sessionId: string,
+  cwd: string,
+  timestamp = "2026-04-01T09:00:00.000Z"
+): string {
+  const [datePart, timePartWithMillis] = timestamp.split("T");
+  const [year, month, day] = datePart.split("-");
+  const timePart = (timePartWithMillis ?? "00:00:00.000Z")
+    .replace(/\.\d+Z$/, "")
+    .replace(/:/g, "-");
+  const sessionDir = resolve(codexHome, "sessions", year, month, day);
+  const filePath = resolve(
+    sessionDir,
+    `rollout-${datePart}T${timePart}-${sessionId}.jsonl`
+  );
+
+  mkdirSync(sessionDir, { recursive: true });
+  writeFileSync(
+    filePath,
+    `${JSON.stringify({
+      timestamp,
+      type: "session_meta",
+      payload: {
+        id: sessionId,
+        timestamp,
+        cwd,
+      },
+    })}\n`,
+    "utf8"
+  );
+
+  return filePath;
 }
 
 function withRepositoryConfig(
@@ -641,6 +688,7 @@ afterEach(() => {
   delete process.env.GITHUB_TOKEN;
   delete process.env.GH_TOKEN;
   delete process.env.OPENAI_API_KEY;
+  delete process.env.CODEX_HOME;
 
   for (const target of cleanupTargets) {
     rmSync(target, { recursive: true, force: true });
@@ -3018,6 +3066,478 @@ describe("CLI integration", () => {
     );
     expect(readFileSync(promptFilePath, "utf8")).not.toContain("[1] Continue refining");
     expect(readFileSync(promptFilePath, "utf8")).not.toContain("/commit");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("tracks the Codex session for a first full issue run", async () => {
+    const beforeRuns = listRunDirectories();
+    const issueNumber = 148;
+    const issueTitle = "Track resumable Codex issue sessions";
+    const branchName = "feat/issue-148-track-resumable-codex-issue-sessions";
+    const sessionId = "019d5000-1111-7222-8333-444455556666";
+    const codexHome = createMockCodexHome();
+    const sessionStateDir = resolve(REPO_ROOT, ".git-ai", "issues", String(issueNumber));
+    const issueWorkspaceDir = resolve(
+      REPO_ROOT,
+      ".git-ai",
+      "issues",
+      `${issueNumber}-track-resumable-codex-issue-sessions`
+    );
+    let gitStatusCallCount = 0;
+
+    rmSync(sessionStateDir, { recursive: true, force: true });
+    rmSync(issueWorkspaceDir, { recursive: true, force: true });
+    cleanupTargets.add(sessionStateDir);
+    cleanupTargets.add(issueWorkspaceDir);
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          title: issueTitle,
+          body: "Persist the session id after the first full issue run.",
+          html_url: `https://github.com/DevwareUK/git-ai/issues/${issueNumber}`,
+        })
+      )
+      .mockResolvedValueOnce(createFetchResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "";
+
+    const { run } = await loadCli({
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "status") {
+          gitStatusCallCount += 1;
+          return gitStatusCallCount === 1 ? "" : " M packages/cli/src/index.ts\n";
+        }
+
+        if (command === "git" && args[0] === "diff" && args[1] === "--name-only") {
+          return "packages/cli/src/index.ts\n";
+        }
+
+        if (
+          command === "git" &&
+          args[0] === "diff" &&
+          args[1] === "HEAD" &&
+          args[2] === "--" &&
+          args[3] === "packages/cli/src/index.ts"
+        ) {
+          return [
+            "diff --git a/packages/cli/src/index.ts b/packages/cli/src/index.ts",
+            "--- a/packages/cli/src/index.ts",
+            "+++ b/packages/cli/src/index.ts",
+            "@@ -1,1 +1,1 @@",
+            '-const flow = "before";',
+            '+const flow = "after";',
+          ].join("\n");
+        }
+
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/git-ai.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+      spawnSyncImpl: (command, args) => {
+        if (command === "gh" && args[0] === "--version") {
+          return { status: 1, error: new Error("gh is unavailable") };
+        }
+
+        if (command === "codex" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "git" && args[0] === "rev-parse") {
+          return { status: 1 };
+        }
+
+        if (command === "git" && args[0] === "checkout" && args[1] === "main") {
+          return { status: 0 };
+        }
+
+        if (command === "git" && args[0] === "pull") {
+          return { status: 0 };
+        }
+
+        if (command === "git" && args[0] === "checkout" && args[1] === "-b") {
+          return { status: 0 };
+        }
+
+        if (command === "codex") {
+          writeMockCodexSession(
+            codexHome,
+            sessionId,
+            REPO_ROOT,
+            "2026-04-01T09:15:00.000Z"
+          );
+          return { status: 0 };
+        }
+
+        if (command === "pnpm" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "pnpm" && args[0] === "build") {
+          return { status: 0, stdout: "built\n", stderr: "" };
+        }
+
+        if (command === "git" && args[0] === "add") {
+          return { status: 0 };
+        }
+
+        if (command === "git" && args[0] === "commit") {
+          return { status: 0 };
+        }
+
+        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.argv = ["node", "git-ai", "issue", String(issueNumber)];
+    await run();
+
+    const createdRunDir = listRunDirectories().find((entry) => !beforeRuns.includes(entry));
+    expect(createdRunDir).toBeDefined();
+
+    const sessionStatePath = resolve(sessionStateDir, "session.json");
+    cleanupTargets.add(resolve(REPO_ROOT, ".git-ai", "runs", createdRunDir as string));
+
+    const sessionState = JSON.parse(readFileSync(sessionStatePath, "utf8")) as {
+      branchName: string;
+      sessionId: string;
+      runDir: string;
+      promptFile: string;
+      outputLog: string;
+      issueDir: string;
+    };
+    expect(sessionState).toMatchObject({
+      issueNumber,
+      branchName,
+      sessionId,
+      runDir: `.git-ai/runs/${createdRunDir}`,
+      promptFile: `.git-ai/runs/${createdRunDir}/prompt.md`,
+      outputLog: `.git-ai/runs/${createdRunDir}/output.log`,
+      issueDir: `.git-ai/issues/${issueNumber}-track-resumable-codex-issue-sessions`,
+      sandboxMode: "workspace-write",
+      approvalPolicy: "on-request",
+    });
+
+    const metadata = JSON.parse(
+      readFileSync(resolve(REPO_ROOT, ".git-ai", "runs", createdRunDir as string, "metadata.json"), "utf8")
+    ) as {
+      codex?: {
+        invocation?: string;
+        sessionId?: string;
+      };
+      branchName?: string;
+    };
+    expect(metadata).toMatchObject({
+      branchName,
+      codex: {
+        invocation: "new",
+        sessionId,
+      },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("resumes the saved Codex session for later full issue runs", async () => {
+    const beforeRuns = listRunDirectories();
+    const issueNumber = 149;
+    const issueTitle = "Resume saved Codex sessions";
+    const branchName = "feat/issue-149-resume-saved-codex-sessions";
+    const sessionId = "019d5001-aaaa-7bbb-8ccc-ddddeeeeffff";
+    const codexHome = createMockCodexHome();
+    const sessionStateDir = resolve(REPO_ROOT, ".git-ai", "issues", String(issueNumber));
+    const sessionStatePath = resolve(sessionStateDir, "session.json");
+    const issueWorkspaceDir = resolve(
+      REPO_ROOT,
+      ".git-ai",
+      "issues",
+      `${issueNumber}-resume-saved-codex-sessions`
+    );
+    let gitStatusCallCount = 0;
+    const gitCommands: string[][] = [];
+
+    writeMockCodexSession(codexHome, sessionId, REPO_ROOT, "2026-04-01T09:20:00.000Z");
+    mkdirSync(sessionStateDir, { recursive: true });
+    writeFileSync(
+      sessionStatePath,
+      `${JSON.stringify(
+        {
+          issueNumber,
+          branchName,
+          issueDir: `.git-ai/issues/${issueNumber}-resume-saved-codex-sessions`,
+          runDir: ".git-ai/runs/20260401T090000000Z-issue-149",
+          promptFile: ".git-ai/runs/20260401T090000000Z-issue-149/prompt.md",
+          outputLog: ".git-ai/runs/20260401T090000000Z-issue-149/output.log",
+          sessionId,
+          sandboxMode: "workspace-write",
+          approvalPolicy: "on-request",
+          createdAt: "2026-04-01T09:20:00.000Z",
+          updatedAt: "2026-04-01T09:20:00.000Z",
+        },
+        null,
+        2
+      )}\n`,
+      "utf8"
+    );
+    cleanupTargets.add(sessionStateDir);
+    cleanupTargets.add(issueWorkspaceDir);
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          title: issueTitle,
+          body: "Resume the same session instead of starting a new branch.",
+          html_url: `https://github.com/DevwareUK/git-ai/issues/${issueNumber}`,
+        })
+      )
+      .mockResolvedValueOnce(createFetchResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "";
+
+    const { run, spawnSync } = await loadCli({
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "status") {
+          gitStatusCallCount += 1;
+          return gitStatusCallCount === 1 ? "" : " M packages/cli/src/index.ts\n";
+        }
+
+        if (command === "git" && args[0] === "diff" && args[1] === "--name-only") {
+          return "packages/cli/src/index.ts\n";
+        }
+
+        if (
+          command === "git" &&
+          args[0] === "diff" &&
+          args[1] === "HEAD" &&
+          args[2] === "--" &&
+          args[3] === "packages/cli/src/index.ts"
+        ) {
+          return [
+            "diff --git a/packages/cli/src/index.ts b/packages/cli/src/index.ts",
+            "--- a/packages/cli/src/index.ts",
+            "+++ b/packages/cli/src/index.ts",
+            "@@ -1,1 +1,1 @@",
+            '-const mode = "fresh";',
+            '+const mode = "resume";',
+          ].join("\n");
+        }
+
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/git-ai.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+      spawnSyncImpl: (command, args) => {
+        if (command === "gh" && args[0] === "--version") {
+          return { status: 1, error: new Error("gh is unavailable") };
+        }
+
+        if (command === "codex" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "git") {
+          gitCommands.push(args);
+        }
+
+        if (command === "git" && args[0] === "rev-parse") {
+          return { status: 0 };
+        }
+
+        if (command === "git" && args[0] === "checkout" && args[1] === branchName) {
+          return { status: 0 };
+        }
+
+        if (command === "git" && args[0] === "checkout" && args[1] === "main") {
+          throw new Error("Resume path should not switch back to the base branch.");
+        }
+
+        if (command === "git" && args[0] === "pull") {
+          throw new Error("Resume path should not pull the base branch.");
+        }
+
+        if (command === "git" && args[0] === "checkout" && args[1] === "-b") {
+          throw new Error("Resume path should not create a new branch.");
+        }
+
+        if (command === "codex") {
+          return { status: 0 };
+        }
+
+        if (command === "pnpm" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "pnpm" && args[0] === "build") {
+          return { status: 0, stdout: "built\n", stderr: "" };
+        }
+
+        if (command === "git" && args[0] === "add") {
+          return { status: 0 };
+        }
+
+        if (command === "git" && args[0] === "commit") {
+          return { status: 0 };
+        }
+
+        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.argv = ["node", "git-ai", "issue", String(issueNumber)];
+    await run();
+
+    const createdRunDir = listRunDirectories().find((entry) => !beforeRuns.includes(entry));
+    expect(createdRunDir).toBeDefined();
+    cleanupTargets.add(resolve(REPO_ROOT, ".git-ai", "runs", createdRunDir as string));
+
+    expect(spawnSync).toHaveBeenCalledWith(
+      "codex",
+      expect.arrayContaining(["resume", sessionId, "--sandbox", "workspace-write"]),
+      expect.objectContaining({
+        cwd: REPO_ROOT,
+        stdio: "inherit",
+      })
+    );
+    expect(gitCommands).toContainEqual(["rev-parse", "--verify", branchName]);
+    expect(gitCommands).toContainEqual(["checkout", branchName]);
+    expect(gitCommands).not.toContainEqual(["checkout", "main"]);
+    expect(gitCommands).not.toContainEqual(["pull"]);
+    expect(gitCommands).not.toContainEqual(["checkout", "-b", branchName]);
+
+    const metadata = JSON.parse(
+      readFileSync(resolve(REPO_ROOT, ".git-ai", "runs", createdRunDir as string, "metadata.json"), "utf8")
+    ) as {
+      codex?: {
+        invocation?: string;
+        sessionId?: string;
+      };
+    };
+    expect(metadata).toMatchObject({
+      codex: {
+        invocation: "resume",
+        sessionId,
+      },
+    });
+
+    const updatedSessionState = JSON.parse(readFileSync(sessionStatePath, "utf8")) as {
+      runDir: string;
+      promptFile: string;
+      outputLog: string;
+    };
+    expect(updatedSessionState).toMatchObject({
+      runDir: `.git-ai/runs/${createdRunDir}`,
+      promptFile: `.git-ai/runs/${createdRunDir}/prompt.md`,
+      outputLog: `.git-ai/runs/${createdRunDir}/output.log`,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails clearly when saved issue session state points to a missing Codex session", async () => {
+    const issueNumber = 150;
+    const branchName = "feat/issue-150-stale-codex-session-state";
+    createMockCodexHome();
+    const sessionStateDir = resolve(REPO_ROOT, ".git-ai", "issues", String(issueNumber));
+    const sessionStatePath = resolve(sessionStateDir, "session.json");
+
+    mkdirSync(sessionStateDir, { recursive: true });
+    writeFileSync(
+      sessionStatePath,
+      `${JSON.stringify(
+        {
+          issueNumber,
+          branchName,
+          issueDir: `.git-ai/issues/${issueNumber}-stale-codex-session-state`,
+          runDir: ".git-ai/runs/20260401T092500000Z-issue-150",
+          promptFile: ".git-ai/runs/20260401T092500000Z-issue-150/prompt.md",
+          outputLog: ".git-ai/runs/20260401T092500000Z-issue-150/output.log",
+          sessionId: "019d5002-0000-7111-8222-933344445555",
+          sandboxMode: "workspace-write",
+          approvalPolicy: "on-request",
+          createdAt: "2026-04-01T09:25:00.000Z",
+          updatedAt: "2026-04-01T09:25:00.000Z",
+        },
+        null,
+        2
+      )}\n`,
+      "utf8"
+    );
+    cleanupTargets.add(sessionStateDir);
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          title: "Stale Codex session state",
+          body: "Fail with a recovery path when the saved session no longer exists.",
+          html_url: `https://github.com/DevwareUK/git-ai/issues/${issueNumber}`,
+        })
+      )
+      .mockResolvedValueOnce(createFetchResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { run, spawnSync } = await loadCli({
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "status") {
+          return "";
+        }
+
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/git-ai.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+      spawnSyncImpl: (command, args) => {
+        if (command === "gh" && args[0] === "--version") {
+          return { status: 1, error: new Error("gh is unavailable") };
+        }
+
+        if (command === "codex" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "git" && args[0] === "checkout") {
+          throw new Error("Stale session recovery should stop before branch checkout.");
+        }
+
+        if (command === "codex") {
+          throw new Error("Stale session recovery should stop before launching Codex.");
+        }
+
+        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.argv = ["node", "git-ai", "issue", String(issueNumber)];
+
+    let caughtError: unknown;
+    try {
+      await run();
+    } catch (error: unknown) {
+      caughtError = error;
+    }
+
+    expect(caughtError).toBeInstanceOf(Error);
+    expect((caughtError as Error).message).toContain(
+      `Saved Codex session 019d5002-0000-7111-8222-933344445555 for issue #${issueNumber} is no longer available.`
+    );
+    expect((caughtError as Error).message).toContain(
+      `remove .git-ai/issues/${issueNumber}/session.json and rerun \`git-ai issue ${issueNumber}\``
+    );
+    expect(spawnSync).not.toHaveBeenCalledWith(
+      "codex",
+      expect.any(Array),
+      expect.any(Object)
+    );
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 

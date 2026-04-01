@@ -1,4 +1,4 @@
-import { relative } from "node:path";
+import { relative, resolve } from "node:path";
 
 export function toRepoRelativePath(repoRoot: string, filePath: string): string {
   return (relative(repoRoot, filePath) || ".").split("\\").join("/");
@@ -19,4 +19,15 @@ export function formatRunTimestamp(date = new Date()): string {
     pad(date.getUTCMilliseconds(), 3),
     "Z",
   ].join("");
+}
+
+export function getIssueStateDir(repoRoot: string, issueNumber: number): string {
+  return resolve(repoRoot, ".git-ai", "issues", String(issueNumber));
+}
+
+export function getIssueSessionStateFilePath(
+  repoRoot: string,
+  issueNumber: number
+): string {
+  return resolve(getIssueStateDir(repoRoot, issueNumber), "session.json");
 }
