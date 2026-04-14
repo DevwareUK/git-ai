@@ -5,11 +5,9 @@ import {
   appendFileSync,
   existsSync,
   mkdirSync,
-  readdirSync,
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import {
@@ -26,13 +24,18 @@ import {
   mergePRAssistantSection,
   StructuredGenerationError,
 } from "@git-ai/core";
-import { OpenAIProvider } from "@git-ai/providers";
+import {
+  createProviderFromConfig,
+  type AIProvider,
+  readProviderEnvironment,
+} from "@git-ai/providers";
+import type { ResolvedRepositoryConfigType } from "@git-ai/contracts";
 import dotenv from "dotenv";
 import {
   formatCommandForDisplay,
   loadResolvedRepositoryConfig,
 } from "./config";
-import { buildCodexDoneStateInstructions } from "./codex-done-state";
+import { buildDoneStateInstructions } from "./done-state";
 import {
   parsePrCommandArgs as parsePrCommandArgsImpl,
   type PrCommandOptions,
@@ -51,6 +54,12 @@ import {
   validateCommitMessage,
 } from "./generated-text-review";
 import { resolveRuntimeRepoRoot } from "./repo-root";
+import {
+  findTrackedRuntimeSessionById,
+  getInteractiveRuntimeByType,
+  selectInteractiveRuntime,
+  type InteractiveRuntimeType,
+} from "./runtime";
 import {
   formatRunTimestamp,
   getIssueSessionStateFilePath,
@@ -131,7 +140,8 @@ type IssueRunContext = {
   branchName: string;
   workspace: IssueWorkspace;
   mode: IssueExecutionMode;
-  codex: {
+  runtime: {
+    type: InteractiveRuntimeType;
     invocation: "new" | "resume";
     sessionId?: string;
     sessionStateFilePath: string;
@@ -140,23 +150,17 @@ type IssueRunContext = {
 
 type IssueSessionState = {
   issueNumber: number;
+  runtimeType: InteractiveRuntimeType;
   branchName: string;
   issueDir: string;
   runDir: string;
   promptFile: string;
   outputLog: string;
-  sessionId: string;
-  sandboxMode: string;
-  approvalPolicy: string;
+  sessionId?: string;
+  sandboxMode?: string;
+  approvalPolicy?: string;
   createdAt: string;
   updatedAt: string;
-};
-
-type CodexSessionRecord = {
-  id: string;
-  timestamp: string;
-  cwd: string;
-  filePath: string;
 };
 
 type FinalizeIssueRunResult =
@@ -177,8 +181,6 @@ type GeneratedIssuePullRequest = {
 };
 
 const ISSUE_PLAN_COMMENT_MARKER = "<!-- git-ai:issue-plan -->";
-const CODEX_SANDBOX_MODE = "workspace-write";
-const CODEX_APPROVAL_POLICY = "on-request";
 
 const ISSUE_USAGE = [
   "Usage:",
@@ -211,26 +213,6 @@ const REVIEW_USAGE = [
 
 function getCliArgs(): string[] {
   return process.argv.slice(2).filter((arg) => arg !== "--");
-}
-
-function getRequiredEnv(name: string): string {
-  const value = process.env[name]?.trim();
-  if (!value) {
-    if (name === "OPENAI_API_KEY") {
-      throw new Error(
-        "OPENAI_API_KEY is required. Set it in your environment or in a .env file."
-      );
-    }
-
-    throw new Error(`${name} is required.`);
-  }
-
-  return value;
-}
-
-function getOptionalEnv(name: string): string | undefined {
-  const value = process.env[name]?.trim();
-  return value ? value : undefined;
 }
 
 function getDefaultRepoRoot(): string {
@@ -381,7 +363,7 @@ function readHeadDiff(): string {
 function readIssueWorkflowDiff(repoRoot: string): string {
   return readGitDiff(
     ["diff", "HEAD"],
-    "Codex completed without producing any file changes to commit.",
+    "The interactive runtime completed without producing any file changes to commit.",
     "HEAD",
     "git diff HEAD requires at least one commit. Create an initial commit before finalizing issue work.",
     {
@@ -1053,7 +1035,7 @@ function createIssueDraftWorkspace(repoRoot: string): IssueDraftWorkspace {
   };
 }
 
-function buildIssueDraftCodexPrompt(
+function buildIssueDraftRuntimePrompt(
   repoRoot: string,
   workspace: IssueDraftWorkspace,
   featureIdea: string
@@ -1072,7 +1054,7 @@ function buildIssueDraftCodexPrompt(
     `Write the final Markdown issue draft to \`${draftFile}\`.`,
     `Use \`${runDir}\` for run artifacts created by this workflow.`,
     "",
-    "Instructions to Codex:",
+    "Instructions to the coding agent:",
     "- inspect the repository only as needed to understand the idea and scope the work",
     "- ask the user targeted clarifying questions when repository inspection does not answer an important implementation detail",
     "- avoid asking questions that are already answerable from the codebase",
@@ -1091,10 +1073,12 @@ function buildIssueDraftCodexPrompt(
 function writeIssueDraftWorkspaceFiles(
   repoRoot: string,
   featureIdea: string,
-  workspace: IssueDraftWorkspace
+  workspace: IssueDraftWorkspace,
+  runtimeType: InteractiveRuntimeType
 ): void {
   const createdAt = new Date().toISOString();
-  const prompt = buildIssueDraftCodexPrompt(repoRoot, workspace, featureIdea);
+  const runtime = getInteractiveRuntimeByType(runtimeType);
+  const prompt = buildIssueDraftRuntimePrompt(repoRoot, workspace, featureIdea);
 
   writeFileSync(workspace.promptFilePath, `${prompt}\n`, "utf8");
   writeFileSync(
@@ -1108,6 +1092,11 @@ function writeIssueDraftWorkspaceFiles(
         promptFile: toRepoRelativePath(repoRoot, workspace.promptFilePath),
         outputLog: toRepoRelativePath(repoRoot, workspace.outputLogPath),
         runDir: toRepoRelativePath(repoRoot, workspace.runDir),
+        runtime: {
+          type: runtime.type,
+          displayName: runtime.displayName,
+          command: runtime.metadata.command,
+        },
       },
       null,
       2
@@ -1120,115 +1109,13 @@ function writeIssueDraftWorkspaceFiles(
       "# git-ai issue draft run log",
       "",
       `Created: ${createdAt}`,
+      `Runtime: ${runtime.displayName}`,
       `Draft file: ${toRepoRelativePath(repoRoot, workspace.draftFilePath)}`,
       `Prompt file: ${toRepoRelativePath(repoRoot, workspace.promptFilePath)}`,
       "",
     ].join("\n"),
     "utf8"
   );
-}
-
-function getCodexHome(): string {
-  return process.env.CODEX_HOME?.trim() || resolve(homedir(), ".codex");
-}
-
-function listFilesRecursively(rootDir: string): string[] {
-  if (!existsSync(rootDir)) {
-    return [];
-  }
-
-  const files: string[] = [];
-  const visitDirectory = (directory: string): void => {
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      const entryPath = resolve(directory, entry.name);
-      if (entry.isDirectory()) {
-        visitDirectory(entryPath);
-        continue;
-      }
-
-      if (entry.isFile()) {
-        files.push(entryPath);
-      }
-    }
-  };
-
-  visitDirectory(rootDir);
-  return files.sort();
-}
-
-function readCodexSessionRecord(filePath: string): CodexSessionRecord | undefined {
-  try {
-    const content = readFileSync(filePath, "utf8");
-    const firstLine = content.split(/\r?\n/, 1)[0];
-    if (!firstLine) {
-      return undefined;
-    }
-
-    const parsed = JSON.parse(firstLine) as {
-      type?: string;
-      payload?: {
-        id?: string;
-        timestamp?: string;
-        cwd?: string;
-      };
-    };
-
-    if (
-      parsed.type !== "session_meta" ||
-      !parsed.payload?.id ||
-      !parsed.payload.timestamp ||
-      !parsed.payload.cwd
-    ) {
-      return undefined;
-    }
-
-    return {
-      id: parsed.payload.id,
-      timestamp: parsed.payload.timestamp,
-      cwd: parsed.payload.cwd,
-      filePath,
-    };
-  } catch {
-    return undefined;
-  }
-}
-
-function listCodexSessionRecords(repoRoot: string): CodexSessionRecord[] {
-  const sessionsRoot = resolve(getCodexHome(), "sessions");
-  return listFilesRecursively(sessionsRoot)
-    .filter((filePath) => filePath.endsWith(".jsonl"))
-    .map((filePath) => readCodexSessionRecord(filePath))
-    .filter(
-      (record): record is CodexSessionRecord =>
-        record !== undefined && record.cwd === repoRoot
-    )
-    .sort((left, right) => left.timestamp.localeCompare(right.timestamp));
-}
-
-function findCodexSessionById(
-  repoRoot: string,
-  sessionId: string
-): CodexSessionRecord | undefined {
-  return listCodexSessionRecords(repoRoot).find((record) => record.id === sessionId);
-}
-
-function findNewCodexSessionId(
-  repoRoot: string,
-  previousSessionFilePaths: Set<string>,
-  startedAt: number
-): string | undefined {
-  const sessionRecords = listCodexSessionRecords(repoRoot);
-  const newlyCreatedSessions = sessionRecords.filter(
-    (record) => !previousSessionFilePaths.has(record.filePath)
-  );
-
-  if (newlyCreatedSessions.length > 0) {
-    return newlyCreatedSessions.at(-1)?.id;
-  }
-
-  return sessionRecords
-    .filter((record) => Date.parse(record.timestamp) >= startedAt - 1000)
-    .at(-1)?.id;
 }
 
 function loadIssueSessionState(
@@ -1241,16 +1128,22 @@ function loadIssueSessionState(
   }
 
   const parsed = JSON.parse(readFileSync(stateFilePath, "utf8")) as Partial<IssueSessionState>;
+  const runtimeType =
+    parsed.runtimeType === undefined && typeof parsed.sessionId === "string"
+      ? "codex"
+      : parsed.runtimeType;
   if (
     parsed.issueNumber !== issueNumber ||
+    (runtimeType !== "codex" && runtimeType !== "claude-code") ||
     typeof parsed.branchName !== "string" ||
     typeof parsed.issueDir !== "string" ||
     typeof parsed.runDir !== "string" ||
     typeof parsed.promptFile !== "string" ||
     typeof parsed.outputLog !== "string" ||
-    typeof parsed.sessionId !== "string" ||
-    typeof parsed.sandboxMode !== "string" ||
-    typeof parsed.approvalPolicy !== "string" ||
+    (parsed.sessionId !== undefined && typeof parsed.sessionId !== "string") ||
+    (parsed.sandboxMode !== undefined && typeof parsed.sandboxMode !== "string") ||
+    (parsed.approvalPolicy !== undefined &&
+      typeof parsed.approvalPolicy !== "string") ||
     typeof parsed.createdAt !== "string" ||
     typeof parsed.updatedAt !== "string"
   ) {
@@ -1262,7 +1155,10 @@ function loadIssueSessionState(
     );
   }
 
-  return parsed as IssueSessionState;
+  return {
+    ...parsed,
+    runtimeType,
+  } as IssueSessionState;
 }
 
 function writeIssueSessionState(
@@ -1420,21 +1316,24 @@ function updateIssueWorkspaceMetadata(
 function createIssueSessionState(
   repoRoot: string,
   context: IssueRunContext,
-  sessionId: string
+  sessionId?: string
 ): IssueSessionState {
   const previousState = loadIssueSessionState(repoRoot, context.issueNumber);
   const createdAt = previousState?.createdAt ?? new Date().toISOString();
 
   return {
     issueNumber: context.issueNumber,
+    runtimeType: context.runtime.type,
     branchName: context.branchName,
     issueDir: toRepoRelativePath(repoRoot, context.workspace.issueDir),
     runDir: toRepoRelativePath(repoRoot, context.workspace.runDir),
     promptFile: toRepoRelativePath(repoRoot, context.workspace.promptFilePath),
     outputLog: toRepoRelativePath(repoRoot, context.workspace.outputLogPath),
     sessionId,
-    sandboxMode: CODEX_SANDBOX_MODE,
-    approvalPolicy: CODEX_APPROVAL_POLICY,
+    sandboxMode:
+      getInteractiveRuntimeByType(context.runtime.type).metadata.sandboxMode,
+    approvalPolicy:
+      getInteractiveRuntimeByType(context.runtime.type).metadata.approvalPolicy,
     createdAt,
     updatedAt: new Date().toISOString(),
   };
@@ -1443,12 +1342,12 @@ function createIssueSessionState(
 function persistIssueSessionState(
   repoRoot: string,
   context: IssueRunContext,
-  sessionId: string
+  sessionId?: string
 ): void {
   writeIssueSessionState(repoRoot, createIssueSessionState(repoRoot, context, sessionId));
 }
 
-function buildCodexPrompt(
+function buildRuntimePrompt(
   repoRoot: string,
   workspace: IssueWorkspace,
   mode: IssueExecutionMode,
@@ -1459,11 +1358,11 @@ function buildCodexPrompt(
   const modeSpecificInstructions =
     mode === "github-action"
       ? [
-          "You are running inside a GitHub Actions workflow via Codex.",
+          "You are running inside a GitHub Actions workflow via the configured interactive coding runtime.",
           "Do not wait for interactive user input.",
         ]
       : [];
-  const doneStateInstructions = buildCodexDoneStateInstructions({
+  const doneStateInstructions = buildDoneStateInstructions({
     mode: mode === "github-action" ? "non-interactive" : "interactive",
     readyLabel:
       mode === "github-action" ? "Ready for the next automation step" : "Ready to commit",
@@ -1476,7 +1375,7 @@ function buildCodexPrompt(
     `Read the issue snapshot at \`${issueFile}\` before making changes.`,
     `Use \`${runDir}\` for run artifacts created by this workflow.`,
     "",
-    "Instructions to Codex:",
+    "Instructions to the coding agent:",
     "- analyze the repository only as needed for this issue",
     "- keep code changes focused on the issue snapshot",
     "- follow existing architecture patterns",
@@ -1498,11 +1397,13 @@ function writeIssueWorkspaceFiles(
   workspace: IssueWorkspace,
   mode: IssueExecutionMode,
   buildCommand: string[],
-  codexInvocation: "new" | "resume",
+  runtimeType: InteractiveRuntimeType,
+  runtimeInvocation: "new" | "resume",
   sessionId?: string
 ): void {
   const createdAt = new Date().toISOString();
-  const prompt = buildCodexPrompt(repoRoot, workspace, mode, buildCommand);
+  const runtime = getInteractiveRuntimeByType(runtimeType);
+  const prompt = buildRuntimePrompt(repoRoot, workspace, mode, buildCommand);
 
   writeFileSync(
     workspace.issueFilePath,
@@ -1526,11 +1427,14 @@ function writeIssueWorkspaceFiles(
         promptFile: toRepoRelativePath(repoRoot, workspace.promptFilePath),
         outputLog: toRepoRelativePath(repoRoot, workspace.outputLogPath),
         runDir: toRepoRelativePath(repoRoot, workspace.runDir),
-        codex: {
-          invocation: codexInvocation,
+        runtime: {
+          type: runtime.type,
+          displayName: runtime.displayName,
+          command: runtime.metadata.command,
+          invocation: runtimeInvocation,
           sessionId,
-          sandboxMode: CODEX_SANDBOX_MODE,
-          approvalPolicy: CODEX_APPROVAL_POLICY,
+          sandboxMode: runtime.metadata.sandboxMode,
+          approvalPolicy: runtime.metadata.approvalPolicy,
         },
       },
       null,
@@ -1546,8 +1450,9 @@ function writeIssueWorkspaceFiles(
       `Created: ${createdAt}`,
       `Issue snapshot: ${toRepoRelativePath(repoRoot, workspace.issueFilePath)}`,
       `Prompt file: ${toRepoRelativePath(repoRoot, workspace.promptFilePath)}`,
-      `Codex invocation: ${codexInvocation}`,
-      ...(sessionId ? [`Codex session: ${sessionId}`] : []),
+      `Runtime: ${runtime.displayName}`,
+      `Runtime invocation: ${runtimeInvocation}`,
+      ...(sessionId ? [`Runtime session: ${sessionId}`] : []),
       "",
     ].join("\n"),
     "utf8"
@@ -1573,6 +1478,7 @@ function emitIssuePrepareOutputs(repoRoot: string, context: IssueRunContext): vo
   writeGitHubOutput("issue_title", context.issue.title);
   writeGitHubOutput("issue_url", context.issue.url);
   writeGitHubOutput("branch_name", context.branchName);
+  writeGitHubOutput("runtime_type", context.runtime.type);
   writeGitHubOutput("issue_file", toRepoRelativePath(repoRoot, context.workspace.issueFilePath));
   writeGitHubOutput(
     "prompt_file",
@@ -1640,102 +1546,6 @@ function runTrackedCommand(
   }
 }
 
-function runCodex(
-  repoRoot: string,
-  workspace: {
-    promptFilePath: string;
-    outputLogPath: string;
-  },
-  options: {
-    resumeSessionId?: string;
-    onNewSessionRecorded?: (sessionId: string) => void;
-  } = {}
-): void {
-  if (!canRunCommand("codex")) {
-    throw new Error(
-      "The `codex` CLI is not available on PATH. Install it before running interactive git-ai Codex workflows."
-    );
-  }
-
-  const prompt = `Read and follow the instructions in ${toRepoRelativePath(
-    repoRoot,
-    workspace.promptFilePath
-  )}.`;
-  const args = options.resumeSessionId
-    ? [
-        "resume",
-        options.resumeSessionId,
-        "--sandbox",
-        CODEX_SANDBOX_MODE,
-        "--ask-for-approval",
-        CODEX_APPROVAL_POLICY,
-        "--cd",
-        repoRoot,
-        prompt,
-      ]
-    : [
-        "--sandbox",
-        CODEX_SANDBOX_MODE,
-        "--ask-for-approval",
-        CODEX_APPROVAL_POLICY,
-        "--cd",
-        repoRoot,
-        prompt,
-      ];
-  const startedAt = Date.now();
-  const previousSessionFilePaths = new Set(
-    options.resumeSessionId
-      ? []
-      : listCodexSessionRecords(repoRoot).map((record) => record.filePath)
-  );
-
-  appendRunLog(
-    workspace.outputLogPath,
-    "codex",
-    args,
-    "[interactive Codex session opened in current terminal]",
-    ""
-  );
-
-  const result = spawnSync("codex", args, {
-    cwd: repoRoot,
-    stdio: "inherit",
-  });
-
-  if (result.error) {
-    throw new Error(
-      `Failed to start the interactive Codex session. ${result.error.message}`
-    );
-  }
-
-  if (result.status !== 0) {
-    throw new Error(
-      "The interactive Codex session did not complete successfully."
-    );
-  }
-
-  if (!options.resumeSessionId && options.onNewSessionRecorded) {
-    const sessionId = findNewCodexSessionId(
-      repoRoot,
-      previousSessionFilePaths,
-      startedAt
-    );
-    if (!sessionId) {
-      appendFileSync(
-        workspace.outputLogPath,
-        [
-          "Warning: git-ai could not determine the new Codex session id for future resume support.",
-          "",
-        ].join("\n"),
-        "utf8"
-      );
-      return;
-    }
-
-    options.onNewSessionRecorded(sessionId);
-  }
-}
-
 function verifyBuild(repoRoot: string, buildCommand: string[], outputLogPath: string): void {
   if (!canRunCommand(buildCommand[0])) {
     throw new Error(`The \`${buildCommand[0]}\` CLI is not available on PATH.`);
@@ -1755,7 +1565,9 @@ function commitGeneratedChanges(
   commitMessage: ReviewedGeneratedText
 ): void {
   if (!hasChanges(repoRoot)) {
-    throw new Error("Codex completed without producing any file changes to commit.");
+    throw new Error(
+      "The interactive runtime completed without producing any file changes to commit."
+    );
   }
 
   runInteractiveCommand("git", ["add", "."], "Failed to stage the generated changes.", repoRoot);
@@ -1881,7 +1693,7 @@ async function reviewCommitMessage(
 
 async function generateIssueCommitProposal(
   repoRoot: string,
-  provider: OpenAIProvider
+  provider: AIProvider
 ): Promise<{ diff: string; initialMessage: string }> {
   const diff = readIssueWorkflowDiff(repoRoot);
   const result = await generateCommitMessage(provider, diff);
@@ -1947,7 +1759,7 @@ function writePRDescriptionFailureArtifact(
 }
 
 async function generateIssuePullRequest(
-  provider: OpenAIProvider,
+  provider: AIProvider,
   options: {
     repoRoot: string;
     issueNumber: number;
@@ -2092,19 +1904,55 @@ function formatPRReviewMarkdown(
   return lines.join("\n");
 }
 
-function createProvider(): OpenAIProvider {
-  loadRepoEnv(getDefaultRepoRoot());
-  return new OpenAIProvider({
-    apiKey: getRequiredEnv("OPENAI_API_KEY"),
-    model: getOptionalEnv("OPENAI_MODEL"),
-    baseUrl: getOptionalEnv("OPENAI_BASE_URL"),
-  });
+async function createProvider(
+  repoRoot = getDefaultRepoRoot()
+): Promise<{
+  provider: AIProvider;
+  providerType: ResolvedRepositoryConfigType["ai"]["provider"]["type"];
+}> {
+  loadRepoEnv(repoRoot);
+  const repositoryConfig = getRepositoryConfig(repoRoot);
+  const configuredProvider = repositoryConfig.ai.provider;
+  const defaultProvider = {
+    type: "openai" as const,
+  };
+  const environment = readProviderEnvironment();
+
+  try {
+    return {
+      provider: await createProviderFromConfig(configuredProvider, environment),
+      providerType: configuredProvider.type,
+    };
+  } catch (error: unknown) {
+    const configuredMessage = error instanceof Error ? error.message : String(error);
+
+    if (configuredProvider.type === defaultProvider.type) {
+      throw new Error(configuredMessage);
+    }
+
+    try {
+      const provider = await createProviderFromConfig(defaultProvider, environment);
+      console.log(
+        `Configured provider "${configuredProvider.type}" is unavailable. ${configuredMessage} Falling back to the default provider "${defaultProvider.type}".`
+      );
+      return {
+        provider,
+        providerType: defaultProvider.type,
+      };
+    } catch (defaultError: unknown) {
+      const defaultMessage =
+        defaultError instanceof Error ? defaultError.message : String(defaultError);
+      throw new Error(
+        `Configured provider "${configuredProvider.type}" is unavailable. ${configuredMessage} The default provider "${defaultProvider.type}" is also unavailable. ${defaultMessage}`
+      );
+    }
+  }
 }
 
 async function runReviewCommand(): Promise<void> {
   const options = parseReviewCommandArgs(getCliArgs());
   const diff = readReviewDiff(options.base, options.head);
-  const provider = createProvider();
+  const { provider } = await createProvider();
   const issue =
     options.issueNumber !== undefined
       ? await getRepositoryForge().fetchIssueDetails(options.issueNumber)
@@ -2145,10 +1993,24 @@ async function runPrCommand(): Promise<void> {
       prNumber: prCommand.prNumber,
       repoRoot,
       buildCommand: repositoryConfig.buildCommand,
+      runtime: {
+        resolve: () => {
+          const runtime = selectInteractiveRuntime(repositoryConfig.ai.runtime, {
+            onFallback: (message) => {
+              console.log(message);
+            },
+          });
+          return {
+            displayName: runtime.displayName,
+            launch: (runtimeRepoRoot, workspace) => {
+              runtime.launch(runtimeRepoRoot, workspace);
+            },
+          };
+        },
+      },
       forge: getRepositoryForge(repoRoot),
       ensureCleanWorkingTree,
       promptForLine,
-      runCodex,
       verifyBuild,
       hasChanges,
       commitGeneratedChanges,
@@ -2160,10 +2022,24 @@ async function runPrCommand(): Promise<void> {
     prNumber: prCommand.prNumber,
     repoRoot,
     buildCommand: repositoryConfig.buildCommand,
+    runtime: {
+      resolve: () => {
+        const runtime = selectInteractiveRuntime(repositoryConfig.ai.runtime, {
+          onFallback: (message) => {
+            console.log(message);
+          },
+        });
+        return {
+          displayName: runtime.displayName,
+          launch: (runtimeRepoRoot, workspace) => {
+            runtime.launch(runtimeRepoRoot, workspace);
+          },
+        };
+      },
+    },
     forge: getRepositoryForge(repoRoot),
     ensureCleanWorkingTree,
     promptForLine,
-    runCodex,
     verifyBuild,
     hasChanges,
     commitGeneratedChanges,
@@ -2503,25 +2379,31 @@ async function runFeatureBacklogCommand(): Promise<void> {
 
 async function runIssueDraftCommand(): Promise<void> {
   const repoRoot = getDefaultRepoRoot();
+  const repositoryConfig = getRepositoryConfig(repoRoot);
+  const runtime = selectInteractiveRuntime(repositoryConfig.ai.runtime, {
+    onFallback: (message) => {
+      console.log(message);
+    },
+  });
   const featureIdea = await promptForRequiredLine("Rough idea: ");
   const workspace = createIssueDraftWorkspace(repoRoot);
-  writeIssueDraftWorkspaceFiles(repoRoot, featureIdea, workspace);
+  writeIssueDraftWorkspaceFiles(repoRoot, featureIdea, workspace, runtime.type);
 
-  runCodex(repoRoot, {
+  runtime.launch(repoRoot, {
     promptFilePath: workspace.promptFilePath,
     outputLogPath: workspace.outputLogPath,
   });
 
   if (!existsSync(workspace.draftFilePath)) {
     throw new Error(
-      `Codex did not write the issue draft to ${toRepoRelativePath(repoRoot, workspace.draftFilePath)}.`
+      `${runtime.displayName} did not write the issue draft to ${toRepoRelativePath(repoRoot, workspace.draftFilePath)}.`
     );
   }
 
   const draftContents = readFileSync(workspace.draftFilePath, "utf8").trim();
   if (!draftContents) {
     throw new Error(
-      `Codex wrote an empty issue draft at ${toRepoRelativePath(repoRoot, workspace.draftFilePath)}.`
+      `${runtime.displayName} wrote an empty issue draft at ${toRepoRelativePath(repoRoot, workspace.draftFilePath)}.`
     );
   }
   const forge = getRepositoryForge(repoRoot);
@@ -2576,7 +2458,7 @@ async function runIssuePlanCommand(issueNumber: number): Promise<void> {
     return;
   }
 
-  const provider = createProvider();
+  const { provider } = await createProvider(repoRoot);
   const plan = await generateIssueResolutionPlan(provider, {
     issueNumber,
     issueTitle: issue.title,
@@ -2596,11 +2478,15 @@ async function prepareIssueRun(
   mode: IssueExecutionMode,
   options: {
     allowResume?: boolean;
+    runtimeType?: InteractiveRuntimeType;
   } = {}
 ): Promise<IssueRunContext> {
   const repoRoot = getDefaultRepoRoot();
   const forge = getRepositoryForge(repoRoot);
   const repositoryConfig = getRepositoryConfig(repoRoot);
+  const runtime = getInteractiveRuntimeByType(
+    options.runtimeType ?? repositoryConfig.ai.runtime.type
+  );
   if (forge.type === "none") {
     throw new Error(
       "Repository forge support is disabled by .git-ai/config.json. Configure `forge.type` to enable issue workflows."
@@ -2617,15 +2503,37 @@ async function prepareIssueRun(
       : undefined;
 
   if (existingSessionState) {
-    const savedSession = findCodexSessionById(repoRoot, existingSessionState.sessionId);
-    if (!savedSession) {
-      throw new Error(
-        buildIssueResumeRecoveryMessage(
-          repoRoot,
-          issueNumber,
-          `Saved Codex session ${existingSessionState.sessionId} for issue #${issueNumber} is no longer available.`
-        )
+    let runtimeInvocation: "new" | "resume" = "new";
+    let sessionId = existingSessionState.sessionId;
+    if (
+      existingSessionState.runtimeType === runtime.type &&
+      sessionId &&
+      getInteractiveRuntimeByType(runtime.type).metadata.supportsSessionTracking
+    ) {
+      const savedSession = findTrackedRuntimeSessionById(
+        runtime.type,
+        repoRoot,
+        sessionId
       );
+      if (!savedSession) {
+        throw new Error(
+          buildIssueResumeRecoveryMessage(
+            repoRoot,
+            issueNumber,
+            `Saved ${runtime.displayName} session ${sessionId} for issue #${issueNumber} is no longer available.`
+          )
+        );
+      }
+
+      runtimeInvocation = "resume";
+    } else if (existingSessionState.runtimeType !== runtime.type) {
+      const previousRuntime = getInteractiveRuntimeByType(
+        existingSessionState.runtimeType
+      );
+      console.log(
+        `Configured runtime "${runtime.displayName}" differs from the saved issue runtime "${previousRuntime.displayName}". Continuing on the saved branch with a new ${runtime.displayName} session.`
+      );
+      sessionId = undefined;
     }
 
     if (!localBranchExists(repoRoot, existingSessionState.branchName)) {
@@ -2654,8 +2562,9 @@ async function prepareIssueRun(
       workspace,
       mode,
       repositoryConfig.buildCommand,
-      "resume",
-      existingSessionState.sessionId
+      runtime.type,
+      runtimeInvocation,
+      sessionId
     );
 
     return {
@@ -2665,9 +2574,10 @@ async function prepareIssueRun(
       branchName: existingSessionState.branchName,
       workspace,
       mode,
-      codex: {
-        invocation: "resume",
-        sessionId: existingSessionState.sessionId,
+      runtime: {
+        type: runtime.type,
+        invocation: runtimeInvocation,
+        sessionId,
         sessionStateFilePath,
       },
     };
@@ -2686,6 +2596,7 @@ async function prepareIssueRun(
     workspace,
     mode,
     repositoryConfig.buildCommand,
+    runtime.type,
     "new"
   );
 
@@ -2704,7 +2615,8 @@ async function prepareIssueRun(
     branchName,
     workspace,
     mode,
-    codex: {
+    runtime: {
+      type: runtime.type,
       invocation: "new",
       sessionStateFilePath,
     },
@@ -2714,7 +2626,7 @@ async function prepareIssueRun(
 async function finalizeIssueRun(
   repoRoot: string,
   issueNumber: number,
-  provider: OpenAIProvider,
+  provider: AIProvider,
   runDir?: string
 ): Promise<FinalizeIssueRunResult> {
   const proposal = await generateIssueCommitProposal(repoRoot, provider);
@@ -2770,6 +2682,7 @@ async function runIssueCommand(): Promise<void> {
           issueTitle: context.issue.title,
           issueUrl: context.issue.url,
           branchName: context.branchName,
+          runtimeType: context.runtime.type,
           issueFile: toRepoRelativePath(repoRoot, context.workspace.issueFilePath),
           promptFile: toRepoRelativePath(repoRoot, context.workspace.promptFilePath),
           metadataFile: toRepoRelativePath(repoRoot, context.workspace.metadataFilePath),
@@ -2785,7 +2698,7 @@ async function runIssueCommand(): Promise<void> {
   }
 
   if (issueCommand.action === "finalize") {
-    const provider = createProvider();
+    const { provider } = await createProvider(repoRoot);
     await finalizeIssueRun(repoRoot, issueCommand.issueNumber, provider);
     return;
   }
@@ -2796,43 +2709,50 @@ async function runIssueCommand(): Promise<void> {
     );
   }
 
-  const context = await prepareIssueRun(issueCommand.issueNumber, issueCommand.mode, {
-    allowResume: true,
-  });
   const repositoryConfig = getRepositoryConfig(repoRoot);
-  const forge = getRepositoryForge(repoRoot);
-
-  console.log(
-    context.codex.invocation === "resume"
-      ? "Resuming the saved interactive Codex session in this terminal..."
-      : "Opening an interactive Codex session in this terminal..."
-  );
-  console.log("Complete the issue work in Codex.");
-  console.log("When Codex exits, git-ai will resume with build and commit steps.");
-  runCodex(repoRoot, context.workspace, {
-    resumeSessionId: context.codex.sessionId,
-    onNewSessionRecorded: (sessionId) => {
-      persistIssueSessionState(repoRoot, context, sessionId);
-      updateIssueWorkspaceMetadata(context.workspace, (currentMetadata) => ({
-        ...currentMetadata,
-        codex: {
-          invocation: "new",
-          sessionId,
-          sandboxMode: CODEX_SANDBOX_MODE,
-          approvalPolicy: CODEX_APPROVAL_POLICY,
-        },
-      }));
+  const selectedRuntime = selectInteractiveRuntime(repositoryConfig.ai.runtime, {
+    onFallback: (message) => {
+      console.log(message);
     },
   });
+  const context = await prepareIssueRun(issueCommand.issueNumber, issueCommand.mode, {
+    allowResume: true,
+    runtimeType: selectedRuntime.type,
+  });
+  const forge = getRepositoryForge(repoRoot);
+  const runtime = getInteractiveRuntimeByType(selectedRuntime.type);
 
-  if (context.codex.invocation === "resume" && context.codex.sessionId) {
-    persistIssueSessionState(repoRoot, context, context.codex.sessionId);
-  }
+  console.log(
+    context.runtime.invocation === "resume"
+      ? `Resuming the saved interactive ${runtime.displayName} session in this terminal...`
+      : `Opening an interactive ${runtime.displayName} session in this terminal...`
+  );
+  console.log(`Complete the issue work in ${runtime.displayName}.`);
+  console.log(
+    `When ${runtime.displayName} exits, git-ai will resume with build and commit steps.`
+  );
+  const runtimeLaunch = runtime.launch(repoRoot, context.workspace, {
+    resumeSessionId: context.runtime.sessionId,
+  });
+  persistIssueSessionState(repoRoot, context, runtimeLaunch.sessionId);
+  updateIssueWorkspaceMetadata(context.workspace, (currentMetadata) => ({
+    ...currentMetadata,
+    runtime: {
+      ...((currentMetadata.runtime as Record<string, unknown> | undefined) ?? {}),
+      type: runtime.type,
+      displayName: runtime.displayName,
+      command: runtime.metadata.command,
+      invocation: runtimeLaunch.invocation,
+      sessionId: runtimeLaunch.sessionId,
+      sandboxMode: runtime.metadata.sandboxMode,
+      approvalPolicy: runtime.metadata.approvalPolicy,
+    },
+  }));
 
   console.log("Verifying build...");
   verifyBuild(repoRoot, repositoryConfig.buildCommand, context.workspace.outputLogPath);
 
-  const provider = createProvider();
+  const { provider, providerType } = await createProvider(repoRoot);
   const finalized = await finalizeIssueRun(
     repoRoot,
     context.issueNumber,
@@ -2852,6 +2772,12 @@ async function runIssueCommand(): Promise<void> {
     commitMessage: finalized.commitMessage,
     runDir: context.workspace.runDir,
   });
+  updateIssueWorkspaceMetadata(context.workspace, (currentMetadata) => ({
+    ...currentMetadata,
+    provider: {
+      type: providerType,
+    },
+  }));
 
   if (forge.isAuthenticated()) {
     console.log("Pushing branch and opening a pull request...");
@@ -2901,7 +2827,7 @@ export async function run(): Promise<void> {
 
   if (command === "commit") {
     const diff = readStagedDiff();
-    const provider = createProvider();
+    const { provider } = await createProvider();
     const result = await generateCommitMessage(provider, diff);
     process.stdout.write(formatCommitMessage(result.title, result.body));
     return;
@@ -2942,7 +2868,7 @@ export async function run(): Promise<void> {
   }
 
   const diff = readHeadDiff();
-  const provider = createProvider();
+  const { provider } = await createProvider();
   const result = await generateDiffSummary(provider, { diff });
   process.stdout.write(formatDiffSummary(result));
 }

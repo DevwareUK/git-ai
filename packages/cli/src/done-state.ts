@@ -1,13 +1,11 @@
-type CodexDoneStateMode = "interactive" | "non-interactive";
+type DoneStateMode = "interactive" | "non-interactive";
 
-type CodexDoneStateOptions = {
-  mode: CodexDoneStateMode;
+type DoneStateOptions = {
+  mode: DoneStateMode;
   readyLabel: string;
 };
 
-export function buildCodexDoneStateInstructions(
-  options: CodexDoneStateOptions
-): string[] {
+export function buildDoneStateInstructions(options: DoneStateOptions): string[] {
   const sharedLines = [
     "When you determine the task is complete, always end with this explicit done-state block:",
     "```text",

@@ -123,7 +123,7 @@ describe("runPrFixTestsCommand", () => {
     rmSync(repoRoot, { recursive: true, force: true });
   });
 
-  it("fetches PR context, writes workspace files, runs Codex, verifies the build, and commits", async () => {
+  it("fetches PR context, writes workspace files, runs the selected runtime, verifies the build, and commits", async () => {
     const comment = createManagedComment(
       [
         "<!-- git-ai-test-suggestions -->",
@@ -147,7 +147,7 @@ describe("runPrFixTestsCommand", () => {
     ]);
     const promptForLine = vi.fn().mockResolvedValueOnce("1,2").mockResolvedValueOnce("y");
     const ensureCleanWorkingTree = vi.fn();
-    const runCodex = vi.fn();
+    const launch = vi.fn();
     const verifyBuild = vi.fn();
     const hasChanges = vi.fn().mockReturnValue(true);
     const commitGeneratedChanges = vi.fn();
@@ -156,10 +156,15 @@ describe("runPrFixTestsCommand", () => {
       prNumber: 71,
       repoRoot,
       buildCommand: ["pnpm", "build"],
+      runtime: {
+        resolve: () => ({
+          displayName: "Codex",
+          launch,
+        }),
+      },
       forge,
       ensureCleanWorkingTree,
       promptForLine,
-      runCodex,
       verifyBuild,
       hasChanges,
       commitGeneratedChanges,
@@ -197,7 +202,7 @@ describe("runPrFixTestsCommand", () => {
         }),
       ]
     );
-    expect(runCodex).toHaveBeenCalledWith(repoRoot, workspace);
+    expect(launch).toHaveBeenCalledWith(repoRoot, workspace);
     expect(verifyBuild).toHaveBeenCalledWith(repoRoot, ["pnpm", "build"], workspace.outputLogPath);
     expect(hasChanges).toHaveBeenCalledWith(repoRoot);
     expect(commitGeneratedChanges).toHaveBeenCalledWith(
@@ -249,7 +254,7 @@ describe("runPrFixTestsCommand", () => {
     };
     const { forge } = createForge([olderComment, newerComment]);
     const promptForLine = vi.fn().mockResolvedValueOnce("1").mockResolvedValueOnce("n");
-    const runCodex = vi.fn();
+    const launch = vi.fn();
     const verifyBuild = vi.fn();
     const hasChanges = vi.fn().mockReturnValue(true);
     const commitGeneratedChanges = vi.fn();
@@ -258,10 +263,15 @@ describe("runPrFixTestsCommand", () => {
       prNumber: 71,
       repoRoot,
       buildCommand: ["pnpm", "build"],
+      runtime: {
+        resolve: () => ({
+          displayName: "Codex",
+          launch,
+        }),
+      },
       forge,
       ensureCleanWorkingTree: vi.fn(),
       promptForLine,
-      runCodex,
       verifyBuild,
       hasChanges,
       commitGeneratedChanges,
@@ -283,12 +293,12 @@ describe("runPrFixTestsCommand", () => {
       ["pnpm", "build"],
       expect.any(Array)
     );
-    expect(runCodex).toHaveBeenCalledWith(repoRoot, workspace);
+    expect(launch).toHaveBeenCalledWith(repoRoot, workspace);
     expect(verifyBuild).toHaveBeenCalledWith(repoRoot, ["pnpm", "build"], workspace.outputLogPath);
     expect(commitGeneratedChanges).not.toHaveBeenCalled();
   });
 
-  it("exits without Codex or workspace writes when no test suggestions are selected", async () => {
+  it("exits without launching the runtime or writing workspace files when no test suggestions are selected", async () => {
     const { forge } = createForge([
       createManagedComment(
         [
@@ -304,7 +314,7 @@ describe("runPrFixTestsCommand", () => {
       ),
     ]);
     const promptForLine = vi.fn().mockResolvedValue("none");
-    const runCodex = vi.fn();
+    const launch = vi.fn();
     const verifyBuild = vi.fn();
     const hasChanges = vi.fn();
     const commitGeneratedChanges = vi.fn();
@@ -313,10 +323,15 @@ describe("runPrFixTestsCommand", () => {
       prNumber: 71,
       repoRoot,
       buildCommand: ["pnpm", "build"],
+      runtime: {
+        resolve: () => ({
+          displayName: "Codex",
+          launch,
+        }),
+      },
       forge,
       ensureCleanWorkingTree: vi.fn(),
       promptForLine,
-      runCodex,
       verifyBuild,
       hasChanges,
       commitGeneratedChanges,
@@ -324,7 +339,7 @@ describe("runPrFixTestsCommand", () => {
 
     expect(createPullRequestFixTestsWorkspace).not.toHaveBeenCalled();
     expect(writePullRequestFixTestsWorkspaceFiles).not.toHaveBeenCalled();
-    expect(runCodex).not.toHaveBeenCalled();
+    expect(launch).not.toHaveBeenCalled();
     expect(verifyBuild).not.toHaveBeenCalled();
     expect(hasChanges).not.toHaveBeenCalled();
     expect(commitGeneratedChanges).not.toHaveBeenCalled();
@@ -347,7 +362,7 @@ describe("runPrFixTestsCommand", () => {
       ),
     ]);
     const promptForLine = vi.fn().mockResolvedValueOnce("1").mockResolvedValueOnce("n");
-    const runCodex = vi.fn();
+    const launch = vi.fn();
     const verifyBuild = vi.fn();
     const hasChanges = vi.fn().mockReturnValue(true);
     const commitGeneratedChanges = vi.fn();
@@ -356,16 +371,21 @@ describe("runPrFixTestsCommand", () => {
       prNumber: 71,
       repoRoot,
       buildCommand: ["pnpm", "build"],
+      runtime: {
+        resolve: () => ({
+          displayName: "Codex",
+          launch,
+        }),
+      },
       forge,
       ensureCleanWorkingTree: vi.fn(),
       promptForLine,
-      runCodex,
       verifyBuild,
       hasChanges,
       commitGeneratedChanges,
     });
 
-    expect(runCodex).toHaveBeenCalledWith(repoRoot, workspace);
+    expect(launch).toHaveBeenCalledWith(repoRoot, workspace);
     expect(verifyBuild).toHaveBeenCalledWith(repoRoot, ["pnpm", "build"], workspace.outputLogPath);
     expect(hasChanges).toHaveBeenCalledWith(repoRoot);
     expect(commitGeneratedChanges).not.toHaveBeenCalled();
@@ -391,7 +411,7 @@ describe("runPrFixTestsCommand", () => {
       ),
     ]);
     const promptForLine = vi.fn().mockResolvedValueOnce("1").mockResolvedValueOnce("m").mockResolvedValueOnce("y");
-    const runCodex = vi.fn();
+    const launch = vi.fn();
     const verifyBuild = vi.fn();
     const hasChanges = vi.fn().mockReturnValue(true);
     const commitGeneratedChanges = vi.fn();
@@ -410,10 +430,15 @@ describe("runPrFixTestsCommand", () => {
       prNumber: 71,
       repoRoot,
       buildCommand: ["pnpm", "build"],
+      runtime: {
+        resolve: () => ({
+          displayName: "Codex",
+          launch,
+        }),
+      },
       forge,
       ensureCleanWorkingTree: vi.fn(),
       promptForLine,
-      runCodex,
       verifyBuild,
       hasChanges,
       commitGeneratedChanges,
@@ -429,7 +454,7 @@ describe("runPrFixTestsCommand", () => {
     expect(spawnSync).toHaveBeenCalledTimes(1);
   });
 
-  it("fails clearly when Codex completes without producing any file changes", async () => {
+  it("fails clearly when the selected runtime completes without producing any file changes", async () => {
     const { forge } = createForge([
       createManagedComment(
         [
@@ -445,7 +470,7 @@ describe("runPrFixTestsCommand", () => {
       ),
     ]);
     const promptForLine = vi.fn().mockResolvedValueOnce("1");
-    const runCodex = vi.fn();
+    const launch = vi.fn();
     const verifyBuild = vi.fn();
     const hasChanges = vi.fn().mockReturnValue(false);
     const commitGeneratedChanges = vi.fn();
@@ -455,17 +480,22 @@ describe("runPrFixTestsCommand", () => {
         prNumber: 71,
         repoRoot,
         buildCommand: ["pnpm", "build"],
+        runtime: {
+          resolve: () => ({
+            displayName: "Codex",
+            launch,
+          }),
+        },
         forge,
         ensureCleanWorkingTree: vi.fn(),
         promptForLine,
-        runCodex,
         verifyBuild,
         hasChanges,
         commitGeneratedChanges,
       })
     ).rejects.toThrow("Codex completed without producing any file changes to commit.");
 
-    expect(runCodex).toHaveBeenCalledWith(repoRoot, workspace);
+    expect(launch).toHaveBeenCalledWith(repoRoot, workspace);
     expect(verifyBuild).toHaveBeenCalledWith(repoRoot, ["pnpm", "build"], workspace.outputLogPath);
     expect(commitGeneratedChanges).not.toHaveBeenCalled();
     expect(promptForLine).toHaveBeenCalledTimes(1);
@@ -479,10 +509,15 @@ describe("runPrFixTestsCommand", () => {
         prNumber: 71,
         repoRoot,
         buildCommand: ["pnpm", "build"],
+        runtime: {
+          resolve: () => ({
+            displayName: "Codex",
+            launch: vi.fn(),
+          }),
+        },
         forge,
         ensureCleanWorkingTree: vi.fn(),
         promptForLine: vi.fn(),
-        runCodex: vi.fn(),
         verifyBuild: vi.fn(),
         hasChanges: vi.fn(),
         commitGeneratedChanges: vi.fn(),
@@ -513,10 +548,15 @@ describe("runPrFixTestsCommand", () => {
         prNumber: 71,
         repoRoot,
         buildCommand: ["pnpm", "build"],
+        runtime: {
+          resolve: () => ({
+            displayName: "Codex",
+            launch: vi.fn(),
+          }),
+        },
         forge,
         ensureCleanWorkingTree: vi.fn(),
         promptForLine: vi.fn(),
-        runCodex: vi.fn(),
         verifyBuild: vi.fn(),
         hasChanges: vi.fn(),
         commitGeneratedChanges: vi.fn(),

@@ -621,7 +621,7 @@ function renderAgentsSection(
     "",
     `- Detected stack: ${inspection.stackLabel}.`,
     `- Default branch for issue and PR flows: \`${answers.baseBranch}\`.`,
-    `- Verification command after Codex work: \`${formatCommandForDisplay(answers.buildCommand)}\`.`,
+    `- Verification command after interactive agent work: \`${formatCommandForDisplay(answers.buildCommand)}\`.`,
     `- Forge integration: \`${answers.forgeType}\`.`,
   ];
 
