@@ -1635,7 +1635,9 @@ describe("CLI integration", () => {
       spawnSync.mock.calls.some(
         ([command, args]) =>
           command === "pnpm" ||
-          (command === "git" && Array.isArray(args) && args[0] === "commit")
+          (command === "git" &&
+            Array.isArray(args) &&
+            (args[0] === "commit" || args[0] === "push"))
       )
     ).toBe(false);
   });
@@ -1975,6 +1977,33 @@ describe("CLI integration", () => {
           return { status: 0 };
         }
 
+        if (command === "git" && args[0] === "fetch" && args[1] === "origin" && args[2] === headBranchName) {
+          return { status: 0, stdout: "", stderr: "" };
+        }
+
+        if (command === "git" && args[0] === "rev-parse" && args[1] === `origin/${headBranchName}`) {
+          return { status: 0, stdout: "head-tip-206\n", stderr: "" };
+        }
+
+        if (
+          command === "git" &&
+          args[0] === "rev-list" &&
+          args[1] === "--left-right" &&
+          args[2] === "--count" &&
+          args[3] === `origin/${headBranchName}...HEAD`
+        ) {
+          return { status: 0, stdout: "0 1\n", stderr: "" };
+        }
+
+        if (
+          command === "git" &&
+          args[0] === "push" &&
+          args[1] === "origin" &&
+          args[2] === `HEAD:${headBranchName}`
+        ) {
+          return { status: 0, stdout: "pushed\n", stderr: "" };
+        }
+
         throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
       },
     });
@@ -1982,6 +2011,10 @@ describe("CLI integration", () => {
     process.env.GITHUB_TOKEN = "test-token";
     process.argv = ["node", "git-ai", "pr", "prepare-review", "206"];
     const stdout = captureStdout();
+    const messages: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((message?: unknown) => {
+      messages.push(String(message ?? ""));
+    });
 
     await run();
 
@@ -2005,7 +2038,11 @@ describe("CLI integration", () => {
       "fix: review follow-up fixes for PR #206"
     );
     expect(readFileSync(outputLogPath, "utf8")).toContain("$ pnpm build");
+    expect(readFileSync(outputLogPath, "utf8")).toContain(`$ git push origin HEAD:${headBranchName}`);
     expect(stdout.output()).toContain("Proposed commit message");
+    expect(messages.join("\n")).toContain(
+      `Pushing reviewed updates to origin/${headBranchName}...`
+    );
     expect(generateCommitMessage).toHaveBeenCalledWith(
       expect.any(Object),
       expect.stringContaining(
@@ -2277,7 +2314,7 @@ describe("CLI integration", () => {
         ([command, args]) =>
           command === "git" &&
           Array.isArray(args) &&
-          args[0] === "commit"
+          (args[0] === "commit" || args[0] === "push")
       )
     ).toBe(false);
   });
@@ -2392,12 +2429,53 @@ describe("CLI integration", () => {
           return { status: 0 };
         }
 
+        if (
+          command === "git" &&
+          args[0] === "fetch" &&
+          args[1] === "origin" &&
+          args[2] === "feat/prepare-review-workspace"
+        ) {
+          return { status: 0, stdout: "", stderr: "" };
+        }
+
+        if (
+          command === "git" &&
+          args[0] === "rev-parse" &&
+          args[1] === "origin/feat/prepare-review-workspace"
+        ) {
+          return { status: 0, stdout: "head-tip-205\n", stderr: "" };
+        }
+
+        if (
+          command === "git" &&
+          args[0] === "rev-list" &&
+          args[1] === "--left-right" &&
+          args[2] === "--count" &&
+          args[3] === "origin/feat/prepare-review-workspace...HEAD"
+        ) {
+          return { status: 0, stdout: "0 1\n", stderr: "" };
+        }
+
+        if (
+          command === "git" &&
+          args[0] === "push" &&
+          args[1] === "origin" &&
+          args[2] === "HEAD:feat/prepare-review-workspace"
+        ) {
+          return { status: 0, stdout: "pushed\n", stderr: "" };
+        }
+
         throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
       },
     });
 
     process.env.GITHUB_TOKEN = "test-token";
     process.argv = ["node", "git-ai", "pr", "prepare-review", "205"];
+    const stdout = captureStdout();
+    const messages: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((message?: unknown) => {
+      messages.push(String(message ?? ""));
+    });
 
     await run();
 
@@ -2429,6 +2507,9 @@ describe("CLI integration", () => {
     expect(readFileSync(outputLogPath, "utf8")).toContain("git fetch origin main");
     expect(readFileSync(outputLogPath, "utf8")).toContain(
       "git merge --no-edit --no-ff origin/main"
+    );
+    expect(readFileSync(outputLogPath, "utf8")).toContain(
+      "git push origin HEAD:feat/prepare-review-workspace"
     );
     expect(JSON.parse(readFileSync(metadataFilePath, "utf8"))).toMatchObject({
       prNumber: 205,
@@ -2462,6 +2543,16 @@ describe("CLI integration", () => {
       expect.objectContaining({
         cwd: REPO_ROOT,
       })
+    );
+    expect(spawnSync).toHaveBeenCalledWith(
+      "git",
+      ["push", "origin", "HEAD:feat/prepare-review-workspace"],
+      expect.objectContaining({
+        cwd: REPO_ROOT,
+      })
+    );
+    expect(messages.join("\n")).toContain(
+      "Pushing reviewed updates to origin/feat/prepare-review-workspace..."
     );
     expect(spawnSync).toHaveBeenCalledWith(
       "codex",
@@ -2589,6 +2680,42 @@ describe("CLI integration", () => {
           };
         }
 
+        if (
+          command === "git" &&
+          args[0] === "fetch" &&
+          args[1] === "origin" &&
+          args[2] === headBranchName
+        ) {
+          return { status: 0, stdout: "", stderr: "" };
+        }
+
+        if (
+          command === "git" &&
+          args[0] === "rev-parse" &&
+          args[1] === `origin/${headBranchName}`
+        ) {
+          return { status: 0, stdout: "head-tip-209\n", stderr: "" };
+        }
+
+        if (
+          command === "git" &&
+          args[0] === "rev-list" &&
+          args[1] === "--left-right" &&
+          args[2] === "--count" &&
+          args[3] === `origin/${headBranchName}...HEAD`
+        ) {
+          return { status: 0, stdout: "0 1\n", stderr: "" };
+        }
+
+        if (
+          command === "git" &&
+          args[0] === "push" &&
+          args[1] === "origin" &&
+          args[2] === `HEAD:${headBranchName}`
+        ) {
+          return { status: 0, stdout: "pushed\n", stderr: "" };
+        }
+
         if (command === "codex" && args[0] === "exec" && args[1] === "--full-auto") {
           const createdRunDir = listRunDirectories().find(
             (entry) => !beforeRuns.includes(entry)
@@ -2649,6 +2776,9 @@ describe("CLI integration", () => {
     expect(readFileSync(outputLogPath, "utf8")).toContain(
       'Warning: Codex resolved the merge conflicts while merging origin/main into "feat/prepare-review-conflicts-resolved".'
     );
+    expect(readFileSync(outputLogPath, "utf8")).toContain(
+      `git push origin HEAD:${headBranchName}`
+    );
     expect(JSON.parse(readFileSync(metadataFilePath, "utf8"))).toMatchObject({
       baseSync: {
         remoteRef: "origin/main",
@@ -2669,6 +2799,13 @@ describe("CLI integration", () => {
           )
       )
     ).toBe(true);
+    expect(spawnSync).toHaveBeenCalledWith(
+      "git",
+      ["push", "origin", `HEAD:${headBranchName}`],
+      expect.objectContaining({
+        cwd: REPO_ROOT,
+      })
+    );
   });
 
   it("fails clearly when base-branch merge conflicts remain unresolved", async () => {

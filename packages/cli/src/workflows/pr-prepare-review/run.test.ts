@@ -161,7 +161,7 @@ describe("runPrPrepareReviewCommand", () => {
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
   });
 
-  it("passes a diff-based commit proposal into runtime finalization after interactive follow-up changes", async () => {
+  it("passes a diff-based commit proposal into runtime finalization and pushes an accepted follow-up commit", async () => {
     const repoRoot = mkdtempSync(resolve(tmpdir(), "git-ai-pr-prepare-review-"));
     cleanupTargets.add(repoRoot);
 
@@ -287,6 +287,46 @@ describe("runPrPrepareReviewCommand", () => {
         } as never;
       }
 
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "fetch" &&
+        args[1] === "origin" &&
+        args[2] === createPullRequest().headRefName
+      ) {
+        return createCommandResult(0);
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "rev-parse" &&
+        args[1] === `origin/${createPullRequest().headRefName}`
+      ) {
+        return createCommandResult(0, { stdout: "def456head\n" });
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "rev-list" &&
+        args[1] === "--left-right" &&
+        args[2] === "--count" &&
+        args[3] === `origin/${createPullRequest().headRefName}...HEAD`
+      ) {
+        return createCommandResult(0, { stdout: "0 1\n" });
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "push" &&
+        args[1] === "origin" &&
+        args[2] === `HEAD:${createPullRequest().headRefName}`
+      ) {
+        return createCommandResult(0);
+      }
+
       throw new Error(`Unexpected spawnSync call: ${command} ${String(args)}`);
     });
 
@@ -357,6 +397,11 @@ describe("runPrPrepareReviewCommand", () => {
       provider,
       readDiff
     );
+    expect(getGitCommandArgs()).toContainEqual([
+      "push",
+      "origin",
+      `HEAD:${createPullRequest().headRefName}`,
+    ]);
   });
 
   it("skips merging when the checked-out branch already contains the fetched base tip", async () => {
@@ -611,6 +656,46 @@ describe("runPrPrepareReviewCommand", () => {
         return createCommandResult(0);
       }
 
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "fetch" &&
+        args[1] === "origin" &&
+        args[2] === createPullRequest().headRefName
+      ) {
+        return createCommandResult(0);
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "rev-parse" &&
+        args[1] === `origin/${createPullRequest().headRefName}`
+      ) {
+        return createCommandResult(0, { stdout: "def456head\n" });
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "rev-list" &&
+        args[1] === "--left-right" &&
+        args[2] === "--count" &&
+        args[3] === `origin/${createPullRequest().headRefName}...HEAD`
+      ) {
+        return createCommandResult(0, { stdout: "0 1\n" });
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "push" &&
+        args[1] === "origin" &&
+        args[2] === `HEAD:${createPullRequest().headRefName}`
+      ) {
+        return createCommandResult(0);
+      }
+
       throw new Error(`Unexpected spawnSync call: ${command} ${String(args)}`);
     });
 
@@ -625,6 +710,15 @@ describe("runPrPrepareReviewCommand", () => {
       ["rev-parse", "origin/main"],
       ["merge-base", "--is-ancestor", "abc123base", "HEAD"],
       ["merge", "--no-edit", "--no-ff", "origin/main"],
+      ["fetch", "origin", createPullRequest().headRefName],
+      ["rev-parse", `origin/${createPullRequest().headRefName}`],
+      [
+        "rev-list",
+        "--left-right",
+        "--count",
+        `origin/${createPullRequest().headRefName}...HEAD`,
+      ],
+      ["push", "origin", `HEAD:${createPullRequest().headRefName}`],
     ]);
     expect(writePullRequestPrepareReviewWorkspaceFiles).toHaveBeenCalledWith(
       repoRoot,
@@ -646,6 +740,429 @@ describe("runPrPrepareReviewCommand", () => {
     );
     expect(launchUnattendedRuntime).toHaveBeenCalledOnce();
     expect(writePullRequestPrepareReviewConflictPrompt).not.toHaveBeenCalled();
+  });
+
+  it("pushes a merge-only fetched review branch back to the real PR head branch", async () => {
+    const repoRoot = mkdtempSync(resolve(tmpdir(), "git-ai-pr-prepare-review-"));
+    cleanupTargets.add(repoRoot);
+
+    const workspace = createWorkspace(repoRoot);
+    const { forge } = createForge();
+    const interactiveLaunch = vi.fn();
+    const fetchedBranchName = "review/pr-206-tighten-prepare-review-follow-up-fixes";
+
+    vi.mocked(fetchLinkedIssuesForPullRequest).mockResolvedValue([]);
+    vi.mocked(createPullRequestPrepareReviewWorkspace).mockReturnValue(workspace);
+    vi.mocked(initializePullRequestPrepareReviewOutputLog).mockImplementation(
+      () => undefined
+    );
+    vi.mocked(writePullRequestPrepareReviewWorkspaceFiles).mockImplementation(
+      () => undefined
+    );
+    vi.mocked(writePullRequestPrepareReviewMetadata).mockImplementation(() => undefined);
+    vi.mocked(getInteractiveRuntimeByType).mockReturnValue({
+      checkAvailability: () => ({ available: true }),
+      launch: interactiveLaunch,
+    });
+    vi.mocked(launchUnattendedRuntime).mockImplementation(
+      (_type, _repoRoot, suppliedWorkspace) => {
+        writeFileSync(
+          suppliedWorkspace.reviewBriefFilePath,
+          "# Reviewer focus\n\n- Inspect the merged base sync.\n",
+          "utf8"
+        );
+
+        return {
+          invocation: "new",
+          sessionId: "codex-session-merge-only-push",
+        };
+      }
+    );
+    vi.mocked(spawnSync).mockImplementation((command, args) => {
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "-C" &&
+        args[1] === repoRoot &&
+        args[2] === "rev-parse" &&
+        args[3] === "--verify" &&
+        args[4] === createPullRequest().headRefName
+      ) {
+        return createCommandResult(1);
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "-C" &&
+        args[1] === repoRoot &&
+        args[2] === "rev-parse" &&
+        args[3] === "--verify" &&
+        args[4] === fetchedBranchName
+      ) {
+        return createCommandResult(1);
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "fetch" &&
+        args[1] === "origin" &&
+        args[2] === `pull/206/head:${fetchedBranchName}`
+      ) {
+        return createCommandResult(0);
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "checkout" &&
+        args[1] === fetchedBranchName
+      ) {
+        return createCommandResult(0);
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "fetch" &&
+        args[1] === "origin" &&
+        args[2] === createPullRequest().baseRefName
+      ) {
+        return createCommandResult(0);
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "rev-parse" &&
+        args[1] === `origin/${createPullRequest().baseRefName}`
+      ) {
+        return createCommandResult(0, { stdout: "abc123base\n" });
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "merge-base" &&
+        args[1] === "--is-ancestor" &&
+        args[2] === "abc123base" &&
+        args[3] === "HEAD"
+      ) {
+        return createCommandResult(1);
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "merge" &&
+        args[1] === "--no-edit" &&
+        args[2] === "--no-ff" &&
+        args[3] === "origin/main"
+      ) {
+        return createCommandResult(0);
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "fetch" &&
+        args[1] === "origin" &&
+        args[2] === createPullRequest().headRefName
+      ) {
+        return createCommandResult(0);
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "rev-parse" &&
+        args[1] === `origin/${createPullRequest().headRefName}`
+      ) {
+        return createCommandResult(0, { stdout: "def456head\n" });
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "rev-list" &&
+        args[1] === "--left-right" &&
+        args[2] === "--count" &&
+        args[3] === `origin/${createPullRequest().headRefName}...HEAD`
+      ) {
+        return createCommandResult(0, { stdout: "0 1\n" });
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "push" &&
+        args[1] === "origin" &&
+        args[2] === `HEAD:${createPullRequest().headRefName}`
+      ) {
+        return createCommandResult(0);
+      }
+
+      throw new Error(`Unexpected spawnSync call: ${command} ${String(args)}`);
+    });
+
+    await runPrPrepareReviewCommand(createDefaultCommandOptions(repoRoot, forge));
+
+    expect(getGitCommandArgs()).toContainEqual([
+      "push",
+      "origin",
+      `HEAD:${createPullRequest().headRefName}`,
+    ]);
+    expect(getGitCommandArgs()).not.toContainEqual([
+      "push",
+      "origin",
+      `HEAD:${fetchedBranchName}`,
+    ]);
+  });
+
+  it("does not push when prepare-review exits without workflow-created commits", async () => {
+    const repoRoot = mkdtempSync(resolve(tmpdir(), "git-ai-pr-prepare-review-"));
+    cleanupTargets.add(repoRoot);
+
+    const workspace = createWorkspace(repoRoot);
+    const { forge } = createForge();
+    const interactiveLaunch = vi.fn();
+
+    vi.mocked(fetchLinkedIssuesForPullRequest).mockResolvedValue([]);
+    vi.mocked(createPullRequestPrepareReviewWorkspace).mockReturnValue(workspace);
+    vi.mocked(initializePullRequestPrepareReviewOutputLog).mockImplementation(
+      () => undefined
+    );
+    vi.mocked(writePullRequestPrepareReviewWorkspaceFiles).mockImplementation(
+      () => undefined
+    );
+    vi.mocked(writePullRequestPrepareReviewMetadata).mockImplementation(() => undefined);
+    vi.mocked(getInteractiveRuntimeByType).mockReturnValue({
+      checkAvailability: () => ({ available: true }),
+      launch: interactiveLaunch,
+    });
+    vi.mocked(launchUnattendedRuntime).mockImplementation(
+      (_type, _repoRoot, suppliedWorkspace) => {
+        writeFileSync(
+          suppliedWorkspace.reviewBriefFilePath,
+          "# Reviewer focus\n\n- Inspect the synced review branch.\n",
+          "utf8"
+        );
+
+        return {
+          invocation: "new",
+          sessionId: "codex-session-no-push",
+        };
+      }
+    );
+    vi.mocked(spawnSync).mockImplementation((command, args) => {
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "-C" &&
+        args[1] === repoRoot &&
+        args[2] === "rev-parse" &&
+        args[3] === "--verify" &&
+        args[4] === createPullRequest().headRefName
+      ) {
+        return createCommandResult(0);
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "checkout" &&
+        args[1] === createPullRequest().headRefName
+      ) {
+        return createCommandResult(0);
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "fetch" &&
+        args[1] === "origin" &&
+        args[2] === createPullRequest().baseRefName
+      ) {
+        return createCommandResult(0);
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "rev-parse" &&
+        args[1] === `origin/${createPullRequest().baseRefName}`
+      ) {
+        return createCommandResult(0, { stdout: "abc123base\n" });
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "merge-base" &&
+        args[1] === "--is-ancestor" &&
+        args[2] === "abc123base" &&
+        args[3] === "HEAD"
+      ) {
+        return createCommandResult(0);
+      }
+
+      throw new Error(`Unexpected spawnSync call: ${command} ${String(args)}`);
+    });
+
+    await runPrPrepareReviewCommand(createDefaultCommandOptions(repoRoot, forge));
+
+    expect(
+      getGitCommandArgs().some((args) => args[0] === "push" || args[0] === "rev-list")
+    ).toBe(false);
+  });
+
+  it("fails clearly when pushing reviewed updates back to the PR branch fails", async () => {
+    const repoRoot = mkdtempSync(resolve(tmpdir(), "git-ai-pr-prepare-review-"));
+    cleanupTargets.add(repoRoot);
+
+    const workspace = createWorkspace(repoRoot);
+    const { forge } = createForge();
+    const interactiveLaunch = vi.fn();
+
+    vi.mocked(fetchLinkedIssuesForPullRequest).mockResolvedValue([]);
+    vi.mocked(createPullRequestPrepareReviewWorkspace).mockReturnValue(workspace);
+    vi.mocked(initializePullRequestPrepareReviewOutputLog).mockImplementation(
+      () => undefined
+    );
+    vi.mocked(writePullRequestPrepareReviewWorkspaceFiles).mockImplementation(
+      () => undefined
+    );
+    vi.mocked(writePullRequestPrepareReviewMetadata).mockImplementation(() => undefined);
+    vi.mocked(getInteractiveRuntimeByType).mockReturnValue({
+      checkAvailability: () => ({ available: true }),
+      launch: interactiveLaunch,
+    });
+    vi.mocked(launchUnattendedRuntime).mockImplementation(
+      (_type, _repoRoot, suppliedWorkspace) => {
+        writeFileSync(
+          suppliedWorkspace.reviewBriefFilePath,
+          "# Reviewer focus\n\n- Inspect the merged base sync.\n",
+          "utf8"
+        );
+
+        return {
+          invocation: "new",
+          sessionId: "codex-session-push-failure",
+        };
+      }
+    );
+    vi.mocked(spawnSync).mockImplementation((command, args) => {
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "-C" &&
+        args[1] === repoRoot &&
+        args[2] === "rev-parse" &&
+        args[3] === "--verify" &&
+        args[4] === createPullRequest().headRefName
+      ) {
+        return createCommandResult(0);
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "checkout" &&
+        args[1] === createPullRequest().headRefName
+      ) {
+        return createCommandResult(0);
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "fetch" &&
+        args[1] === "origin" &&
+        args[2] === createPullRequest().baseRefName
+      ) {
+        return createCommandResult(0);
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "rev-parse" &&
+        args[1] === `origin/${createPullRequest().baseRefName}`
+      ) {
+        return createCommandResult(0, { stdout: "abc123base\n" });
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "merge-base" &&
+        args[1] === "--is-ancestor" &&
+        args[2] === "abc123base" &&
+        args[3] === "HEAD"
+      ) {
+        return createCommandResult(1);
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "merge" &&
+        args[1] === "--no-edit" &&
+        args[2] === "--no-ff" &&
+        args[3] === "origin/main"
+      ) {
+        return createCommandResult(0);
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "fetch" &&
+        args[1] === "origin" &&
+        args[2] === createPullRequest().headRefName
+      ) {
+        return createCommandResult(0);
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "rev-parse" &&
+        args[1] === `origin/${createPullRequest().headRefName}`
+      ) {
+        return createCommandResult(0, { stdout: "def456head\n" });
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "rev-list" &&
+        args[1] === "--left-right" &&
+        args[2] === "--count" &&
+        args[3] === `origin/${createPullRequest().headRefName}...HEAD`
+      ) {
+        return createCommandResult(0, { stdout: "0 1\n" });
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "push" &&
+        args[1] === "origin" &&
+        args[2] === `HEAD:${createPullRequest().headRefName}`
+      ) {
+        return createCommandResult(1, { stderr: "remote rejected\n" });
+      }
+
+      throw new Error(`Unexpected spawnSync call: ${command} ${String(args)}`);
+    });
+
+    await expect(
+      runPrPrepareReviewCommand(createDefaultCommandOptions(repoRoot, forge))
+    ).rejects.toThrow(
+      `Failed to push reviewed updates to origin/${createPullRequest().headRefName}.`
+    );
   });
 
   it("opens a conflict-resolution Codex session and continues once the base sync is resolved", async () => {
@@ -773,6 +1290,46 @@ describe("runPrPrepareReviewCommand", () => {
         return createCommandResult(0, {
           stdout: unmergedDiffChecks === 1 ? "src/conflict.ts\n" : "",
         });
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "fetch" &&
+        args[1] === "origin" &&
+        args[2] === createPullRequest().headRefName
+      ) {
+        return createCommandResult(0);
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "rev-parse" &&
+        args[1] === `origin/${createPullRequest().headRefName}`
+      ) {
+        return createCommandResult(0, { stdout: "def456head\n" });
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "rev-list" &&
+        args[1] === "--left-right" &&
+        args[2] === "--count" &&
+        args[3] === `origin/${createPullRequest().headRefName}...HEAD`
+      ) {
+        return createCommandResult(0, { stdout: "0 1\n" });
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "push" &&
+        args[1] === "origin" &&
+        args[2] === `HEAD:${createPullRequest().headRefName}`
+      ) {
+        return createCommandResult(0);
       }
 
       throw new Error(`Unexpected spawnSync call: ${command} ${String(args)}`);
