@@ -158,6 +158,10 @@ function resolveBaseSyncRemoteRef(baseRefName: string): string {
   return `origin/${baseRefName}`;
 }
 
+function resolvePullRequestHeadRemoteRef(headRefName: string): string {
+  return `origin/${headRefName}`;
+}
+
 function getBaseSyncTip(
   repoRoot: string,
   workspace: PullRequestPrepareReviewWorkspace,
@@ -261,6 +265,102 @@ function listUnmergedPaths(
     .split(/\r?\n/)
     .map((value) => value.trim())
     .filter((value) => value.length > 0);
+}
+
+function getAheadBehindCounts(
+  repoRoot: string,
+  workspace: PullRequestPrepareReviewWorkspace,
+  remoteRef: string
+): { ahead: number; behind: number } {
+  const counts = runTrackedCommand(
+    repoRoot,
+    workspace,
+    "git",
+    ["rev-list", "--left-right", "--count", `${remoteRef}...HEAD`],
+    `Failed to compare HEAD with "${remoteRef}".`,
+    { echoOutput: false }
+  ).trim();
+
+  const [behindRaw, aheadRaw] = counts.split(/\s+/);
+  const behind = Number.parseInt(behindRaw ?? "", 10);
+  const ahead = Number.parseInt(aheadRaw ?? "", 10);
+
+  if (!Number.isInteger(behind) || !Number.isInteger(ahead)) {
+    throw new Error(`Failed to compare HEAD with "${remoteRef}".`);
+  }
+
+  return {
+    ahead,
+    behind,
+  };
+}
+
+function pushReviewedPullRequestUpdates(
+  repoRoot: string,
+  workspace: PullRequestPrepareReviewWorkspace,
+  pullRequest: PullRequestDetails
+): void {
+  const remoteRef = resolvePullRequestHeadRemoteRef(pullRequest.headRefName);
+
+  console.log(`Fetching latest ${remoteRef} before checking push status...`);
+  const fetchResult = runTrackedCommandAndCapture(
+    repoRoot,
+    workspace,
+    "git",
+    ["fetch", "origin", pullRequest.headRefName]
+  );
+
+  if (fetchResult.error) {
+    throw new Error(
+      `Failed to fetch PR head branch "${pullRequest.headRefName}" from origin before pushing reviewed updates. ${fetchResult.error.message}`
+    );
+  }
+
+  if (fetchResult.status !== 0) {
+    throw new Error(
+      `Failed to fetch PR head branch "${pullRequest.headRefName}" from origin before pushing reviewed updates. This workflow currently only pushes PR branches that are available as ${remoteRef}.`
+    );
+  }
+
+  runTrackedCommand(
+    repoRoot,
+    workspace,
+    "git",
+    ["rev-parse", remoteRef],
+    `Failed to resolve "${remoteRef}" after fetching the PR head branch.`,
+    { echoOutput: false }
+  );
+
+  const { ahead, behind } = getAheadBehindCounts(repoRoot, workspace, remoteRef);
+  if (ahead === 0) {
+    return;
+  }
+
+  if (behind > 0) {
+    throw new Error(
+      `Cannot push reviewed updates to "${pullRequest.headRefName}" because HEAD diverged from ${remoteRef} (${ahead} ahead, ${behind} behind). Local commits were kept.`
+    );
+  }
+
+  console.log(`Pushing reviewed updates to origin/${pullRequest.headRefName}...`);
+  const pushResult = runTrackedCommandAndCapture(
+    repoRoot,
+    workspace,
+    "git",
+    ["push", "origin", `HEAD:${pullRequest.headRefName}`]
+  );
+
+  if (pushResult.error) {
+    throw new Error(
+      `Failed to push reviewed updates to origin/${pullRequest.headRefName}. ${pushResult.error.message}`
+    );
+  }
+
+  if (pushResult.status !== 0) {
+    throw new Error(
+      `Failed to push reviewed updates to origin/${pullRequest.headRefName}.`
+    );
+  }
 }
 
 function synchronizePullRequestBaseBranch(
@@ -805,12 +905,23 @@ export async function runPrPrepareReviewCommand(
     interactiveRuntime.launch(options.repoRoot, interactiveWorkspace);
   }
 
+  const maybePushReviewedUpdates = (
+    workflowCreatedLocalCommits: boolean
+  ): void => {
+    if (!workflowCreatedLocalCommits) {
+      return;
+    }
+
+    pushReviewedPullRequestUpdates(options.repoRoot, workspace, pullRequest);
+  };
+
   if (!options.hasChanges(options.repoRoot)) {
     console.log("Codex exited without producing any file changes to review or commit.");
+    maybePushReviewedUpdates(baseSync.status === "merged");
     return;
   }
 
-  await finalizeRuntimeChanges({
+  const finalizeResult = await finalizeRuntimeChanges({
     repoRoot: options.repoRoot,
     runDir: workspace.runDir,
     commitPrompt: "Commit generated changes with this message? [Y/n/m]: ",
@@ -835,4 +946,8 @@ export async function runPrPrepareReviewCommand(
     },
     checkForChangesBeforeBuild: true,
   });
+
+  maybePushReviewedUpdates(
+    baseSync.status === "merged" || finalizeResult.committed
+  );
 }
