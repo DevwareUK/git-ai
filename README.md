@@ -9,6 +9,8 @@ The primary offer is intentionally narrow:
 - fix selected review feedback inside the live PR branch
 - surface missing tests before quality drifts
 
+Starting here gives a new team faster proof of value with lower runtime risk, fewer permissions, and less process change than full issue-to-PR automation on day one.
+
 Advanced issue-to-PR automation still exists, but it is not the recommended entry point for new teams because it asks for broader runtime trust, more GitHub permissions, and more process discipline on day one.
 
 GitHub-only by design:
