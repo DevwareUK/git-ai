@@ -51,8 +51,17 @@ describe("pr-fix-tests workspace", () => {
         suggestionId: "suggestion-2",
         area: "Test parsing of managed AI test suggestions comments",
         priority: "high",
+        testType: "integration",
+        behavior:
+          "Managed AI test suggestion comments should parse into task-ready workflow input.",
+        regressionRisk:
+          "Parser drift could drop critical task context before implementation starts.",
         value: "Parsing failures should be explicit and auditable.",
+        protectedPaths: ["packages/cli/src/workflows/pr-fix-tests/selection.ts"],
         likelyLocations: ["packages/cli/src/workflows/pr-fix-tests/selection.test.ts"],
+        edgeCases: ["Missing a required structured field should fail clearly."],
+        implementationNote:
+          "Add parser coverage for the richer suggestion fields and validation failures.",
       },
     ];
     const suggestionsComment: PullRequestTestSuggestionsComment = {
@@ -115,6 +124,9 @@ describe("pr-fix-tests workspace", () => {
     expect(snapshot).toContain(
       "### Suggestion 1: Test parsing of managed AI test suggestions comments"
     );
+    expect(snapshot).toContain("- Test type: integration");
+    expect(snapshot).toContain("- Behavior covered: Managed AI test suggestion comments should parse");
+    expect(snapshot).toContain("#### Suggestion edge cases");
     expect(snapshot).toContain("## Suggested edge cases");
 
     expect(prompt).toContain(
@@ -144,8 +156,17 @@ describe("pr-fix-tests workspace", () => {
         id: "suggestion-2",
         area: "Test parsing of managed AI test suggestions comments",
         priority: "high",
+        testType: "integration",
+        behavior:
+          "Managed AI test suggestion comments should parse into task-ready workflow input.",
+        regressionRisk:
+          "Parser drift could drop critical task context before implementation starts.",
         value: "Parsing failures should be explicit and auditable.",
+        protectedPaths: ["packages/cli/src/workflows/pr-fix-tests/selection.ts"],
         likelyLocations: ["packages/cli/src/workflows/pr-fix-tests/selection.test.ts"],
+        edgeCases: ["Missing a required structured field should fail clearly."],
+        implementationNote:
+          "Add parser coverage for the richer suggestion fields and validation failures.",
       },
     ]);
     expect(metadata.edgeCases).toEqual([
@@ -184,8 +205,16 @@ describe("pr-fix-tests workspace", () => {
           suggestionId: "suggestion-1",
           area: "Verify prompt build command formatting",
           priority: "medium",
+          testType: "integration",
+          behavior: "Generated prompts should reflect the configured verification command.",
+          regressionRisk:
+            "The runtime prompt can drift from the actual verification command and mislead the agent.",
           value: "Prompt instructions should reflect the configured verification command.",
+          protectedPaths: [],
           likelyLocations: [],
+          edgeCases: [],
+          implementationNote:
+            "Assert the runtime prompt shows the exact configured verification command.",
         },
       ],
       {

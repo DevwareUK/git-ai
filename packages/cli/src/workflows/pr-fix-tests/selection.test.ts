@@ -21,6 +21,57 @@ function createComment(
   };
 }
 
+function buildSuggestionBlock(options: {
+  title: string;
+  priority: "High" | "Medium" | "Low";
+  testType?: string;
+  behavior?: string;
+  regressionRisk?: string;
+  value: string;
+  protectedPaths?: string[];
+  likelyLocations?: string[];
+  edgeCases?: string[];
+  implementationNote?: string;
+}): string[] {
+  const lines = [
+    `#### ${options.title}`,
+    `- Priority: ${options.priority}`,
+    `- Test type: ${options.testType ?? "integration"}`,
+    `- Behavior covered: ${options.behavior ?? `${options.title} should stay covered.`}`,
+    `- Regression risk: ${options.regressionRisk ?? `${options.title} could regress without targeted coverage.`}`,
+    `- Why it matters: ${options.value}`,
+  ];
+
+  if (options.protectedPaths?.length) {
+    lines.push(
+      `- Protected paths: ${options.protectedPaths
+        .map((path) => `\`${path}\``)
+        .join(", ")}`
+    );
+  }
+
+  if (options.likelyLocations?.length) {
+    lines.push(
+      `- Likely locations: ${options.likelyLocations
+        .map((path) => `\`${path}\``)
+        .join(", ")}`
+    );
+  }
+
+  if (options.edgeCases?.length) {
+    lines.push("- Edge cases:");
+    lines.push(...options.edgeCases.map((edgeCase) => `  - ${edgeCase}`));
+  }
+
+  lines.push(
+    `- Implementation note: ${
+      options.implementationNote ?? `Add or extend a test that proves ${options.title.toLowerCase()}.`
+    }`
+  );
+
+  return lines;
+}
+
 describe("pr-fix-tests selection helpers", () => {
   it("parses a managed AI test suggestions comment into structured suggestions", () => {
     const comment = createComment(
@@ -34,15 +85,47 @@ describe("pr-fix-tests selection helpers", () => {
         "",
         "### Suggested test areas",
         "",
-        "#### Verify command execution for 'git-ai pr fix-tests'",
-        "- Priority: High",
-        "- Why it matters: The workflow should fetch PR context and hand the selected tests to Codex.",
-        "- Likely locations: `packages/cli/src/index.test.ts`, `packages/cli/src/workflows/pr-fix-tests/run.test.ts`, `packages/cli/src/index.test.ts`",
+        ...buildSuggestionBlock({
+          title: "Verify command execution for 'git-ai pr fix-tests'",
+          priority: "High",
+          behavior:
+            "The workflow should fetch PR context and hand the selected tests to Codex with the full task details.",
+          regressionRisk:
+            "The runtime handoff can drop the richer suggestion context or target the wrong files.",
+          value:
+            "The workflow should fetch PR context and hand the selected tests to Codex.",
+          protectedPaths: [
+            "packages/cli/src/workflows/pr-fix-tests/run.ts",
+            "packages/cli/src/workflows/pr-fix-tests/selection.ts",
+          ],
+          likelyLocations: [
+            "packages/cli/src/index.test.ts",
+            "packages/cli/src/workflows/pr-fix-tests/run.test.ts",
+            "packages/cli/src/index.test.ts",
+          ],
+          edgeCases: [
+            "The managed comment omits a required task field.",
+          ],
+          implementationNote:
+            "Add a command test that selects a suggestion and asserts the runtime handoff keeps the structured fields.",
+        }),
         "",
-        "#### Test parsing of managed AI test suggestions comments",
-        "- Priority: Medium",
-        "- Why it matters: Parsing needs to stay stable across the managed comment format.",
-        "- Likely locations: packages/cli/src/workflows/pr-fix-tests/selection.test.ts, packages/cli/src/index.test.ts, packages/cli/src/workflows/pr-fix-tests/selection.test.ts",
+        ...buildSuggestionBlock({
+          title: "Test parsing of managed AI test suggestions comments",
+          priority: "Medium",
+          behavior:
+            "Managed AI test suggestion comments should parse into task-ready suggestion objects.",
+          regressionRisk:
+            "Parser drift can silently discard fields needed by the fix-tests workflow.",
+          value: "Parsing needs to stay stable across the managed comment format.",
+          likelyLocations: [
+            "packages/cli/src/workflows/pr-fix-tests/selection.test.ts",
+            "packages/cli/src/index.test.ts",
+            "packages/cli/src/workflows/pr-fix-tests/selection.test.ts",
+          ],
+          implementationNote:
+            "Extend selection parser tests to cover the richer fields and strict validation behavior.",
+        }),
         "",
         "### Edge cases",
         "- Missing the suggested test areas section.",
@@ -65,22 +148,43 @@ describe("pr-fix-tests selection helpers", () => {
           suggestionId: "suggestion-1",
           area: "Verify command execution for 'git-ai pr fix-tests'",
           priority: "high",
+          testType: "integration",
+          behavior:
+            "The workflow should fetch PR context and hand the selected tests to Codex with the full task details.",
+          regressionRisk:
+            "The runtime handoff can drop the richer suggestion context or target the wrong files.",
           value:
             "The workflow should fetch PR context and hand the selected tests to Codex.",
+          protectedPaths: [
+            "packages/cli/src/workflows/pr-fix-tests/run.ts",
+            "packages/cli/src/workflows/pr-fix-tests/selection.ts",
+          ],
           likelyLocations: [
             "packages/cli/src/index.test.ts",
             "packages/cli/src/workflows/pr-fix-tests/run.test.ts",
           ],
+          edgeCases: ["The managed comment omits a required task field."],
+          implementationNote:
+            "Add a command test that selects a suggestion and asserts the runtime handoff keeps the structured fields.",
         },
         {
           suggestionId: "suggestion-2",
           area: "Test parsing of managed AI test suggestions comments",
           priority: "medium",
+          testType: "integration",
+          behavior:
+            "Managed AI test suggestion comments should parse into task-ready suggestion objects.",
+          regressionRisk:
+            "Parser drift can silently discard fields needed by the fix-tests workflow.",
           value: "Parsing needs to stay stable across the managed comment format.",
+          protectedPaths: [],
           likelyLocations: [
             "packages/cli/src/workflows/pr-fix-tests/selection.test.ts",
             "packages/cli/src/index.test.ts",
           ],
+          edgeCases: [],
+          implementationNote:
+            "Extend selection parser tests to cover the richer fields and strict validation behavior.",
         },
       ],
       edgeCases: [
@@ -102,15 +206,25 @@ describe("pr-fix-tests selection helpers", () => {
         "",
         "### Suggested test areas",
         "",
-        "#### First parser gap",
-        "- Priority: High",
-        "- Why it matters: The first parser branch should be covered.",
-        "- Likely locations: `packages/cli/src/workflows/pr-fix-tests/selection.test.ts`, `packages/cli/src/index.test.ts`",
+        ...buildSuggestionBlock({
+          title: "First parser gap",
+          priority: "High",
+          value: "The first parser branch should be covered.",
+          likelyLocations: [
+            "packages/cli/src/workflows/pr-fix-tests/selection.test.ts",
+            "packages/cli/src/index.test.ts",
+          ],
+        }),
         "",
-        "#### Second parser gap",
-        "- Priority: Low",
-        "- Why it matters: The fallback list should stay deduplicated.",
-        "- Likely locations: packages/cli/src/index.test.ts, packages/cli/src/workflows/pr-fix-tests/run.test.ts",
+        ...buildSuggestionBlock({
+          title: "Second parser gap",
+          priority: "Low",
+          value: "The fallback list should stay deduplicated.",
+          likelyLocations: [
+            "packages/cli/src/index.test.ts",
+            "packages/cli/src/workflows/pr-fix-tests/run.test.ts",
+          ],
+        }),
       ].join("\n")
     );
 

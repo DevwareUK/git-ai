@@ -18,8 +18,14 @@ export type PullRequestTestSuggestion = {
   suggestionId: string;
   area: string;
   priority: PullRequestTestSuggestionPriority;
+  testType: string;
+  behavior: string;
+  regressionRisk: string;
   value: string;
+  protectedPaths: string[];
   likelyLocations: string[];
+  edgeCases: string[];
+  implementationNote: string;
 };
 
 export type PullRequestTestSuggestionsComment = {

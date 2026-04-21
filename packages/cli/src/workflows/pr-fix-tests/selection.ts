@@ -66,18 +66,54 @@ function parseSuggestionBlock(
   suggestionIndex: number
 ): PullRequestTestSuggestion {
   let priority: PullRequestTestSuggestionPriority | undefined;
+  let testType: string | undefined;
+  let behavior: string | undefined;
+  let regressionRisk: string | undefined;
   let value: string | undefined;
+  let protectedPaths: string[] = [];
   let likelyLocations: string[] = [];
+  let edgeCases: string[] = [];
+  let implementationNote: string | undefined;
+  let collectingEdgeCases = false;
 
   for (const rawLine of blockLines) {
-    const line = rawLine.trim();
-    if (!line) {
+    const trimmed = rawLine.trim();
+    if (!trimmed) {
       continue;
     }
 
+    if (collectingEdgeCases) {
+      const nestedBulletMatch = rawLine.match(/^\s+- (.+)$/);
+      if (nestedBulletMatch) {
+        edgeCases.push(nestedBulletMatch[1].trim());
+        continue;
+      }
+
+      collectingEdgeCases = false;
+    }
+
+    const line = trimmed;
     const priorityMatch = line.match(/^- Priority:\s*(.+)$/i);
     if (priorityMatch) {
       priority = normalizePriority(priorityMatch[1]);
+      continue;
+    }
+
+    const testTypeMatch = line.match(/^- Test type:\s*(.+)$/i);
+    if (testTypeMatch) {
+      testType = testTypeMatch[1].trim();
+      continue;
+    }
+
+    const behaviorMatch = line.match(/^- Behavior covered:\s*(.+)$/i);
+    if (behaviorMatch) {
+      behavior = behaviorMatch[1].trim();
+      continue;
+    }
+
+    const regressionRiskMatch = line.match(/^- Regression risk:\s*(.+)$/i);
+    if (regressionRiskMatch) {
+      regressionRisk = regressionRiskMatch[1].trim();
       continue;
     }
 
@@ -87,9 +123,26 @@ function parseSuggestionBlock(
       continue;
     }
 
+    const protectedPathsMatch = line.match(/^- Protected paths:\s*(.+)$/i);
+    if (protectedPathsMatch) {
+      protectedPaths = parseLikelyLocations(protectedPathsMatch[1]);
+      continue;
+    }
+
     const locationsMatch = line.match(/^- Likely locations:\s*(.+)$/i);
     if (locationsMatch) {
       likelyLocations = parseLikelyLocations(locationsMatch[1]);
+      continue;
+    }
+
+    if (/^- Edge cases:\s*$/i.test(line)) {
+      collectingEdgeCases = true;
+      continue;
+    }
+
+    const implementationNoteMatch = line.match(/^- Implementation note:\s*(.+)$/i);
+    if (implementationNoteMatch) {
+      implementationNote = implementationNoteMatch[1].trim();
       continue;
     }
 
@@ -100,16 +153,40 @@ function parseSuggestionBlock(
     throw new Error(`Suggestion "${blockTitle}" is missing a Priority field.`);
   }
 
+  if (!testType) {
+    throw new Error(`Suggestion "${blockTitle}" is missing a Test type field.`);
+  }
+
+  if (!behavior) {
+    throw new Error(`Suggestion "${blockTitle}" is missing a Behavior covered field.`);
+  }
+
+  if (!regressionRisk) {
+    throw new Error(`Suggestion "${blockTitle}" is missing a Regression risk field.`);
+  }
+
   if (!value) {
     throw new Error(`Suggestion "${blockTitle}" is missing a Why it matters field.`);
+  }
+
+  if (!implementationNote) {
+    throw new Error(
+      `Suggestion "${blockTitle}" is missing an Implementation note field.`
+    );
   }
 
   return {
     suggestionId: `suggestion-${suggestionIndex + 1}`,
     area: blockTitle,
     priority,
+    testType,
+    behavior,
+    regressionRisk,
     value,
+    protectedPaths,
     likelyLocations,
+    edgeCases,
+    implementationNote,
   };
 }
 
@@ -237,12 +314,21 @@ export function printPullRequestTestSuggestions(
   for (const [index, suggestion] of suggestions.entries()) {
     console.log("");
     console.log(
-      `  ${index + 1}. ${suggestion.area} (${toTitleCase(suggestion.priority)} priority)`
+      `  ${index + 1}. ${suggestion.area} (${toTitleCase(suggestion.priority)} priority, ${suggestion.testType})`
     );
+    console.log(`      Behavior: ${suggestion.behavior}`);
+    console.log(`      Regression risk: ${suggestion.regressionRisk}`);
     console.log(`      ${suggestion.value}`);
+    if (suggestion.protectedPaths.length > 0) {
+      console.log(`      Protected paths: ${suggestion.protectedPaths.join(", ")}`);
+    }
     if (suggestion.likelyLocations.length > 0) {
       console.log(`      Likely locations: ${suggestion.likelyLocations.join(", ")}`);
     }
+    if (suggestion.edgeCases.length > 0) {
+      console.log(`      Edge cases: ${suggestion.edgeCases.join("; ")}`);
+    }
+    console.log(`      Implementation note: ${suggestion.implementationNote}`);
   }
 }
 
