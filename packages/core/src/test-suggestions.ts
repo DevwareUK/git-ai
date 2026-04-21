@@ -6,7 +6,10 @@ import {
 } from "@git-ai/contracts";
 import { AIProvider } from "@git-ai/providers";
 import { DIFF_GROUNDED_SYSTEM_PROMPT_LINES } from "./diff-task";
-import { generateStructuredOutput } from "./structured-generation";
+import {
+  generateStructuredOutput,
+  normalizeNullableFields,
+} from "./structured-generation";
 
 const TEST_SUGGESTIONS_SYSTEM_PROMPT = [
   "You are a senior software engineer planning automated tests for a GitHub pull request.",
@@ -29,10 +32,12 @@ function buildPrompt(input: TestSuggestionsInputType): string {
   return [
     "Generate pull request test suggestions from the provided diff.",
     "Focus on high-value automated tests that would improve confidence in the changed behavior.",
-    "Prefer practical test backlog items over exhaustive or trivial checks.",
+    "Prefer practical, implementation-ready test tasks over exhaustive or trivial checks.",
     "Use the PR title/body only as supporting context and prefer the diff when they conflict.",
+    "Each suggestion should be self-contained enough to copy into an implementation task or issue.",
     "Only include likely test locations when the diff supports a plausible place to add or extend tests.",
-    "Only include edge cases when the diff supports a concrete behavior worth testing.",
+    "Only include protected paths or changed code paths when the diff supports a concrete mapping.",
+    "Attach edge cases directly to the relevant suggestion whenever possible; reserve the top-level edgeCases list for shared or cross-cutting cases.",
     "If the diff is small or low risk, still suggest the most valuable test coverage gap you can support from the change.",
     "Return strictly valid JSON in this exact shape:",
     "{",
@@ -41,8 +46,14 @@ function buildPrompt(input: TestSuggestionsInputType): string {
     "    {",
     '      "area": string,',
     '      "priority": "high" | "medium" | "low",',
+    '      "testType": string,',
+    '      "behavior": string,',
+    '      "regressionRisk": string,',
     '      "value": string,',
-    '      "likelyLocations"?: string[]',
+    '      "protectedPaths"?: string[],',
+    '      "likelyLocations"?: string[],',
+    '      "edgeCases"?: string[],',
+    '      "implementationNote": string',
     "    }",
     "  ],",
     '  "edgeCases"?: string[]',
@@ -51,8 +62,13 @@ function buildPrompt(input: TestSuggestionsInputType): string {
     'The "summary" should be a short paragraph describing the main testing opportunities created by the change.',
     '"suggestedTests" should contain 1 to 5 concrete, implementation-focused test areas grounded in the diff.',
     'Use "priority" to communicate relative value, where "high" means the test would meaningfully reduce risk.',
+    '"testType" should be a short label such as unit, integration, component, end-to-end, workflow, or regression.',
+    '"behavior" should describe the user flow or behavior under test.',
+    '"regressionRisk" should describe the likely breakage this test would help prevent.',
     '"value" should explain why the test is worth adding.',
+    '"protectedPaths" should list the changed files or code paths this test would protect when the diff makes them clear.',
     'Omit "edgeCases" when there are no concrete edge cases reasonably supported by the diff.',
+    '"implementationNote" should read like a short issue-ready instruction for whoever adds the test.',
     "Do not wrap JSON in markdown fences.",
     "",
     ...(contextLines.length > 0
@@ -64,28 +80,16 @@ function buildPrompt(input: TestSuggestionsInputType): string {
 }
 
 function normalizeModelOutput(value: unknown): unknown {
-  if (!value || typeof value !== "object") {
-    return value;
+  const normalizedRoot = normalizeNullableFields(value, ["edgeCases"]);
+  if (!normalizedRoot || typeof normalizedRoot !== "object") {
+    return normalizedRoot;
   }
 
-  const result = { ...(value as Record<string, unknown>) };
-  if (result.edgeCases === null) {
-    result.edgeCases = undefined;
-  }
-
+  const result = { ...(normalizedRoot as Record<string, unknown>) };
   if (Array.isArray(result.suggestedTests)) {
-    result.suggestedTests = result.suggestedTests.map((item) => {
-      if (!item || typeof item !== "object") {
-        return item;
-      }
-
-      const normalizedItem = { ...(item as Record<string, unknown>) };
-      if (normalizedItem.likelyLocations === null) {
-        normalizedItem.likelyLocations = undefined;
-      }
-
-      return normalizedItem;
-    });
+    result.suggestedTests = result.suggestedTests.map((item) =>
+      normalizeNullableFields(item, ["protectedPaths", "likelyLocations", "edgeCases"])
+    );
   }
 
   return result;

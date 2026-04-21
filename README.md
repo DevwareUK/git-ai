@@ -26,10 +26,10 @@ Start here if you are evaluating `git-ai` for a team:
 | --- | --- |
 | `actions/pr-review` | Adds AI pull request pre-review signal, higher-level findings, and line-linked review comments in GitHub. |
 | `actions/pr-assistant` | Maintains a managed PR assistant section in the pull request body without overwriting unrelated manual content, using stable summary, risk, file, testing, rollout, and checklist headings. |
-| `actions/test-suggestions` | Posts practical test suggestions for the current pull request diff in GitHub. |
+| `actions/test-suggestions` | Posts practical, task-ready test suggestions for the current pull request diff in GitHub. |
 | `git-ai review` | Runs a local senior-style diff pre-review before or during a pull request. |
 | `git-ai pr fix-comments <pr-number>` | Pulls selected GitHub review comments into a focused local fix flow. |
-| `git-ai pr fix-tests <pr-number>` | Pulls selected managed AI test suggestions into a focused local implementation flow. |
+| `git-ai pr fix-tests <pr-number>` | Pulls selected managed AI test suggestions into a focused local implementation flow with preserved task context. |
 | `git-ai test-backlog` | Finds the highest-value automated testing gaps in the repository. |
 
 ## Recommended first three workflows
@@ -143,7 +143,7 @@ Primary offer commands:
 
 - `git-ai review`: review the current diff or a branch comparison
 - `git-ai pr fix-comments <pr-number>`: fix selected PR review comments with the configured interactive runtime
-- `git-ai pr fix-tests <pr-number>`: implement selected AI PR test suggestions with the configured interactive runtime
+- `git-ai pr fix-tests <pr-number>`: implement selected AI PR test suggestions with the configured interactive runtime and their preserved task details
 - `git-ai test-backlog`: find high-value automated testing gaps
 
 Advanced commands:
@@ -359,7 +359,7 @@ Available subcommands:
 | --- | --- |
 | `git-ai pr prepare-review <pr-number>` | Fetches pull request metadata and linked issues, requires a clean working tree, preflights the configured verification command plus the live PR base branch on `origin`, checks out the best available local review branch for the PR, fetches the latest `origin/<base-branch>` tip, skips merging when the checked-out branch already contains that tip, otherwise merges the base branch into the review branch before brief generation, routes merge conflicts through an interactive Codex conflict-resolution session when needed, writes `.git-ai/` run artifacts, generates `review-brief.md`, prints the saved brief path plus a terminal preview, and then leaves you in an interactive Codex session on that branch for follow-up review questions or requested fixes. After that session exits, `git-ai` exits cleanly if there are no new reviewed commits to sync, or else runs the configured build command when there are follow-up file changes, offers the same reviewed commit-message flow used by the other local fix workflows, and pushes any new reviewed commits back to `origin/<pr-head-branch>`. |
 | `git-ai pr fix-comments <pr-number>` | Requires a clean working tree, preflights the configured verification command, fetches pull request metadata and review comments from the configured forge, filters out obviously non-actionable comments, groups nearby threads into selectable review tasks, preserves non-trivial replies as thread context, writes richer `.git-ai/` run artifacts, opens the configured interactive runtime, runs the configured build command, previews a proposed commit message that you can edit, accept, or skip, and then pushes the reviewed commit back to `origin/<pr-head-branch>` when `HEAD` is ahead and not behind after fetching the latest remote head. |
-| `git-ai pr fix-tests <pr-number>` | Requires a clean working tree, preflights the configured verification command, fetches pull request metadata and PR issue comments from the configured forge, finds the managed AI Test Suggestions comment, parses structured suggestion areas into selectable tasks, writes focused `.git-ai/` run artifacts, opens the configured interactive runtime, runs the configured build command, previews a proposed commit message that you can edit, accept, or skip, and then pushes the reviewed commit back to `origin/<pr-head-branch>` when `HEAD` is ahead and not behind after fetching the latest remote head. |
+| `git-ai pr fix-tests <pr-number>` | Requires a clean working tree, preflights the configured verification command, fetches pull request metadata and PR issue comments from the configured forge, finds the managed AI Test Suggestions comment, parses structured suggestion tasks including behavior, regression risk, protected paths, likely locations, edge cases, and implementation notes, writes focused `.git-ai/` run artifacts, opens the configured interactive runtime, runs the configured build command, previews a proposed commit message that you can edit, accept, or skip, and then pushes the reviewed commit back to `origin/<pr-head-branch>` when `HEAD` is ahead and not behind after fetching the latest remote head. |
 
 Important behavior:
 
@@ -388,6 +388,7 @@ Important behavior:
 - the command expects the relevant PR branch to already be checked out locally before the runtime starts editing
 - the interactive selector accepts numbered thread choices and, when available, grouped task choices like `g1`; `all` still selects every individual thread
 - `git-ai pr fix-tests <pr-number>` accepts `all`, `none`, or a comma-separated suggestion list like `1,2`
+- managed AI test suggestions now carry behavior covered, regression risk, suggested test type, protected paths, suggestion-level edge cases, and a short implementation note so the selected snapshot can be used directly as implementation guidance
 - when `forge.type` is `github`, PR fetching uses `gh pr view` when available, otherwise the GitHub API
 - when `forge.type` is `github`, GitHub API access for PR metadata, review comments, and PR issue comments uses `GH_TOKEN` or `GITHUB_TOKEN` when present
 - when `forge.type` is `none`, pull request workflows are disabled for the repository
@@ -697,6 +698,8 @@ Outputs:
 - `body`
 
 When `GITHUB_OUTPUT` is not set, outputs are printed to stdout.
+
+The generated managed comment keeps each suggestion compact but task-ready by including the behavior covered, likely regression risk, suggested test type, protected paths, likely implementation locations, suggestion-specific edge cases when useful, and a short implementation note.
 
 ### Testing and CI expectations
 

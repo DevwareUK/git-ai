@@ -49,22 +49,12 @@ function getRequiredInlineOrFileInput(inputName, fileInputName) {
   return value;
 }
 
-// src/index.ts
-function setOutput(name, value) {
-  const outputPath = process.env.GITHUB_OUTPUT;
-  if (!outputPath) {
-    console.log(`${name}=${value}`);
-    return;
-  }
-  const delimiter = `EOF_${name.toUpperCase()}`;
-  const payload = `${name}<<${delimiter}
-${value}
-${delimiter}
-`;
-  (0, import_node_fs2.appendFileSync)(outputPath, payload);
-}
+// src/comment.ts
 function toTitleCase(value) {
   return value.charAt(0).toUpperCase() + value.slice(1);
+}
+function formatPaths(paths) {
+  return paths.map((path) => `\`${path}\``).join(", ");
 }
 function collectLikelyLocations(suggestions) {
   const locations = /* @__PURE__ */ new Set();
@@ -88,12 +78,21 @@ function buildCommentBody(suggestions) {
   for (const suggestion of suggestions.suggestedTests) {
     lines.push(`#### ${suggestion.area}`);
     lines.push(`- Priority: ${toTitleCase(suggestion.priority)}`);
+    lines.push(`- Test type: ${suggestion.testType}`);
+    lines.push(`- Behavior covered: ${suggestion.behavior}`);
+    lines.push(`- Regression risk: ${suggestion.regressionRisk}`);
     lines.push(`- Why it matters: ${suggestion.value}`);
-    if (suggestion.likelyLocations?.length) {
-      lines.push(
-        `- Likely locations: ${suggestion.likelyLocations.map((location) => `\`${location}\``).join(", ")}`
-      );
+    if (suggestion.protectedPaths?.length) {
+      lines.push(`- Protected paths: ${formatPaths(suggestion.protectedPaths)}`);
     }
+    if (suggestion.likelyLocations?.length) {
+      lines.push(`- Likely locations: ${formatPaths(suggestion.likelyLocations)}`);
+    }
+    if (suggestion.edgeCases?.length) {
+      lines.push("- Edge cases:");
+      lines.push(...suggestion.edgeCases.map((edgeCase) => `  - ${edgeCase}`));
+    }
+    lines.push(`- Implementation note: ${suggestion.implementationNote}`);
     lines.push("");
   }
   if (suggestions.edgeCases?.length) {
@@ -111,6 +110,21 @@ function buildCommentBody(suggestions) {
     lines.pop();
   }
   return lines.join("\n");
+}
+
+// src/index.ts
+function setOutput(name, value) {
+  const outputPath = process.env.GITHUB_OUTPUT;
+  if (!outputPath) {
+    console.log(`${name}=${value}`);
+    return;
+  }
+  const delimiter = `EOF_${name.toUpperCase()}`;
+  const payload = `${name}<<${delimiter}
+${value}
+${delimiter}
+`;
+  (0, import_node_fs2.appendFileSync)(outputPath, payload);
 }
 async function run() {
   const input = import_contracts.TestSuggestionsInput.parse({

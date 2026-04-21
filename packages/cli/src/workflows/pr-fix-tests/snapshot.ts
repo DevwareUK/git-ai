@@ -16,6 +16,14 @@ function formatLikelyLocations(locations: string[]): string {
   return locations.join(", ");
 }
 
+function formatDetailList(items: string[]): string {
+  if (items.length === 0) {
+    return "None provided";
+  }
+
+  return items.join(", ");
+}
+
 export function formatPullRequestTestSuggestionsSnapshot(
   pullRequest: PullRequestDetails,
   selectedSuggestions: PullRequestTestSuggestion[],
@@ -72,15 +80,26 @@ export function formatPullRequestTestSuggestionsSnapshot(
       `### Suggestion ${index + 1}: ${suggestion.area}`,
       "",
       `- Priority: ${suggestion.priority}`,
+      `- Test type: ${suggestion.testType}`,
+      `- Behavior covered: ${suggestion.behavior}`,
+      `- Regression risk: ${suggestion.regressionRisk}`,
       `- Why it matters: ${suggestion.value}`,
+      `- Protected paths: ${formatDetailList(suggestion.protectedPaths)}`,
       `- Likely locations: ${formatLikelyLocations(suggestion.likelyLocations)}`,
+      `- Implementation note: ${suggestion.implementationNote}`,
       "",
       "#### Success looks like",
       "",
       "- Add or update automated tests for this selected area.",
+      "- Keep the covered behavior and regression risk explicit in the resulting tests.",
       "- Keep the change focused on the selected testing gap.",
       "- Preserve the repository's existing test conventions and architecture."
     );
+
+    if (suggestion.edgeCases.length > 0) {
+      lines.push("", "#### Suggestion edge cases", "");
+      lines.push(...suggestion.edgeCases.map((edgeCase) => `- ${edgeCase}`));
+    }
   }
 
   if (suggestionsComment.edgeCases.length > 0) {

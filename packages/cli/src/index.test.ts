@@ -17,6 +17,57 @@ const REPO_ROOT = resolve(__dirname, "../../..");
 const ORIGINAL_ARGV = [...process.argv];
 const cleanupTargets = new Set<string>();
 
+function buildManagedTestSuggestionBlock(options: {
+  title: string;
+  priority: "High" | "Medium" | "Low";
+  value: string;
+  testType?: string;
+  behavior?: string;
+  regressionRisk?: string;
+  protectedPaths?: string[];
+  likelyLocations?: string[];
+  edgeCases?: string[];
+  implementationNote?: string;
+}): string[] {
+  const lines = [
+    `#### ${options.title}`,
+    `- Priority: ${options.priority}`,
+    `- Test type: ${options.testType ?? "integration"}`,
+    `- Behavior covered: ${options.behavior ?? `${options.title} should stay covered.`}`,
+    `- Regression risk: ${options.regressionRisk ?? `${options.title} can regress without focused tests.`}`,
+    `- Why it matters: ${options.value}`,
+  ];
+
+  if (options.protectedPaths?.length) {
+    lines.push(
+      `- Protected paths: ${options.protectedPaths
+        .map((path) => `\`${path}\``)
+        .join(", ")}`
+    );
+  }
+
+  if (options.likelyLocations?.length) {
+    lines.push(
+      `- Likely locations: ${options.likelyLocations
+        .map((path) => `\`${path}\``)
+        .join(", ")}`
+    );
+  }
+
+  if (options.edgeCases?.length) {
+    lines.push("- Edge cases:");
+    lines.push(...options.edgeCases.map((edgeCase) => `  - ${edgeCase}`));
+  }
+
+  lines.push(
+    `- Implementation note: ${
+      options.implementationNote ?? `Add or extend tests for ${options.title.toLowerCase()}.`
+    }`
+  );
+
+  return lines;
+}
+
 function createTestBacklogAnalysis() {
   return {
     summary: "CLI and issue orchestration need direct integration coverage.",
@@ -3623,15 +3674,34 @@ describe("CLI integration", () => {
               "",
               "### Suggested test areas",
               "",
-              "#### Verify prompt generation for selected test suggestions",
-              "- Priority: High",
-              "- Why it matters: The Codex handoff should preserve the selected test context.",
-              "- Likely locations: `packages/cli/src/index.test.ts`, `packages/cli/src/workflows/pr-fix-tests/workspace.ts`",
+              ...buildManagedTestSuggestionBlock({
+                title: "Verify prompt generation for selected test suggestions",
+                priority: "High",
+                value:
+                  "The Codex handoff should preserve the selected test context.",
+                protectedPaths: [
+                  "packages/cli/src/workflows/pr-fix-tests/workspace.ts",
+                ],
+                likelyLocations: [
+                  "packages/cli/src/index.test.ts",
+                  "packages/cli/src/workflows/pr-fix-tests/workspace.ts",
+                ],
+                implementationNote:
+                  "Add a CLI integration test that selects this suggestion and asserts the generated run artifacts keep the richer fields.",
+              }),
               "",
-              "#### Verify managed comment parsing failure cases",
-              "- Priority: Medium",
-              "- Why it matters: The command should fail clearly when the managed comment is malformed.",
-              "- Likely locations: `packages/cli/src/index.test.ts`",
+              ...buildManagedTestSuggestionBlock({
+                title: "Verify managed comment parsing failure cases",
+                priority: "Medium",
+                value:
+                  "The command should fail clearly when the managed comment is malformed.",
+                likelyLocations: ["packages/cli/src/index.test.ts"],
+                edgeCases: [
+                  "A required task field is missing from one suggestion block.",
+                ],
+                implementationNote:
+                  "Keep the malformed-comment CLI test focused on the exact parser error surfaced to the user.",
+              }),
               "",
               "### Edge cases",
               "- The marker exists but the suggested test areas section is missing.",
@@ -3750,6 +3820,10 @@ describe("CLI integration", () => {
     expect(readFileSync(snapshotFilePath, "utf8")).toContain(
       "Suggestion 1: Verify managed comment parsing failure cases"
     );
+    expect(readFileSync(snapshotFilePath, "utf8")).toContain("- Test type: integration");
+    expect(readFileSync(snapshotFilePath, "utf8")).toContain(
+      "- Implementation note: Keep the malformed-comment CLI test focused on the exact parser error surfaced to the user."
+    );
     expect(readFileSync(snapshotFilePath, "utf8")).not.toContain(
       "Verify prompt generation for selected test suggestions"
     );
@@ -3783,7 +3857,15 @@ describe("CLI integration", () => {
         {
           area: "Verify managed comment parsing failure cases",
           priority: "medium",
+          testType: "integration",
+          behavior:
+            "Verify managed comment parsing failure cases should stay covered.",
+          regressionRisk:
+            "Verify managed comment parsing failure cases can regress without focused tests.",
           likelyLocations: ["packages/cli/src/index.test.ts"],
+          edgeCases: ["A required task field is missing from one suggestion block."],
+          implementationNote:
+            "Keep the malformed-comment CLI test focused on the exact parser error surfaced to the user.",
         },
       ],
       edgeCases: ["The marker exists but the suggested test areas section is missing."],
@@ -3826,9 +3908,11 @@ describe("CLI integration", () => {
               "",
               "### Suggested test areas",
               "",
-              "#### Verify selection can exit without changes",
-              "- Priority: Medium",
-              "- Why it matters: Users should be able to back out cleanly.",
+              ...buildManagedTestSuggestionBlock({
+                title: "Verify selection can exit without changes",
+                priority: "Medium",
+                value: "Users should be able to back out cleanly.",
+              }),
             ].join("\n"),
             html_url: "https://github.com/DevwareUK/git-ai/issues/94#issuecomment-804",
             updated_at: "2026-03-19T11:30:00Z",
@@ -3965,6 +4049,9 @@ describe("CLI integration", () => {
               "",
               "#### Missing Why Field",
               "- Priority: High",
+              "- Test type: integration",
+              "- Behavior covered: Missing Why Field should still be parsed until the required field check fails.",
+              "- Regression risk: The parser should surface which required field is absent.",
             ].join("\n"),
             html_url: "https://github.com/DevwareUK/git-ai/issues/93#issuecomment-803",
             updated_at: "2026-03-19T11:00:00Z",

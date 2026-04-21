@@ -42,6 +42,57 @@ function createManagedComment(body: string): RepositoryComment {
   };
 }
 
+function buildSuggestionBlock(options: {
+  title: string;
+  priority: "High" | "Medium" | "Low";
+  value: string;
+  testType?: string;
+  behavior?: string;
+  regressionRisk?: string;
+  protectedPaths?: string[];
+  likelyLocations?: string[];
+  edgeCases?: string[];
+  implementationNote?: string;
+}): string[] {
+  const lines = [
+    `#### ${options.title}`,
+    `- Priority: ${options.priority}`,
+    `- Test type: ${options.testType ?? "integration"}`,
+    `- Behavior covered: ${options.behavior ?? `${options.title} should remain covered.`}`,
+    `- Regression risk: ${options.regressionRisk ?? `${options.title} can regress without targeted tests.`}`,
+    `- Why it matters: ${options.value}`,
+  ];
+
+  if (options.protectedPaths?.length) {
+    lines.push(
+      `- Protected paths: ${options.protectedPaths
+        .map((path) => `\`${path}\``)
+        .join(", ")}`
+    );
+  }
+
+  if (options.likelyLocations?.length) {
+    lines.push(
+      `- Likely locations: ${options.likelyLocations
+        .map((path) => `\`${path}\``)
+        .join(", ")}`
+    );
+  }
+
+  if (options.edgeCases?.length) {
+    lines.push("- Edge cases:");
+    lines.push(...options.edgeCases.map((edgeCase) => `  - ${edgeCase}`));
+  }
+
+  lines.push(
+    `- Implementation note: ${
+      options.implementationNote ?? `Add or update tests for ${options.title.toLowerCase()}.`
+    }`
+  );
+
+  return lines;
+}
+
 function createPullRequest(): PullRequestDetails {
   return {
     number: 71,
@@ -151,15 +202,34 @@ describe("runPrFixTestsCommand", () => {
         "",
         "### Suggested test areas",
         "",
-        "#### Verify command execution for 'git-ai pr fix-tests'",
-        "- Priority: High",
-        "- Why it matters: The command should orchestrate the selected test workflow.",
-        "- Likely locations: `packages/cli/src/index.test.ts`, `packages/cli/src/workflows/pr-fix-tests/run.test.ts`",
+        ...buildSuggestionBlock({
+          title: "Verify command execution for 'git-ai pr fix-tests'",
+          priority: "High",
+          value: "The command should orchestrate the selected test workflow.",
+          protectedPaths: [
+            "packages/cli/src/workflows/pr-fix-tests/run.ts",
+          ],
+          likelyLocations: [
+            "packages/cli/src/index.test.ts",
+            "packages/cli/src/workflows/pr-fix-tests/run.test.ts",
+          ],
+          implementationNote:
+            "Exercise the command flow from comment parsing through runtime launch and commit review.",
+        }),
         "",
-        "#### Verify output artifacts are created correctly",
-        "- Priority: Medium",
-        "- Why it matters: The workflow should produce auditable run artifacts.",
-        "- Likely locations: `packages/cli/src/workflows/pr-fix-tests/workspace.test.ts`",
+        ...buildSuggestionBlock({
+          title: "Verify output artifacts are created correctly",
+          priority: "Medium",
+          value: "The workflow should produce auditable run artifacts.",
+          protectedPaths: [
+            "packages/cli/src/workflows/pr-fix-tests/workspace.ts",
+          ],
+          likelyLocations: [
+            "packages/cli/src/workflows/pr-fix-tests/workspace.test.ts",
+          ],
+          implementationNote:
+            "Assert the snapshot, prompt, metadata, and log files are written with the richer task context.",
+        }),
       ].join("\n")
     );
     const { forge, fetchPullRequestDetails, fetchPullRequestIssueComments } = createForge([
@@ -206,10 +276,12 @@ describe("runPrFixTestsCommand", () => {
         expect.objectContaining({
           area: "Verify command execution for 'git-ai pr fix-tests'",
           priority: "high",
+          testType: "integration",
         }),
         expect.objectContaining({
           area: "Verify output artifacts are created correctly",
           priority: "medium",
+          implementationNote: expect.stringContaining("snapshot, prompt, metadata"),
         }),
       ],
       expect.objectContaining({
@@ -255,17 +327,19 @@ describe("runPrFixTestsCommand", () => {
 
   it("uses the newest managed AI test suggestions comment when multiple candidates exist", async () => {
     const olderComment = createManagedComment(
-      [
-        "<!-- git-ai-test-suggestions -->",
-        "## AI Test Suggestions",
-        "",
-        "### Suggested test areas",
-        "",
-        "#### Older suggestion",
-        "- Priority: Low",
-        "- Why it matters: Older comments should not win selection.",
-      ].join("\n")
-    );
+        [
+          "<!-- git-ai-test-suggestions -->",
+          "## AI Test Suggestions",
+          "",
+          "### Suggested test areas",
+          "",
+          ...buildSuggestionBlock({
+            title: "Older suggestion",
+            priority: "Low",
+            value: "Older comments should not win selection.",
+          }),
+        ].join("\n")
+      );
     const newerComment = {
       ...createManagedComment(
         [
@@ -274,10 +348,12 @@ describe("runPrFixTestsCommand", () => {
           "",
           "### Suggested test areas",
           "",
-          "#### Newer suggestion",
-          "- Priority: High",
-          "- Why it matters: The most recent managed comment should drive the workflow.",
-          "- Likely locations: `packages/cli/src/workflows/pr-fix-tests/run.test.ts`",
+          ...buildSuggestionBlock({
+            title: "Newer suggestion",
+            priority: "High",
+            value: "The most recent managed comment should drive the workflow.",
+            likelyLocations: ["packages/cli/src/workflows/pr-fix-tests/run.test.ts"],
+          }),
         ].join("\n")
       ),
       id: 802,
@@ -339,9 +415,11 @@ describe("runPrFixTestsCommand", () => {
           "",
           "### Suggested test areas",
           "",
-          "#### Verify command execution for 'git-ai pr fix-tests'",
-          "- Priority: High",
-          "- Why it matters: The command should orchestrate the selected test workflow.",
+          ...buildSuggestionBlock({
+            title: "Verify command execution for 'git-ai pr fix-tests'",
+            priority: "High",
+            value: "The command should orchestrate the selected test workflow.",
+          }),
         ].join("\n")
       ),
     ]);
@@ -388,9 +466,11 @@ describe("runPrFixTestsCommand", () => {
           "",
           "### Suggested test areas",
           "",
-          "#### Verify post-Codex workflow",
-          "- Priority: High",
-          "- Why it matters: Users may want to inspect changes before committing.",
+          ...buildSuggestionBlock({
+            title: "Verify post-Codex workflow",
+            priority: "High",
+            value: "Users may want to inspect changes before committing.",
+          }),
         ].join("\n")
       ),
     ]);
@@ -446,9 +526,11 @@ describe("runPrFixTestsCommand", () => {
           "",
           "### Suggested test areas",
           "",
-          "#### Verify post-Codex workflow",
-          "- Priority: High",
-          "- Why it matters: The reviewed commit message should be editable.",
+          ...buildSuggestionBlock({
+            title: "Verify post-Codex workflow",
+            priority: "High",
+            value: "The reviewed commit message should be editable.",
+          }),
         ].join("\n")
       ),
     ]);
@@ -534,9 +616,11 @@ describe("runPrFixTestsCommand", () => {
           "",
           "### Suggested test areas",
           "",
-          "#### Verify post-Codex workflow",
-          "- Priority: High",
-          "- Why it matters: Diverged PR branches must not be auto-pushed.",
+          ...buildSuggestionBlock({
+            title: "Verify post-Codex workflow",
+            priority: "High",
+            value: "Diverged PR branches must not be auto-pushed.",
+          }),
         ].join("\n")
       ),
     ]);
@@ -604,9 +688,11 @@ describe("runPrFixTestsCommand", () => {
           "",
           "### Suggested test areas",
           "",
-          "#### Verify post-Codex workflow",
-          "- Priority: High",
-          "- Why it matters: Empty Codex runs should fail before any commit prompt.",
+          ...buildSuggestionBlock({
+            title: "Verify post-Codex workflow",
+            priority: "High",
+            value: "Empty Codex runs should fail before any commit prompt.",
+          }),
         ].join("\n")
       ),
     ]);
@@ -682,6 +768,9 @@ describe("runPrFixTestsCommand", () => {
           "",
           "#### Missing Why Field",
           "- Priority: High",
+          "- Test type: integration",
+          "- Behavior covered: Missing Why Field should still reach the required-field validation.",
+          "- Regression risk: The parser could report the wrong missing field if validation order changes.",
         ].join("\n")
       ),
     ]);
