@@ -125,9 +125,10 @@ The matching GitHub automation surfaces are `actions/pr-review`, `actions/pr-ass
 
 You only need extra tooling for advanced or deeper local workflows:
 
-- the configured interactive runtime on `PATH` for `git-ai issue draft`, local interactive `git-ai issue <number>` runs, `git-ai pr fix-comments <pr-number>`, and `git-ai pr fix-tests <pr-number>`
+- an available interactive runtime CLI on `PATH` for `git-ai issue draft`, local interactive `git-ai issue <number>` runs, `git-ai pr fix-comments <pr-number>`, and `git-ai pr fix-tests <pr-number>`
   default: `codex`
   `ai.runtime.type: "claude-code"`: `claude`
+  if the configured non-default runtime is unavailable, `git-ai` falls back to `codex` when it is installed
 - `codex` on `PATH` for `git-ai pr prepare-review <pr-number>`, which checks out a reviewer workspace, syncs it with the latest PR base branch, resolves merge conflicts in Codex when needed, generates the review brief, leaves you in an interactive Codex session for follow-up questions or fixes, offers the same reviewed commit-message flow as other local fix workflows when that session makes changes, and pushes any new reviewed commits back to the PR head branch before exiting
 - `codex` plus authenticated GitHub access for `git-ai issue <number> --mode unattended` and `git-ai issue batch ...`
 - `gh`, `GH_TOKEN`, or `GITHUB_TOKEN` for GitHub-backed issue and pull request flows
@@ -317,9 +318,11 @@ Important behavior:
 - `git-ai issue` requires a clean working tree before it starts
 - `git-ai issue batch ...` requires at least two unique issue numbers
 - `git-ai issue draft` previews the generated draft in the terminal and only opens `$VISUAL`, `$EDITOR`, or `vim` when you explicitly choose modify
-- `git-ai issue draft` requires the configured runtime CLI on `PATH`
-- `git-ai issue plan <number>` requires the configured provider to be usable, defaulting to `OPENAI_API_KEY`
-- local full issue runs require the configured runtime CLI on `PATH`
+- `git-ai issue draft` requires an available interactive runtime CLI on `PATH`; if the configured non-default runtime is unavailable, `git-ai` falls back to `codex` when possible
+- `git-ai issue plan <number>` requires issue access through the configured forge, and creating a new managed plan comment also requires the configured provider plus GitHub authentication
+- `git-ai issue finalize <number>` requires local file changes plus a usable configured provider so it can draft the proposed commit message
+- local full issue runs require an available interactive runtime CLI on `PATH`
+- local full issue runs require the configured provider for commit and PR text generation
 - full local issue runs execute the configured `buildCommand`, defaulting to `pnpm build`
 - local full issue runs preview the proposed commit message and let you edit or skip it before committing
 - local interactive runtime prompts end with an explicit done-state summary, a short note about how to see the result or what was verified, and plain-language next steps
@@ -495,6 +498,7 @@ Important behavior:
 - `git-ai feature-backlog` prints a beta workflow notice before execution
 - the repository analysis is heuristic and based on the repository structure, current product surface, and automation signals
 - with the default GitHub forge integration, `--create-issues` requires `GH_TOKEN` or `GITHUB_TOKEN`
+- feature backlog issue creation uses the analyzed repository's configured forge, so the required credentials follow that forge's issue-creation path
 - with the default GitHub forge integration, issue creation targets the analyzed repository's `origin` remote, not just the current working directory
 - before each issue is created, `git-ai` prompts for the final title, optional extra description, and labels
 - if an open GitHub issue already exists with the chosen title, `git-ai` reuses it instead of creating a duplicate

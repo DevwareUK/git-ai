@@ -29,7 +29,7 @@ const LAUNCH_STAGE_NOTICE_DEFINITIONS: Record<
       "Repository-wide feature discovery is still a higher-variance workflow than the primary review and testing paths.",
     recommendedFirst: "`git-ai test-backlog --top 5` or `git-ai review`.",
     constraints:
-      "Scans the repository heuristically, and optional issue creation also needs GitHub access.",
+      "Scans the target repository heuristically; optional issue creation uses the configured forge and needs issue-creation access.",
   },
   "issue-batch": {
     tier: "beta",
@@ -49,7 +49,7 @@ const LAUNCH_STAGE_NOTICE_DEFINITIONS: Record<
     recommendedFirst:
       "`git-ai review`, `git-ai pr fix-comments <pr-number>`, or `git-ai test-backlog --top 5`.",
     constraints:
-      "Requires the configured interactive runtime on PATH and writes draft artifacts under `.git-ai/`.",
+      "Requires an available interactive runtime CLI on PATH (configured runtime or Codex fallback) and writes draft artifacts under `.git-ai/`.",
   },
   "issue-finalize": {
     tier: "advanced",
@@ -59,7 +59,7 @@ const LAUNCH_STAGE_NOTICE_DEFINITIONS: Record<
     recommendedFirst:
       "`git-ai review` and the PR fix workflows before moving into full issue automation.",
     constraints:
-      "Requires an existing issue-run branch with file changes ready for commit review.",
+      "Requires local file changes to review and a usable text provider to draft the proposed commit message.",
   },
   "issue-plan": {
     tier: "advanced",
@@ -69,7 +69,7 @@ const LAUNCH_STAGE_NOTICE_DEFINITIONS: Record<
     recommendedFirst:
       "`git-ai review` first, then move into issue automation once the team trusts the narrower path.",
     constraints:
-      "Requires GitHub issue access plus a working text-provider configuration.",
+      "Requires issue access through the configured forge; creating a new managed plan comment also needs a usable text provider and GitHub authentication.",
   },
   "issue-prepare": {
     tier: "advanced",
@@ -89,7 +89,7 @@ const LAUNCH_STAGE_NOTICE_DEFINITIONS: Record<
     recommendedFirst:
       "`git-ai review`, `git-ai pr fix-comments <pr-number>`, or `git-ai pr fix-tests <pr-number>`.",
     constraints:
-      'Requires a clean working tree; interactive runs need the configured runtime, and `--mode unattended` also needs authenticated GitHub access plus `ai.runtime.type: "codex"`.',
+      'Requires a clean working tree, issue access through the configured forge, and a usable text provider; interactive runs need an available runtime CLI, while `--mode unattended` also needs authenticated GitHub access and `ai.runtime.type: "codex"`.',
   },
   "pr-prepare-review": {
     tier: "beta",
@@ -99,7 +99,7 @@ const LAUNCH_STAGE_NOTICE_DEFINITIONS: Record<
     recommendedFirst:
       "`git-ai review` for the lower-risk review path, then `git-ai pr fix-comments <pr-number>` or `git-ai pr fix-tests <pr-number>` when you want guided local changes.",
     constraints:
-      "Requires a clean working tree, GitHub PR access, `codex` on PATH, and may merge the latest base branch into the review workspace.",
+      "Requires a clean working tree, pull-request access through the configured forge, and `codex` on PATH; it may check out a review branch and merge the latest base branch before generating the brief.",
   },
 };
 
