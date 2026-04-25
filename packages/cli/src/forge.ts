@@ -74,6 +74,7 @@ export interface RepositoryForge {
   readonly type: "github" | "none";
   isAuthenticated(): boolean;
   fetchIssueDetails(issueNumber: number): Promise<IssueDetails>;
+  fetchIssueComments(issueNumber: number): Promise<RepositoryComment[]>;
   fetchIssuePlanComment(issueNumber: number): Promise<IssuePlanComment | undefined>;
   fetchPullRequestDetails(prNumber: number): Promise<PullRequestDetails>;
   fetchPullRequestIssueComments(prNumber: number): Promise<RepositoryComment[]>;
@@ -81,6 +82,7 @@ export interface RepositoryForge {
   createIssuePlanComment(issueNumber: number, body: string): Promise<IssuePlanComment>;
   updateIssuePlanComment(commentId: number, body: string): Promise<IssuePlanComment>;
   createDraftIssue(title: string, body: string): Promise<string>;
+  updateIssue(issueNumber: number, title: string, body: string): Promise<CreatedIssueRecord>;
   createOrReuseIssue(
     title: string,
     body: string,
@@ -103,6 +105,12 @@ class NoopRepositoryForge implements RepositoryForge {
   }
 
   async fetchIssuePlanComment(): Promise<IssuePlanComment | undefined> {
+    throw new Error(
+      "Repository forge support is disabled by .prs/config.json. Configure `forge.type` to enable issue workflows."
+    );
+  }
+
+  async fetchIssueComments(): Promise<RepositoryComment[]> {
     throw new Error(
       "Repository forge support is disabled by .prs/config.json. Configure `forge.type` to enable issue workflows."
     );
@@ -141,6 +149,12 @@ class NoopRepositoryForge implements RepositoryForge {
   async createDraftIssue(): Promise<string> {
     throw new Error(
       "Repository forge support is disabled by .prs/config.json. Configure `forge.type` to enable issue creation."
+    );
+  }
+
+  async updateIssue(): Promise<CreatedIssueRecord> {
+    throw new Error(
+      "Repository forge support is disabled by .prs/config.json. Configure `forge.type` to enable issue workflows."
     );
   }
 
