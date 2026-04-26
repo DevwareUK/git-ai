@@ -6,6 +6,7 @@ import type {
   CreatedIssueRecord,
   IssueDetails,
   IssuePlanComment,
+  OpenPullRequestChange,
   PullRequestDetails,
   RepositoryComment,
   PullRequestReviewComment,
@@ -426,6 +427,89 @@ async function fetchPullRequestWithApi(
   };
 }
 
+async function listOpenPullRequests(
+  owner: string,
+  repo: string
+): Promise<Array<Omit<OpenPullRequestChange, "files">>> {
+  const token = tryResolveGitHubApiToken();
+  const headers: Record<string, string> = {
+    Accept: "application/vnd.github+json",
+    "User-Agent": "prs-cli",
+  };
+
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  const response = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/pulls?state=open&per_page=100`,
+    { headers }
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      `Failed to list GitHub pull requests (${response.status} ${response.statusText}).`
+    );
+  }
+
+  const payload = (await response.json()) as Array<{
+    number?: number;
+    title?: string;
+    html_url?: string;
+    base?: { ref?: string };
+    head?: { ref?: string };
+  }>;
+
+  return payload
+    .filter(
+      (item) =>
+        item.number &&
+        item.title &&
+        item.html_url &&
+        item.base?.ref &&
+        item.head?.ref
+    )
+    .map((item) => ({
+      number: item.number as number,
+      title: item.title as string,
+      url: item.html_url as string,
+      baseRefName: item.base?.ref as string,
+      headRefName: item.head?.ref as string,
+    }));
+}
+
+async function listPullRequestFiles(
+  owner: string,
+  repo: string,
+  prNumber: number
+): Promise<string[]> {
+  const token = tryResolveGitHubApiToken();
+  const headers: Record<string, string> = {
+    Accept: "application/vnd.github+json",
+    "User-Agent": "prs-cli",
+  };
+
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  const response = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/files?per_page=100`,
+    { headers }
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      `Failed to list files for GitHub pull request #${prNumber} (${response.status} ${response.statusText}).`
+    );
+  }
+
+  const payload = (await response.json()) as Array<{ filename?: string }>;
+  return payload
+    .map((file) => file.filename?.trim())
+    .filter((filename): filename is string => Boolean(filename));
+}
+
 async function listPullRequestReviewComments(
   owner: string,
   repo: string,
@@ -624,6 +708,18 @@ class GitHubRepositoryForge implements RepositoryForge {
     }
 
     return fetchPullRequestWithApi(owner, repo, prNumber);
+  }
+
+  async listOpenPullRequestChanges(): Promise<OpenPullRequestChange[]> {
+    const { owner, repo } = parseGitHubRepoFromRemote(this.repoRoot);
+    const pullRequests = await listOpenPullRequests(owner, repo);
+
+    return Promise.all(
+      pullRequests.map(async (pullRequest) => ({
+        ...pullRequest,
+        files: await listPullRequestFiles(owner, repo, pullRequest.number),
+      }))
+    );
   }
 
   async fetchPullRequestIssueComments(prNumber: number): Promise<RepositoryComment[]> {

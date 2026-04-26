@@ -57,6 +57,7 @@ import {
   type CreatedIssueRecord,
   type IssueDetails,
   type IssuePlanComment,
+  type OpenPullRequestChange,
   type RepositoryComment,
   type RepositoryForge,
 } from "./forge";
@@ -207,6 +208,9 @@ type IssueRunContext = {
   issue: IssueDetails;
   planComment?: IssuePlanComment;
   branchName: string;
+  baseBranch: string;
+  configuredBaseBranch: string;
+  overlapDecision?: IssueBranchBaseDecision;
   workspace: IssueWorkspace;
   mode: IssueWorkspaceMode;
   runtime: {
@@ -217,10 +221,30 @@ type IssueRunContext = {
   };
 };
 
+type IssueBranchBaseDecision = {
+  branchName: string;
+  pullRequestBaseBranch: string;
+  source: "configured-base" | "pull-request-head";
+  reason: string;
+  overlappingPullRequests: IssueOverlappingPullRequest[];
+};
+
+type IssueOverlappingPullRequest = {
+  number: number;
+  title: string;
+  url: string;
+  baseRefName: string;
+  headRefName: string;
+  matchingFiles: string[];
+};
+
 type IssueSessionState = {
   issueNumber: number;
   runtimeType: InteractiveRuntimeType;
   branchName: string;
+  baseBranch?: string;
+  configuredBaseBranch?: string;
+  overlapDecision?: IssueBranchBaseDecision;
   issueDir: string;
   runDir: string;
   promptFile: string;
@@ -1296,6 +1320,117 @@ function stripIssuePlanCommentMarker(body: string): string {
     .trim();
 }
 
+export function normalizeRepositoryPath(value: string): string | undefined {
+  const trimmed = value.trim().replace(/^`|`$/g, "");
+  if (!trimmed || trimmed.includes("\n") || /^[A-Z][\w\s]+$/.test(trimmed)) {
+    return undefined;
+  }
+
+  return trimmed.replace(/^\.\//, "");
+}
+
+export function extractIssuePlanLikelyFiles(planBody: string | undefined): string[] {
+  if (!planBody) {
+    return [];
+  }
+
+  const lines = stripIssuePlanCommentMarker(planBody).split(/\r?\n/);
+  const start = lines.findIndex((line) => /^###\s+Likely files\s*$/i.test(line.trim()));
+  if (start === -1) {
+    return [];
+  }
+
+  const files: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (/^###\s+/.test(line.trim())) {
+      break;
+    }
+
+    const match = line.match(/^\s*[-*]\s+(.+?)\s*$/);
+    if (!match) {
+      continue;
+    }
+
+    const normalized = normalizeRepositoryPath(match[1] ?? "");
+    if (normalized) {
+      files.push(normalized);
+    }
+  }
+
+  return [...new Set(files)];
+}
+
+export function findOverlappingPullRequests(
+  plannedFiles: string[],
+  pullRequests: OpenPullRequestChange[]
+): IssueOverlappingPullRequest[] {
+  const planned = new Set(
+    plannedFiles.map((file) => file.replace(/^\.\//, "")).filter(Boolean)
+  );
+
+  return pullRequests
+    .map((pullRequest) => {
+      const matchingFiles = pullRequest.files
+        .map((file) => file.replace(/^\.\//, ""))
+        .filter((file) => planned.has(file));
+
+      return {
+        number: pullRequest.number,
+        title: pullRequest.title,
+        url: pullRequest.url,
+        baseRefName: pullRequest.baseRefName,
+        headRefName: pullRequest.headRefName,
+        matchingFiles,
+      };
+    })
+    .filter((pullRequest) => pullRequest.matchingFiles.length > 0);
+}
+
+export function recommendIssueBranchBase(input: {
+  configuredBaseBranch: string;
+  overlappingPullRequests: IssueOverlappingPullRequest[];
+  plannedFiles: string[];
+}): IssueBranchBaseDecision {
+  const { configuredBaseBranch, overlappingPullRequests, plannedFiles } = input;
+  const eligible = overlappingPullRequests.filter(
+    (pullRequest) => pullRequest.baseRefName === configuredBaseBranch
+  );
+
+  if (eligible.length === 1) {
+    const pullRequest = eligible[0] as IssueOverlappingPullRequest;
+    return {
+      branchName: pullRequest.headRefName,
+      pullRequestBaseBranch: pullRequest.headRefName,
+      source: "pull-request-head",
+      reason: `PR #${pullRequest.number} is the only open PR changing planned files: ${pullRequest.matchingFiles.join(", ")}.`,
+      overlappingPullRequests,
+    };
+  }
+
+  const covering = eligible.filter(
+    (pullRequest) => pullRequest.matchingFiles.length === plannedFiles.length
+  );
+  if (covering.length === 1) {
+    const pullRequest = covering[0] as IssueOverlappingPullRequest;
+    return {
+      branchName: pullRequest.headRefName,
+      pullRequestBaseBranch: pullRequest.headRefName,
+      source: "pull-request-head",
+      reason: `PR #${pullRequest.number} covers all planned files, so a stacked branch avoids starting from stale file content.`,
+      overlappingPullRequests,
+    };
+  }
+
+  return {
+    branchName: configuredBaseBranch,
+    pullRequestBaseBranch: configuredBaseBranch,
+    source: "configured-base",
+    reason:
+      "Multiple or ambiguous open PR overlaps were found, so the configured base branch is safer than guessing a stacked dependency.",
+    overlappingPullRequests,
+  };
+}
+
 function formatSuperpowersPlanArtifactComment(planMarkdown: string): string {
   const trimmed = planMarkdown.trim();
   if (trimmed.startsWith(ISSUE_PLAN_COMMENT_MARKER)) {
@@ -2032,6 +2167,9 @@ function loadIssueSessionState(
     parsed.issueNumber !== issueNumber ||
     (runtimeType !== "codex" && runtimeType !== "claude-code") ||
     typeof parsed.branchName !== "string" ||
+    (parsed.baseBranch !== undefined && typeof parsed.baseBranch !== "string") ||
+    (parsed.configuredBaseBranch !== undefined &&
+      typeof parsed.configuredBaseBranch !== "string") ||
     typeof parsed.issueDir !== "string" ||
     typeof parsed.runDir !== "string" ||
     typeof parsed.promptFile !== "string" ||
@@ -2390,6 +2528,199 @@ function syncIssueBaseBranch(
   );
 }
 
+function formatIssueOverlapSummary(
+  overlappingPullRequests: IssueOverlappingPullRequest[]
+): string {
+  return overlappingPullRequests
+    .map(
+      (pullRequest) =>
+        `#${pullRequest.number} ${pullRequest.title} (${pullRequest.matchingFiles.join(", ")})`
+    )
+    .join("; ");
+}
+
+function formatIssueOverlapNotice(decision: IssueBranchBaseDecision): string {
+  const lines = [
+    "Open pull requests change files planned for this issue:",
+    ...decision.overlappingPullRequests.map(
+      (pullRequest) =>
+        `- #${pullRequest.number} ${pullRequest.title} (${pullRequest.url}) overlaps ${pullRequest.matchingFiles.join(", ")}`
+    ),
+    `Recommended base: ${decision.branchName}`,
+    `Reason: ${decision.reason}`,
+  ];
+
+  return lines.join("\n");
+}
+
+function createConfiguredIssueBaseDecision(
+  configuredBaseBranch: string,
+  reason: string,
+  overlappingPullRequests: IssueOverlappingPullRequest[] = []
+): IssueBranchBaseDecision {
+  return {
+    branchName: configuredBaseBranch,
+    pullRequestBaseBranch: configuredBaseBranch,
+    source: "configured-base",
+    reason,
+    overlappingPullRequests,
+  };
+}
+
+async function promptForIssueBranchBaseDecision(input: {
+  forge: RepositoryForge;
+  configuredBaseBranch: string;
+  plannedFiles: string[];
+  recommendation: IssueBranchBaseDecision;
+}): Promise<IssueBranchBaseDecision> {
+  console.log(formatIssueOverlapNotice(input.recommendation));
+
+  const reviewAnswer = (
+    await promptForLine("Review or merge overlapping pull requests first? [Y/n]: ")
+  )
+    .trim()
+    .toLowerCase();
+  const shouldReviewFirst =
+    reviewAnswer === "" || reviewAnswer === "y" || reviewAnswer === "yes";
+
+  if (shouldReviewFirst) {
+    const openPullRequests = await input.forge.listOpenPullRequestChanges();
+    const remaining = findOverlappingPullRequests(input.plannedFiles, openPullRequests);
+    if (remaining.length > 0) {
+      throw new Error(
+        `Open pull requests still change planned files: ${formatIssueOverlapSummary(
+          remaining
+        )}. Review or merge them, then rerun prs issue.`
+      );
+    }
+
+    return createConfiguredIssueBaseDecision(
+      input.configuredBaseBranch,
+      "Overlapping pull requests were reviewed or merged before branch creation."
+    );
+  }
+
+  const answer = (
+    await promptForLine(
+      `Continue from ${input.recommendation.branchName} (${
+        input.recommendation.source === "pull-request-head"
+          ? "recommended stacked PR"
+          : "recommended base branch"
+      })? [Y/n]: `
+    )
+  )
+    .trim()
+    .toLowerCase();
+  const acceptsRecommendation = answer === "" || answer === "y" || answer === "yes";
+  if (acceptsRecommendation) {
+    return input.recommendation;
+  }
+
+  if (input.recommendation.source === "pull-request-head") {
+    return createConfiguredIssueBaseDecision(
+      input.configuredBaseBranch,
+      "User overrode the recommended stacked PR base.",
+      input.recommendation.overlappingPullRequests
+    );
+  }
+
+  const firstEligible = input.recommendation.overlappingPullRequests.find(
+    (pullRequest) => pullRequest.baseRefName === input.configuredBaseBranch
+  );
+  if (!firstEligible) {
+    return input.recommendation;
+  }
+
+  return {
+    branchName: firstEligible.headRefName,
+    pullRequestBaseBranch: firstEligible.headRefName,
+    source: "pull-request-head",
+    reason: `User overrode the configured-base recommendation to branch from PR #${firstEligible.number}.`,
+    overlappingPullRequests: input.recommendation.overlappingPullRequests,
+  };
+}
+
+async function chooseIssueBranchBase(input: {
+  forge: RepositoryForge;
+  mode: IssueWorkspaceMode;
+  configuredBaseBranch: string;
+  planComment?: IssuePlanComment;
+}): Promise<IssueBranchBaseDecision> {
+  const plannedFiles = extractIssuePlanLikelyFiles(input.planComment?.body);
+  if (plannedFiles.length === 0) {
+    console.log(
+      "Skipping open pull request overlap check because the issue plan has no concrete likely files."
+    );
+    return createConfiguredIssueBaseDecision(
+      input.configuredBaseBranch,
+      "No concrete planned files were available for overlap detection."
+    );
+  }
+
+  const openPullRequests = await input.forge.listOpenPullRequestChanges();
+  const overlappingPullRequests = findOverlappingPullRequests(
+    plannedFiles,
+    openPullRequests
+  );
+  if (overlappingPullRequests.length === 0) {
+    return createConfiguredIssueBaseDecision(
+      input.configuredBaseBranch,
+      "No open pull requests change the planned files."
+    );
+  }
+
+  const recommendation = recommendIssueBranchBase({
+    configuredBaseBranch: input.configuredBaseBranch,
+    overlappingPullRequests,
+    plannedFiles,
+  });
+
+  if (input.mode !== "local" || !process.stdin.isTTY) {
+    console.log(formatIssueOverlapNotice(recommendation));
+    console.log(`Continuing non-interactively from ${recommendation.branchName}.`);
+    return recommendation;
+  }
+
+  return promptForIssueBranchBaseDecision({
+    forge: input.forge,
+    configuredBaseBranch: input.configuredBaseBranch,
+    plannedFiles,
+    recommendation,
+  });
+}
+
+function syncIssueSelectedBaseBranch(
+  repoRoot: string,
+  decision: IssueBranchBaseDecision,
+  configuredBasePreflight: { remoteRef: string; remoteTip: string }
+): void {
+  if (decision.source === "configured-base") {
+    syncIssueBaseBranch(repoRoot, decision.branchName, configuredBasePreflight);
+    return;
+  }
+
+  const preflight = preflightRemoteBranch(
+    repoRoot,
+    "origin",
+    decision.branchName,
+    `Open pull request head branch "${decision.branchName}"`,
+    "review or merge the overlapping pull request before rerunning the issue workflow"
+  );
+
+  if (!localBranchExists(repoRoot, decision.branchName)) {
+    console.log(`Creating local base branch ${decision.branchName} from ${preflight.remoteRef}...`);
+    runInteractiveCommand(
+      "git",
+      ["checkout", "-b", decision.branchName, preflight.remoteRef],
+      `Failed to create local branch "${decision.branchName}" from ${preflight.remoteRef}.`,
+      repoRoot
+    );
+    return;
+  }
+
+  syncIssueBaseBranch(repoRoot, decision.branchName, preflight);
+}
+
 function updateIssueWorkspaceMetadata(
   workspace: IssueWorkspace,
   updater: (currentMetadata: Record<string, unknown>) => Record<string, unknown>
@@ -2433,6 +2764,9 @@ function createIssueSessionState(
     issueNumber: context.issueNumber,
     runtimeType: context.runtime.type,
     branchName: context.branchName,
+    baseBranch: context.baseBranch,
+    configuredBaseBranch: context.configuredBaseBranch,
+    overlapDecision: context.overlapDecision,
     issueDir: toRepoRelativePath(repoRoot, context.workspace.issueDir),
     runDir: toRepoRelativePath(repoRoot, context.workspace.runDir),
     promptFile: toRepoRelativePath(repoRoot, context.workspace.promptFilePath),
@@ -3205,6 +3539,32 @@ function writePRDescriptionFailureArtifact(
   return toRepoRelativePath(repoRoot, artifactPath);
 }
 
+function appendIssueOverlapDependencyNote(
+  body: string,
+  decision: IssueBranchBaseDecision | undefined
+): string {
+  if (!decision || decision.overlappingPullRequests.length === 0) {
+    return body;
+  }
+
+  const lines = [
+    body.trimEnd(),
+    "",
+    "## Open PR File Overlap",
+    "",
+    decision.source === "pull-request-head"
+      ? `This branch was prepared from \`${decision.branchName}\` because an open PR changes planned files. Review that PR before merging this one.`
+      : "Open PRs change planned files for this issue. Review them before merging if their changes are still open.",
+    "",
+    ...decision.overlappingPullRequests.map(
+      (pullRequest) =>
+        `- #${pullRequest.number} ${pullRequest.title} (${pullRequest.url}) overlaps ${pullRequest.matchingFiles.join(", ")}`
+    ),
+  ];
+
+  return lines.join("\n");
+}
+
 async function generateIssuePullRequest(
   provider: AIProvider,
   options: {
@@ -3213,6 +3573,7 @@ async function generateIssuePullRequest(
     issue: IssueDetails;
     diff: string;
     commitMessage: ReviewedGeneratedText;
+    overlapDecision?: IssueBranchBaseDecision;
     runDir?: string;
   }
 ): Promise<GeneratedIssuePullRequest> {
@@ -3255,8 +3616,12 @@ async function generateIssuePullRequest(
       ? [options.issueNumber]
       : [options.issueNumber, linkedSourceIssueNumber];
 
-  const body = mergePRAssistantSection(
+  const bodyWithOverlapNote = appendIssueOverlapDependencyNote(
     ensureIssueClosingReferences(description.body, closingIssueNumbers),
+    options.overlapDecision
+  );
+  const body = mergePRAssistantSection(
+    bodyWithOverlapNote,
     buildPRAssistantSection(assistant)
   );
   const pullRequest: GeneratedIssuePullRequest = {
@@ -4770,6 +5135,10 @@ async function prepareIssueRun(
       issue,
       planComment,
       branchName: existingSessionState.branchName,
+      baseBranch: existingSessionState.baseBranch ?? repositoryConfig.baseBranch,
+      configuredBaseBranch:
+        existingSessionState.configuredBaseBranch ?? repositoryConfig.baseBranch,
+      overlapDecision: existingSessionState.overlapDecision,
       workspace,
       mode,
       runtime: {
@@ -4783,8 +5152,14 @@ async function prepareIssueRun(
 
   const branchName = createIssueBranchName(issueNumber, issue.title);
   ensureBranchDoesNotExist(repoRoot, branchName);
-  syncIssueBaseBranch(repoRoot, repositoryConfig.baseBranch, baseBranchPreflight);
   const planComment = await resolvePlanCommentForRun();
+  const overlapDecision = await chooseIssueBranchBase({
+    forge,
+    mode,
+    configuredBaseBranch: repositoryConfig.baseBranch,
+    planComment,
+  });
+  syncIssueSelectedBaseBranch(repoRoot, overlapDecision, baseBranchPreflight);
   const workspace = createIssueWorkspace(repoRoot, issueNumber, issue);
   writeIssueWorkspaceFiles(
     repoRoot,
@@ -4812,6 +5187,9 @@ async function prepareIssueRun(
     issue,
     planComment,
     branchName,
+    baseBranch: overlapDecision.pullRequestBaseBranch,
+    configuredBaseBranch: repositoryConfig.baseBranch,
+    overlapDecision,
     workspace,
     mode,
     runtime: {
@@ -4948,6 +5326,7 @@ async function runUnattendedIssueCommand(
     issue: context.issue,
     diff: finalized.diff,
     commitMessage: finalized.commitMessage,
+    overlapDecision: context.overlapDecision,
     runDir: context.workspace.runDir,
   });
   updateIssueWorkspaceMetadata(context.workspace, (currentMetadata) => ({
@@ -4960,7 +5339,7 @@ async function runUnattendedIssueCommand(
   console.log("Pushing branch and opening a pull request...");
   const createdPullRequest = await forge.createPullRequest({
     branchName: context.branchName,
-    baseBranch: repositoryConfig.baseBranch,
+    baseBranch: context.baseBranch,
     title: pullRequest.title,
     body: pullRequest.body,
     outputLogPath: context.workspace.outputLogPath,
@@ -4975,7 +5354,7 @@ async function runUnattendedIssueCommand(
   const outcome: IssueRunOutcomeSummary = {
     issueNumber: context.issueNumber,
     branchName: context.branchName,
-    baseBranch: repositoryConfig.baseBranch,
+    baseBranch: context.baseBranch,
     runDir,
     committed: true,
     pullRequest: {
@@ -5292,7 +5671,7 @@ async function runIssueCommand(): Promise<void> {
     const outcome: IssueRunOutcomeSummary = {
       issueNumber: context.issueNumber,
       branchName: context.branchName,
-      baseBranch: repositoryConfig.baseBranch,
+      baseBranch: context.baseBranch,
       runDir: relativeRunDir,
       committed: false,
       pullRequest: {
@@ -5309,7 +5688,7 @@ async function runIssueCommand(): Promise<void> {
     const outcome: IssueRunOutcomeSummary = {
       issueNumber: context.issueNumber,
       branchName: context.branchName,
-      baseBranch: repositoryConfig.baseBranch,
+      baseBranch: context.baseBranch,
       runDir: relativeRunDir,
       committed: false,
       pullRequest: {
@@ -5329,6 +5708,7 @@ async function runIssueCommand(): Promise<void> {
     issue: context.issue,
     diff: finalized.diff,
     commitMessage: finalized.commitMessage,
+    overlapDecision: context.overlapDecision,
     runDir: context.workspace.runDir,
   });
   updateIssueWorkspaceMetadata(context.workspace, (currentMetadata) => ({
@@ -5342,7 +5722,7 @@ async function runIssueCommand(): Promise<void> {
     console.log("Pushing branch and opening a pull request...");
     const createdPullRequest = await forge.createPullRequest({
       branchName: context.branchName,
-      baseBranch: repositoryConfig.baseBranch,
+      baseBranch: context.baseBranch,
       title: pullRequest.title,
       body: pullRequest.body,
       outputLogPath: context.workspace.outputLogPath,
@@ -5357,7 +5737,7 @@ async function runIssueCommand(): Promise<void> {
     const outcome: IssueRunOutcomeSummary = {
       issueNumber: context.issueNumber,
       branchName: context.branchName,
-      baseBranch: repositoryConfig.baseBranch,
+      baseBranch: context.baseBranch,
       runDir: relativeRunDir,
       committed: true,
       pullRequest: {
@@ -5379,14 +5759,14 @@ async function runIssueCommand(): Promise<void> {
     printManualPrInstructions(
       repoRoot,
       context.branchName,
-      repositoryConfig.baseBranch,
+      context.baseBranch,
       titleFilePath,
       bodyFilePath
     );
     const outcome: IssueRunOutcomeSummary = {
       issueNumber: context.issueNumber,
       branchName: context.branchName,
-      baseBranch: repositoryConfig.baseBranch,
+      baseBranch: context.baseBranch,
       runDir: relativeRunDir,
       committed: true,
       pullRequest: {
@@ -5403,7 +5783,7 @@ async function runIssueCommand(): Promise<void> {
   const outcome: IssueRunOutcomeSummary = {
     issueNumber: context.issueNumber,
     branchName: context.branchName,
-    baseBranch: repositoryConfig.baseBranch,
+    baseBranch: context.baseBranch,
     runDir: relativeRunDir,
     committed: true,
     pullRequest: {

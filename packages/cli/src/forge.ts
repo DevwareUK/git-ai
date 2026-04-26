@@ -33,6 +33,15 @@ export type PullRequestDetails = {
   headRefName: string;
 };
 
+export type OpenPullRequestChange = {
+  number: number;
+  title: string;
+  url: string;
+  baseRefName: string;
+  headRefName: string;
+  files: string[];
+};
+
 export type PullRequestReviewComment = {
   id: number;
   body: string;
@@ -77,6 +86,7 @@ export interface RepositoryForge {
   fetchIssueComments(issueNumber: number): Promise<RepositoryComment[]>;
   fetchIssuePlanComment(issueNumber: number): Promise<IssuePlanComment | undefined>;
   fetchPullRequestDetails(prNumber: number): Promise<PullRequestDetails>;
+  listOpenPullRequestChanges(): Promise<OpenPullRequestChange[]>;
   fetchPullRequestIssueComments(prNumber: number): Promise<RepositoryComment[]>;
   fetchPullRequestReviewComments(prNumber: number): Promise<PullRequestReviewComment[]>;
   createIssuePlanComment(issueNumber: number, body: string): Promise<IssuePlanComment>;
@@ -117,6 +127,12 @@ class NoopRepositoryForge implements RepositoryForge {
   }
 
   async fetchPullRequestDetails(): Promise<PullRequestDetails> {
+    throw new Error(
+      "Repository forge support is disabled by .prs/config.json. Configure `forge.type` to enable pull request workflows."
+    );
+  }
+
+  async listOpenPullRequestChanges(): Promise<OpenPullRequestChange[]> {
     throw new Error(
       "Repository forge support is disabled by .prs/config.json. Configure `forge.type` to enable pull request workflows."
     );
