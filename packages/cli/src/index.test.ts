@@ -2399,6 +2399,19 @@ describe("CLI integration", () => {
       requestedChanges: "Clarify the rollback plan and edge cases.",
       draftFile: `.prs/runs/${createdRunDir}/issue-refine-${issueNumber}.md`,
     });
+    expect(
+      readFileSync(resolve(REPO_ROOT, metadata.draftFile as string), "utf8")
+    ).toBe("# Improve release automation\n\n## Summary\nRefined spec.");
+    expect(loadIssueRefineSessionState(REPO_ROOT, issueNumber)).toMatchObject({
+      issueNumber,
+      latestDraftFile: resolve(
+        REPO_ROOT,
+        ".prs",
+        "runs",
+        createdRunDir as string,
+        `issue-refine-${issueNumber}.md`
+      ),
+    });
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
@@ -2633,11 +2646,26 @@ describe("CLI integration", () => {
     expect(createdRunDir).toBeDefined();
     cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string));
 
-    expect(messages.join("\n")).toContain(
-      `Saved Codex refine session ${staleSessionId} for issue #${issueNumber} is no longer available. Starting a fresh refinement session.`
-    );
+    const staleSessionWarning =
+      `Saved Codex refine session ${staleSessionId} for issue #${issueNumber} is no longer available. Starting a fresh refinement session.`;
+    expect(messages.join("\n")).toContain(staleSessionWarning);
     expect(runtimePrompt).toContain("What changes should be made to the specification?");
     expect(runtimePrompt).toContain("Tighten rollout notes.");
+    const metadata = JSON.parse(
+      readFileSync(
+        resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string, "metadata.json"),
+        "utf8"
+      )
+    ) as {
+      runtime?: {
+        warnings?: string[];
+      };
+      outputLog?: string;
+    };
+    expect(metadata.runtime?.warnings).toContain(staleSessionWarning);
+    expect(
+      readFileSync(resolve(REPO_ROOT, metadata.outputLog as string), "utf8")
+    ).toContain(staleSessionWarning);
     expect(spawnSync).not.toHaveBeenCalledWith(
       "codex",
       expect.arrayContaining(["resume", staleSessionId]),
@@ -2767,9 +2795,24 @@ describe("CLI integration", () => {
     expect(createdRunDir).toBeDefined();
     cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string));
 
-    expect(messages.join("\n")).toContain(
-      "The saved issue-refine session used Codex, but the configured runtime is Claude Code. Starting a fresh refinement session."
-    );
+    const runtimeMismatchWarning =
+      "The saved issue-refine session used Codex, but the configured runtime is Claude Code. Starting a fresh refinement session.";
+    expect(messages.join("\n")).toContain(runtimeMismatchWarning);
+    const metadata = JSON.parse(
+      readFileSync(
+        resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string, "metadata.json"),
+        "utf8"
+      )
+    ) as {
+      runtime?: {
+        warnings?: string[];
+      };
+      outputLog?: string;
+    };
+    expect(metadata.runtime?.warnings).toContain(runtimeMismatchWarning);
+    expect(
+      readFileSync(resolve(REPO_ROOT, metadata.outputLog as string), "utf8")
+    ).toContain(runtimeMismatchWarning);
     expect(
       JSON.parse(
         readFileSync(getIssueRefineSessionStateFilePath(REPO_ROOT, issueNumber), "utf8")
@@ -3072,7 +3115,13 @@ describe("CLI integration", () => {
     expect(createCall).toBeDefined();
     expect(JSON.parse(String(createCall?.[1] && (createCall[1] as RequestInit).body))).toMatchObject({
       title: "Customer request refined",
-      body: expect.stringContaining("<!-- prs:managed-issue -->"),
+      body: [
+        "<!-- prs:managed-issue -->",
+        "",
+        `Refined from source issue #${issueNumber}.`,
+        "",
+        "## Summary\nRefined linked issue body.",
+      ].join("\n"),
     });
     expect(
       JSON.parse(
