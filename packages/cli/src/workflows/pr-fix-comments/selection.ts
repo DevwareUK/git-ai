@@ -351,15 +351,15 @@ export function parsePullRequestReviewSelection(
   groupCount: number
 ): Array<{ kind: "group" | "thread"; index: number }> {
   const normalized = response.trim().toLowerCase();
-  if (!normalized || normalized === "none" || normalized === "n") {
-    return [];
-  }
-
-  if (normalized === "all") {
+  if (!normalized || normalized === "all") {
     return Array.from({ length: threadCount }, (_, index) => ({
       kind: "thread" as const,
       index,
     }));
+  }
+
+  if (normalized === "none" || normalized === "n") {
+    return [];
   }
 
   const selectedEntries: Array<{ kind: "group" | "thread"; index: number }> = [];

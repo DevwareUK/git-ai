@@ -281,6 +281,8 @@ describe("pr-fix-tests selection helpers", () => {
   });
 
   it("parses interactive suggestion selection and rejects invalid entries", () => {
+    expect(parsePullRequestTestSuggestionSelection("", 3)).toEqual([0, 1, 2]);
+    expect(parsePullRequestTestSuggestionSelection("   ", 3)).toEqual([0, 1, 2]);
     expect(parsePullRequestTestSuggestionSelection("all", 3)).toEqual([0, 1, 2]);
     expect(parsePullRequestTestSuggestionSelection("2, 1, 2", 3)).toEqual([1, 0]);
     expect(parsePullRequestTestSuggestionSelection("none", 3)).toEqual([]);

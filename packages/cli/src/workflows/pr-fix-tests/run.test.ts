@@ -318,7 +318,7 @@ describe("runPrFixTestsCommand", () => {
     );
     expect(promptForLine).toHaveBeenNthCalledWith(
       1,
-      "Select test suggestions to implement [all|none|1,2,...]: "
+      "Select test suggestions to implement [All|none|1,2,...] (default: All): "
     );
     expect(promptForLine).toHaveBeenNthCalledWith(
       2,

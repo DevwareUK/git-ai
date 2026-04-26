@@ -224,7 +224,7 @@ describe("runPrFixCommentsCommand", () => {
     );
     expect(promptForLine).toHaveBeenNthCalledWith(
       1,
-      "Select tasks to address [all|none|1,2,...]: "
+      "Select tasks to address [All|none|1,2,...] (default: All): "
     );
     expect(promptForLine).toHaveBeenNthCalledWith(
       2,

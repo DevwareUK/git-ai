@@ -54,7 +54,7 @@ async function selectPullRequestTestSuggestions(
   printPullRequestTestSuggestions(suggestions);
 
   const selection = await promptForLine(
-    "Select test suggestions to implement [all|none|1,2,...]: "
+    "Select test suggestions to implement [All|none|1,2,...] (default: All): "
   );
   const selectedIndexes = parsePullRequestTestSuggestionSelection(
     selection,
