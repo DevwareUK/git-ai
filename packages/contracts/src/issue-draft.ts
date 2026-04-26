@@ -120,3 +120,56 @@ export const IssueDraftOutput = z.object({
 });
 
 export type IssueDraftOutputType = z.infer<typeof IssueDraftOutput>;
+
+export const IssueDraftSetIssue = z.object({
+  id: z.string().trim().min(1),
+  draftFile: z.string().trim().min(1),
+  dependsOn: z.array(z.string().trim().min(1)).default([]),
+  blocks: z.array(z.string().trim().min(1)).default([]),
+  related: z.array(z.string().trim().min(1)).default([]),
+});
+
+export type IssueDraftSetIssueType = z.infer<typeof IssueDraftSetIssue>;
+
+export const IssueDraftSet = z
+  .object({
+    version: z.literal(1),
+    mode: z.enum(["single", "multiple"]),
+    sourceIssueNumber: z.number().int().positive().optional(),
+    linkingStrategy: z.string().trim().min(1).optional(),
+    issues: z.array(IssueDraftSetIssue).min(1),
+  })
+  .superRefine((value, ctx) => {
+    if (value.mode === "multiple" && value.issues.length < 2) {
+      ctx.addIssue({
+        code: "custom",
+        message: "multiple issue sets require at least two issues",
+      });
+    }
+
+    const ids = new Set<string>();
+    for (const issue of value.issues) {
+      if (ids.has(issue.id)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["issues"],
+          message: `duplicate issue id "${issue.id}"`,
+        });
+      }
+      ids.add(issue.id);
+    }
+
+    for (const issue of value.issues) {
+      for (const target of [...issue.dependsOn, ...issue.blocks, ...issue.related]) {
+        if (!ids.has(target)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["issues"],
+            message: `issue "${issue.id}" references unknown issue "${target}"`,
+          });
+        }
+      }
+    }
+  });
+
+export type IssueDraftSetType = z.infer<typeof IssueDraftSet>;

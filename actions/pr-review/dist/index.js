@@ -16106,6 +16106,8 @@ var require_dist = __commonJS({
       IssueDraftInput: () => IssueDraftInput,
       IssueDraftModelOutput: () => IssueDraftModelOutput,
       IssueDraftOutput: () => IssueDraftOutput,
+      IssueDraftSet: () => IssueDraftSet,
+      IssueDraftSetIssue: () => IssueDraftSetIssue,
       IssueResolutionPlanInput: () => IssueResolutionPlanInput,
       IssueResolutionPlanModelOutput: () => IssueResolutionPlanModelOutput,
       IssueResolutionPlanOutput: () => IssueResolutionPlanOutput,
@@ -16357,6 +16359,49 @@ var require_dist = __commonJS({
       requirements: import_zod4.z.array(import_zod4.z.string().trim().min(1, "requirements items must be non-empty")).min(1, "requirements must contain at least one item"),
       constraints: import_zod4.z.array(import_zod4.z.string().trim().min(1, "constraints items must be non-empty")).optional(),
       acceptanceCriteria: import_zod4.z.array(import_zod4.z.string().trim().min(1, "acceptanceCriteria items must be non-empty")).min(1, "acceptanceCriteria must contain at least one item")
+    });
+    var IssueDraftSetIssue = import_zod4.z.object({
+      id: import_zod4.z.string().trim().min(1),
+      draftFile: import_zod4.z.string().trim().min(1),
+      dependsOn: import_zod4.z.array(import_zod4.z.string().trim().min(1)).default([]),
+      blocks: import_zod4.z.array(import_zod4.z.string().trim().min(1)).default([]),
+      related: import_zod4.z.array(import_zod4.z.string().trim().min(1)).default([])
+    });
+    var IssueDraftSet = import_zod4.z.object({
+      version: import_zod4.z.literal(1),
+      mode: import_zod4.z.enum(["single", "multiple"]),
+      sourceIssueNumber: import_zod4.z.number().int().positive().optional(),
+      linkingStrategy: import_zod4.z.string().trim().min(1).optional(),
+      issues: import_zod4.z.array(IssueDraftSetIssue).min(1)
+    }).superRefine((value, ctx) => {
+      if (value.mode === "multiple" && value.issues.length < 2) {
+        ctx.addIssue({
+          code: "custom",
+          message: "multiple issue sets require at least two issues"
+        });
+      }
+      const ids = /* @__PURE__ */ new Set();
+      for (const issue of value.issues) {
+        if (ids.has(issue.id)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["issues"],
+            message: `duplicate issue id "${issue.id}"`
+          });
+        }
+        ids.add(issue.id);
+      }
+      for (const issue of value.issues) {
+        for (const target of [...issue.dependsOn, ...issue.blocks, ...issue.related]) {
+          if (!ids.has(target)) {
+            ctx.addIssue({
+              code: "custom",
+              path: ["issues"],
+              message: `issue "${issue.id}" references unknown issue "${target}"`
+            });
+          }
+        }
+      }
     });
     var import_zod5 = require_zod();
     var OptionalStringList = import_zod5.z.array(import_zod5.z.string().trim().min(1, "list items must be non-empty")).nullable().optional();

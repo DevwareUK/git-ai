@@ -8,7 +8,7 @@ import {
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import {
   analyzeFeatureBacklog,
@@ -34,6 +34,7 @@ import type { ResolvedRepositoryConfigType } from "@prs/contracts";
 import {
   GIT_AI_ALIAS_DEPRECATION_MESSAGE,
   ISSUE_PLAN_COMMENT_MARKER,
+  IssueDraftSet,
   LEGACY_PRODUCT_SHORT_NAME,
   PRODUCT_SHORT_NAME,
 } from "@prs/contracts";
@@ -61,6 +62,7 @@ import {
 } from "./forge";
 import {
   printGeneratedTextPreview,
+  openFileInEditor,
   reviewGeneratedText,
   type ReviewedGeneratedText,
   validateCommitMessage,
@@ -124,6 +126,7 @@ type IssuePrepareMode = "local" | "github-action";
 type IssueDraftWorkspace = {
   runDir: string;
   draftFilePath: string;
+  issueSetFilePath: string;
   promptFilePath: string;
   metadataFilePath: string;
   outputLogPath: string;
@@ -1436,6 +1439,7 @@ function createIssueDraftWorkspace(repoRoot: string): IssueDraftWorkspace {
   return {
     runDir,
     draftFilePath: resolve(issueDir, `issue-draft-${timestamp}.md`),
+    issueSetFilePath: resolve(runDir, "issue-set.json"),
     promptFilePath: resolve(runDir, "prompt.md"),
     metadataFilePath: resolve(runDir, "metadata.json"),
     outputLogPath: resolve(runDir, "output.log"),
@@ -1453,6 +1457,7 @@ function buildIssueDraftRuntimePrompt(
   }
 ): string {
   const draftFile = toRepoRelativePath(repoRoot, workspace.draftFilePath);
+  const issueSetFile = toRepoRelativePath(repoRoot, workspace.issueSetFilePath);
   const runDir = toRepoRelativePath(repoRoot, workspace.runDir);
   const superpowersSpecFile = toRepoRelativePath(repoRoot, workspace.superpowersSpecFilePath);
   const superpowersPlanFile = toRepoRelativePath(repoRoot, workspace.superpowersPlanFilePath);
@@ -1467,6 +1472,9 @@ function buildIssueDraftRuntimePrompt(
       featureIdea,
       "",
       `Write the final Markdown issue draft to \`${draftFile}\`.`,
+      `If the work is better split into multiple independent implementation issues, write each issue draft as Markdown under \`${runDir}\` and write an issue-set manifest to \`${issueSetFile}\`.`,
+      "The manifest lets prs create linked issues after review. Use local IDs in manifest relationships; prs will replace them with GitHub issue numbers after creation.",
+      "If one issue is enough, write only the existing final Markdown draft path.",
       `Write the Superpowers spec artifact to \`${superpowersSpecFile}\`.`,
       `Write the Superpowers plan artifact to \`${superpowersPlanFile}\`.`,
       `Use \`${runDir}\` for run artifacts created by this workflow.`,
@@ -1503,6 +1511,9 @@ function buildIssueDraftRuntimePrompt(
     featureIdea,
     "",
     `Write the final Markdown issue draft to \`${draftFile}\`.`,
+    `If the work is better split into multiple independent implementation issues, write each issue draft as Markdown under \`${runDir}\` and write an issue-set manifest to \`${issueSetFile}\`.`,
+    "The manifest lets prs create linked issues after review. Use local IDs in manifest relationships; prs will replace them with GitHub issue numbers after creation.",
+    "If one issue is enough, write only the existing final Markdown draft path.",
     `Use \`${runDir}\` for run artifacts created by this workflow.`,
     "",
     "Instructions to the coding agent:",
@@ -1552,6 +1563,7 @@ function writeIssueDraftWorkspaceFiles(
         flow: "issue-draft",
         featureIdea,
         draftFile: toRepoRelativePath(repoRoot, workspace.draftFilePath),
+        issueSetFile: toRepoRelativePath(repoRoot, workspace.issueSetFilePath),
         promptFile: toRepoRelativePath(repoRoot, workspace.promptFilePath),
         outputLog: toRepoRelativePath(repoRoot, workspace.outputLogPath),
         runDir: toRepoRelativePath(repoRoot, workspace.runDir),
@@ -1575,6 +1587,7 @@ function writeIssueDraftWorkspaceFiles(
       `Created: ${createdAt}`,
       `Runtime: ${runtime.displayName}`,
       `Draft file: ${toRepoRelativePath(repoRoot, workspace.draftFilePath)}`,
+      `Issue set file: ${toRepoRelativePath(repoRoot, workspace.issueSetFilePath)}`,
       `Prompt file: ${toRepoRelativePath(repoRoot, workspace.promptFilePath)}`,
       ...(options.useCodexSuperpowers
         ? [
@@ -1616,6 +1629,10 @@ function buildIssueRefineRuntimePrompt(input: {
   useCodexSuperpowers: boolean;
 }): string {
   const draftFile = toRepoRelativePath(input.repoRoot, input.workspace.draftFilePath);
+  const issueSetFile = toRepoRelativePath(
+    input.repoRoot,
+    input.workspace.issueSetFilePath
+  );
   const runDir = toRepoRelativePath(input.repoRoot, input.workspace.runDir);
   const superpowersSpecFile = toRepoRelativePath(
     input.repoRoot,
@@ -1671,6 +1688,9 @@ function buildIssueRefineRuntimePrompt(input: {
     formatIssueRefineComments(input.comments),
     "",
     `Write the refined markdown to \`${draftFile}\`.`,
+    `If the work is better split into multiple independent implementation issues, write each issue draft as Markdown under \`${runDir}\` and write an issue-set manifest to \`${issueSetFile}\`.`,
+    "The manifest lets prs create linked issues after review. Use local IDs in manifest relationships; prs will replace them with GitHub issue numbers after creation.",
+    "If one issue is enough, write only the existing final Markdown draft path.",
     ...superpowersArtifactInstructions,
     `Use \`${runDir}\` for run artifacts created by this workflow.`,
     "",
@@ -1755,6 +1775,7 @@ function writeIssueRefineWorkspaceFiles(
         ...(requestedChanges ? { requestedChanges } : {}),
         commentCount: comments.length,
         draftFile: toRepoRelativePath(repoRoot, workspace.draftFilePath),
+        issueSetFile: toRepoRelativePath(repoRoot, workspace.issueSetFilePath),
         promptFile: toRepoRelativePath(repoRoot, workspace.promptFilePath),
         outputLog: toRepoRelativePath(repoRoot, workspace.outputLogPath),
         runDir: toRepoRelativePath(repoRoot, workspace.runDir),
@@ -1784,6 +1805,7 @@ function writeIssueRefineWorkspaceFiles(
       `Issue number: ${issueNumber}`,
       `Issue URL: ${issue.url}`,
       `Draft file: ${toRepoRelativePath(repoRoot, workspace.draftFilePath)}`,
+      `Issue set file: ${toRepoRelativePath(repoRoot, workspace.issueSetFilePath)}`,
       `Prompt file: ${toRepoRelativePath(repoRoot, workspace.promptFilePath)}`,
       ...(useCodexSuperpowers
         ? [
@@ -1814,6 +1836,10 @@ function createIssueRefineSessionState(
         issueUrl: string;
       }
     | {
+        mode: "created-linked";
+        issues: Array<{ issueNumber: number; issueUrl: string }>;
+      }
+    | {
         mode: "kept-on-disk";
       }
 ): IssueRefineSessionState {
@@ -1838,8 +1864,14 @@ function createIssueRefineSessionState(
       : completion
         ? {
             completionMode: completion.mode,
-            completedIssueNumber: completion.issueNumber,
-            completedIssueUrl: completion.issueUrl,
+            ...("issues" in completion
+              ? {
+                  completedIssues: completion.issues,
+                }
+              : {
+                  completedIssueNumber: completion.issueNumber,
+                  completedIssueUrl: completion.issueUrl,
+                }),
           }
         : {}),
     createdAt,
@@ -1858,6 +1890,10 @@ function persistIssueRefineSessionState(
         mode: "updated-existing" | "created-linked";
         issueNumber: number;
         issueUrl: string;
+      }
+    | {
+        mode: "created-linked";
+        issues: Array<{ issueNumber: number; issueUrl: string }>;
       }
     | {
         mode: "kept-on-disk";
@@ -1885,6 +1921,7 @@ function createIssueRefineWorkspaceFromState(
   return {
     runDir: state.runDir,
     draftFilePath: state.latestDraftFile,
+    issueSetFilePath: resolve(state.runDir, "issue-set.json"),
     promptFilePath: state.promptFile,
     metadataFilePath: resolve(state.runDir, "metadata.json"),
     outputLogPath: state.outputLog,
@@ -2737,6 +2774,277 @@ function parseIssueDraftDocument(content: string): { title: string; body: string
   };
 }
 
+type ParsedIssueDraftSetIssue = {
+  id: string;
+  draftFilePath: string;
+  title: string;
+  body: string;
+  dependsOn: string[];
+  blocks: string[];
+  related: string[];
+};
+
+type ParsedIssueDraftSet = {
+  mode: "multiple";
+  sourceIssueNumber?: number;
+  linkingStrategy?: string;
+  issues: ParsedIssueDraftSetIssue[];
+};
+
+function isPathWithinDirectory(parentDir: string, candidatePath: string): boolean {
+  const relativePath = relative(parentDir, candidatePath);
+  return (
+    relativePath === "" ||
+    (!relativePath.startsWith("..") && !isAbsolute(relativePath))
+  );
+}
+
+function loadIssueDraftSet(input: {
+  repoRoot: string;
+  runDir: string;
+  issueSetFilePath: string;
+  fallbackSourceIssueNumber?: number;
+}): ParsedIssueDraftSet {
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(readFileSync(input.issueSetFilePath, "utf8"));
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Issue set manifest at ${toRepoRelativePath(
+        input.repoRoot,
+        input.issueSetFilePath
+      )} is invalid JSON. ${message}`
+    );
+  }
+
+  const parsedManifest = IssueDraftSet.parse(manifest);
+  if (parsedManifest.mode !== "multiple") {
+    throw new Error("Issue set manifest must use mode \"multiple\".");
+  }
+
+  return {
+    mode: "multiple",
+    sourceIssueNumber:
+      parsedManifest.sourceIssueNumber ?? input.fallbackSourceIssueNumber,
+    linkingStrategy: parsedManifest.linkingStrategy,
+    issues: parsedManifest.issues.map((issue) => {
+      const draftFilePath = resolve(input.repoRoot, issue.draftFile);
+      if (!isPathWithinDirectory(input.runDir, draftFilePath)) {
+        throw new Error(
+          `Issue set draft file for "${issue.id}" must stay inside ${toRepoRelativePath(
+            input.repoRoot,
+            input.runDir
+          )}.`
+        );
+      }
+
+      if (!existsSync(draftFilePath)) {
+        throw new Error(
+          `Issue set draft file for "${issue.id}" does not exist: ${toRepoRelativePath(
+            input.repoRoot,
+            draftFilePath
+          )}.`
+        );
+      }
+
+      const parsedDraft = parseIssueDraftDocument(
+        readFileSync(draftFilePath, "utf8")
+      );
+
+      return {
+        id: issue.id,
+        draftFilePath,
+        title: parsedDraft.title,
+        body: parsedDraft.body,
+        dependsOn: issue.dependsOn,
+        blocks: issue.blocks,
+        related: issue.related,
+      };
+    }),
+  };
+}
+
+type IssueSetCreatedIssue = {
+  id: string;
+  number: number;
+  url: string;
+};
+
+function formatIssueNumberList(
+  issueSet: ParsedIssueDraftSet,
+  createdIssuesById: Map<string, IssueSetCreatedIssue>,
+  ids: string[]
+): string | undefined {
+  const refs = issueSet.issues
+    .filter((issue) => ids.includes(issue.id))
+    .map((issue) => createdIssuesById.get(issue.id))
+    .filter((issue): issue is IssueSetCreatedIssue => issue !== undefined)
+    .map((issue) => `#${issue.number}`);
+
+  return refs.length > 0 ? refs.join(", ") : undefined;
+}
+
+function replaceLinkedIssuesSection(body: string, section: string): string {
+  const trimmedBody = body.trim();
+  const linkedIssuesHeading = /^## Linked Issues\s*$/m;
+  const match = linkedIssuesHeading.exec(trimmedBody);
+  if (!match || match.index === undefined) {
+    return `${trimmedBody}\n\n${section}`;
+  }
+
+  const before = trimmedBody.slice(0, match.index).trimEnd();
+  const afterStart = match.index + match[0].length;
+  const nextHeadingMatch = /\n##\s+/.exec(trimmedBody.slice(afterStart));
+  const after =
+    nextHeadingMatch && nextHeadingMatch.index !== undefined
+      ? trimmedBody.slice(afterStart + nextHeadingMatch.index).trimStart()
+      : "";
+
+  return [before, section, after].filter((part) => part.length > 0).join("\n\n");
+}
+
+function buildLinkedIssueBody(
+  issueSet: ParsedIssueDraftSet,
+  issue: ParsedIssueDraftSetIssue,
+  createdIssuesById: Map<string, IssueSetCreatedIssue>,
+  options: {
+    forcePrsManaged: boolean;
+  }
+): string {
+  const lines = ["## Linked Issues", ""];
+
+  if (issueSet.linkingStrategy) {
+    lines.push(`- Part of: ${issueSet.linkingStrategy}`);
+  }
+
+  const dependsOn = formatIssueNumberList(issueSet, createdIssuesById, issue.dependsOn);
+  if (dependsOn) {
+    lines.push(`- Depends on: ${dependsOn}`);
+  }
+
+  const blocks = formatIssueNumberList(issueSet, createdIssuesById, issue.blocks);
+  if (blocks) {
+    lines.push(`- Blocks: ${blocks}`);
+  }
+
+  const related = formatIssueNumberList(issueSet, createdIssuesById, issue.related);
+  if (related) {
+    lines.push(`- Related: ${related}`);
+  }
+
+  if (issueSet.sourceIssueNumber !== undefined) {
+    lines.push(`- Source issue: #${issueSet.sourceIssueNumber}`);
+  }
+
+  const linkedBody = replaceLinkedIssuesSection(issue.body, lines.join("\n"));
+  return options.forcePrsManaged ? ensurePrsManagedIssueBody(linkedBody) : linkedBody;
+}
+
+function formatIssueDraftSetPreview(
+  repoRoot: string,
+  issueSet: ParsedIssueDraftSet
+): string {
+  return issueSet.issues
+    .map(
+      (issue, index) =>
+        `${index + 1}. ${issue.title}\n   Draft: ${toRepoRelativePath(
+          repoRoot,
+          issue.draftFilePath
+        )}`
+    )
+    .join("\n");
+}
+
+async function reviewIssueDraftSet(input: {
+  repoRoot: string;
+  issueSet: ParsedIssueDraftSet;
+  prompt: string;
+  promptForLine(prompt: string): Promise<string>;
+  reload(): ParsedIssueDraftSet;
+}): Promise<ParsedIssueDraftSet | null> {
+  let currentSet = input.issueSet;
+
+  while (true) {
+    printGeneratedTextPreview(
+      "Generated issue draft set",
+      formatIssueDraftSetPreview(input.repoRoot, currentSet)
+    );
+
+    const action = (await input.promptForLine(input.prompt)).trim().toLowerCase();
+    if (!action || action === "y" || action === "yes") {
+      return currentSet;
+    }
+
+    if (action === "n" || action === "no") {
+      return null;
+    }
+
+    if (
+      action === "m" ||
+      action === "modify" ||
+      action === "e" ||
+      action === "edit"
+    ) {
+      for (const issue of currentSet.issues) {
+        openFileInEditor(issue.draftFilePath, `issue draft ${issue.id}`);
+      }
+      currentSet = input.reload();
+      continue;
+    }
+
+    console.log("Choose yes, no, or modify.");
+  }
+}
+
+async function createLinkedIssueDraftSet(input: {
+  issueSet: ParsedIssueDraftSet;
+  forge: RepositoryForge;
+  forcePrsManaged: boolean;
+}): Promise<IssueSetCreatedIssue[]> {
+  const createdIssues: IssueSetCreatedIssue[] = [];
+  for (const issue of input.issueSet.issues) {
+    const initialBody = input.forcePrsManaged
+      ? ensurePrsManagedIssueBody(issue.body)
+      : issue.body;
+    const createdIssue = parseCreatedIssueUrl(
+      await input.forge.createDraftIssue(issue.title, initialBody)
+    );
+    createdIssues.push({
+      id: issue.id,
+      number: createdIssue.issueNumber,
+      url: createdIssue.issueUrl,
+    });
+  }
+
+  const createdIssuesById = new Map(
+    createdIssues.map((issue) => [issue.id, issue] as const)
+  );
+  for (const issue of input.issueSet.issues) {
+    const createdIssue = createdIssuesById.get(issue.id);
+    if (!createdIssue) {
+      continue;
+    }
+
+    const linkedBody = buildLinkedIssueBody(
+      input.issueSet,
+      issue,
+      createdIssuesById,
+      {
+        forcePrsManaged: input.forcePrsManaged,
+      }
+    );
+    const updatedIssue = await input.forge.updateIssue(
+      createdIssue.number,
+      issue.title,
+      linkedBody
+    );
+    createdIssue.url = updatedIssue.url;
+  }
+
+  return createdIssues;
+}
+
 async function promptForLine(prompt: string): Promise<string> {
   const rl = createInterface({
     input: process.stdin,
@@ -3529,6 +3837,74 @@ async function runIssueDraftCommand(): Promise<void> {
     outputLogPath: workspace.outputLogPath,
   });
 
+  const issueSet = existsSync(workspace.issueSetFilePath)
+    ? loadIssueDraftSet({
+        repoRoot,
+        runDir: workspace.runDir,
+        issueSetFilePath: workspace.issueSetFilePath,
+      })
+    : undefined;
+
+  const forge = getRepositoryForge(repoRoot);
+  if (issueSet) {
+    if (!forge.isAuthenticated()) {
+      printGeneratedTextPreview(
+        "Generated issue draft set",
+        formatIssueDraftSetPreview(repoRoot, issueSet)
+      );
+      if (forge.type === "github") {
+        console.log("Issue creation skipped because GitHub access is unavailable.");
+      } else {
+        console.log(
+          "Issue creation skipped because repository forge support is disabled by .prs/config.json."
+        );
+      }
+      return;
+    }
+
+    const reviewedIssueSet = await reviewIssueDraftSet({
+      repoRoot,
+      issueSet,
+      prompt: "Create these linked issues in GitHub? [Y/n/m]: ",
+      promptForLine,
+      reload: () =>
+        loadIssueDraftSet({
+          repoRoot,
+          runDir: workspace.runDir,
+          issueSetFilePath: workspace.issueSetFilePath,
+        }),
+    });
+
+    if (!reviewedIssueSet) {
+      console.log(
+        `Issue draft set kept at ${toRepoRelativePath(
+          repoRoot,
+          workspace.issueSetFilePath
+        )}.`
+      );
+      return;
+    }
+
+    const createdIssues = await createLinkedIssueDraftSet({
+      issueSet: reviewedIssueSet,
+      forge,
+      forcePrsManaged: false,
+    });
+    for (const issue of createdIssues) {
+      console.log(`Created issue: ${issue.url}`);
+    }
+    if (shouldUseCodexSuperpowers && createdIssues[0]) {
+      await publishSuperpowersPlanArtifact({
+        repoRoot,
+        forge,
+        issueNumber: createdIssues[0].number,
+        planFilePath: workspace.superpowersPlanFilePath,
+        outputLogPath: workspace.outputLogPath,
+      });
+    }
+    return;
+  }
+
   if (!existsSync(workspace.draftFilePath)) {
     throw new Error(
       `${runtime.displayName} did not write the issue draft to ${toRepoRelativePath(repoRoot, workspace.draftFilePath)}.`
@@ -3541,7 +3917,6 @@ async function runIssueDraftCommand(): Promise<void> {
       `${runtime.displayName} wrote an empty issue draft at ${toRepoRelativePath(repoRoot, workspace.draftFilePath)}.`
     );
   }
-  const forge = getRepositoryForge(repoRoot);
   if (!forge.isAuthenticated()) {
     printGeneratedTextPreview("Generated issue draft", draftContents);
     if (forge.type === "github") {
@@ -3724,6 +4099,107 @@ async function runIssueRefineCommand(issueNumber: number): Promise<void> {
       warnings,
     },
   }));
+
+  const issueSet = existsSync(workspace.issueSetFilePath)
+    ? loadIssueDraftSet({
+        repoRoot,
+        runDir: workspace.runDir,
+        issueSetFilePath: workspace.issueSetFilePath,
+        fallbackSourceIssueNumber: issueNumber,
+      })
+    : undefined;
+
+  if (issueSet) {
+    if (!forge.isAuthenticated()) {
+      printGeneratedTextPreview(
+        "Generated refined issue draft set",
+        formatIssueDraftSetPreview(repoRoot, issueSet)
+      );
+      console.log(
+        forge.type === "github"
+          ? "Issue refinement apply step skipped because GitHub access is unavailable."
+          : "Issue refinement apply step skipped because repository forge support is disabled by .prs/config.json."
+      );
+      persistIssueRefineSessionState(
+        repoRoot,
+        issueNumber,
+        runtime.type,
+        workspace,
+        resolvedSessionId,
+        {
+          mode: "kept-on-disk",
+        }
+      );
+      return;
+    }
+
+    const reviewedIssueSet = await reviewIssueDraftSet({
+      repoRoot,
+      issueSet,
+      prompt: "Create these linked PRS-managed issues in GitHub? [Y/n/m]: ",
+      promptForLine,
+      reload: () =>
+        loadIssueDraftSet({
+          repoRoot,
+          runDir: workspace.runDir,
+          issueSetFilePath: workspace.issueSetFilePath,
+          fallbackSourceIssueNumber: issueNumber,
+        }),
+    });
+
+    if (!reviewedIssueSet) {
+      persistIssueRefineSessionState(
+        repoRoot,
+        issueNumber,
+        runtime.type,
+        workspace,
+        resolvedSessionId,
+        {
+          mode: "kept-on-disk",
+        }
+      );
+      console.log(
+        `Refined issue set kept at ${toRepoRelativePath(
+          repoRoot,
+          workspace.issueSetFilePath
+        )}.`
+      );
+      return;
+    }
+
+    const createdIssues = await createLinkedIssueDraftSet({
+      issueSet: reviewedIssueSet,
+      forge,
+      forcePrsManaged: true,
+    });
+    persistIssueRefineSessionState(
+      repoRoot,
+      issueNumber,
+      runtime.type,
+      workspace,
+      resolvedSessionId,
+      {
+        mode: "created-linked",
+        issues: createdIssues.map((issue) => ({
+          issueNumber: issue.number,
+          issueUrl: issue.url,
+        })),
+      }
+    );
+    for (const issue of createdIssues) {
+      console.log(`Created linked issue: ${issue.url}`);
+    }
+    if (shouldUseCodexSuperpowers && createdIssues[0]) {
+      await publishSuperpowersPlanArtifact({
+        repoRoot,
+        forge,
+        issueNumber: createdIssues[0].number,
+        planFilePath: workspace.superpowersPlanFilePath,
+        outputLogPath: workspace.outputLogPath,
+      });
+    }
+    return;
+  }
 
   if (!existsSync(workspace.draftFilePath)) {
     throw new Error(

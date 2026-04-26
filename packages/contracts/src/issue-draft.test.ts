@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   IssueDraftGuidanceOutput,
+  IssueDraftSet,
   IssueDraftModelOutput,
   IssueDraftOutput,
 } from "./issue-draft";
@@ -82,6 +83,80 @@ describe("Issue draft schemas", () => {
     expect(parsed).toMatchObject({
       status: "clarify",
       missingInformation: [],
+    });
+  });
+
+  describe("issue set manifests", () => {
+    it("accepts a valid multi-issue manifest", () => {
+      const parsed = IssueDraftSet.parse({
+        version: 1,
+        mode: "multiple",
+        sourceIssueNumber: 156,
+        linkingStrategy: "Split the workflow into contract and CLI changes.",
+        issues: [
+          {
+            id: "contracts",
+            draftFile: ".prs/runs/run/contracts.md",
+            blocks: ["cli"],
+          },
+          {
+            id: "cli",
+            draftFile: ".prs/runs/run/cli.md",
+            dependsOn: ["contracts"],
+            related: ["contracts"],
+          },
+        ],
+      });
+
+      expect(parsed.issues[0]).toMatchObject({
+        id: "contracts",
+        dependsOn: [],
+        blocks: ["cli"],
+        related: [],
+      });
+      expect(parsed.sourceIssueNumber).toBe(156);
+    });
+
+    it("rejects duplicate issue ids", () => {
+      const parsed = IssueDraftSet.safeParse({
+        version: 1,
+        mode: "multiple",
+        issues: [
+          { id: "cli", draftFile: "one.md" },
+          { id: "cli", draftFile: "two.md" },
+        ],
+      });
+
+      expect(parsed.success).toBe(false);
+      expect(parsed.error?.issues.map((issue) => issue.message)).toContain(
+        'duplicate issue id "cli"'
+      );
+    });
+
+    it("rejects unknown relationship targets", () => {
+      const parsed = IssueDraftSet.safeParse({
+        version: 1,
+        mode: "multiple",
+        issues: [
+          { id: "contracts", draftFile: "contracts.md", blocks: ["cli"] },
+          { id: "docs", draftFile: "docs.md" },
+        ],
+      });
+
+      expect(parsed.success).toBe(false);
+      expect(parsed.error?.issues.map((issue) => issue.message)).toContain(
+        'issue "contracts" references unknown issue "cli"'
+      );
+    });
+
+    it("rejects multiple mode with fewer than two issues", () => {
+      expect(() =>
+        IssueDraftSet.parse({
+          version: 1,
+          mode: "multiple",
+          issues: [{ id: "only", draftFile: "only.md" }],
+        })
+      ).toThrow(/multiple issue sets require at least two issues/);
     });
   });
 });
