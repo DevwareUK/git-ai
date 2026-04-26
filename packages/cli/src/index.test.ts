@@ -2437,7 +2437,7 @@ describe("CLI integration", () => {
     process.env.GITHUB_TOKEN = "test-token";
 
     const { run } = await loadCli({
-      readlineAnswers: ["Clarify the rollback plan and edge cases.", "n"],
+      readlineAnswers: ["y", "Clarify the rollback plan and edge cases.", "n"],
       execFileSyncImpl: (command, args) => {
         if (command === "git" && args[0] === "remote") {
           return "git@github.com:DevwareUK/prs.git\n";
@@ -2478,7 +2478,7 @@ describe("CLI integration", () => {
     cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string));
     cleanupTargets.add(resolve(REPO_ROOT, ".prs", "issues", String(issueNumber)));
 
-    expect(runtimePrompt).toContain("What changes should be made to the specification?");
+    expect(runtimePrompt).toContain("What changes should be made to the original requirements?");
     expect(runtimePrompt).toContain("Clarify the rollback plan and edge cases.");
     expect(runtimePrompt).toContain("Current issue body with a short summary.");
     expect(runtimePrompt).toContain("@customer-user");
@@ -2513,6 +2513,152 @@ describe("CLI integration", () => {
       ),
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("starts a fresh issue refine session without requested changes when declined by default", async () => {
+    const beforeRuns = listRunDirectories();
+    const issueNumber = 156;
+    let runtimePrompt = "";
+    createMockCodexHome();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          title: "Refine without extra changes",
+          body: "Original requirements already describe the implementation.",
+          html_url: getRepositoryIssueUrl(issueNumber),
+        })
+      )
+      .mockResolvedValueOnce(createFetchResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "test-token";
+
+    const { run } = await loadCli({
+      readlineAnswers: ["", "n"],
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/prs.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+      spawnSyncImpl: (command, args) => {
+        if (command === "gh" && args[0] === "--version") {
+          return { status: 1, error: new Error("gh is unavailable") };
+        }
+
+        if (command === "codex" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "codex") {
+          const { metadata, runDir } = readLatestRunMetadata();
+          runtimePrompt = readFileSync(resolve(REPO_ROOT, metadata.promptFile as string), "utf8");
+          writeFileSync(
+            resolve(REPO_ROOT, metadata.draftFile as string),
+            "# Refine without extra changes\n\n## Summary\nImplementation-ready draft.\n",
+            "utf8"
+          );
+          cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", runDir));
+          return { status: 0 };
+        }
+
+        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.argv = ["node", "prs", "issue", "refine", String(issueNumber)];
+    await run();
+
+    const createdRunDir = listRunDirectories().find((entry) => !beforeRuns.includes(entry));
+    expect(createdRunDir).toBeDefined();
+    cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string));
+    cleanupTargets.add(resolve(REPO_ROOT, ".prs", "issues", String(issueNumber)));
+
+    expect(runtimePrompt).not.toContain("What changes should be made to the original requirements?");
+    expect(runtimePrompt).toContain("Original requirements already describe the implementation.");
+
+    const metadata = JSON.parse(
+      readFileSync(
+        resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string, "metadata.json"),
+        "utf8"
+      )
+    ) as {
+      requestedChanges?: string;
+    };
+    expect(metadata.requestedChanges).toBeUndefined();
+  });
+
+  it("retries the issue refine change gate after invalid yes-no input", async () => {
+    const beforeRuns = listRunDirectories();
+    const issueNumber = 157;
+    let runtimePrompt = "";
+    const messages: string[] = [];
+    createMockCodexHome();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          title: "Retry refine gate",
+          body: "Original requirements.",
+          html_url: getRepositoryIssueUrl(issueNumber),
+        })
+      )
+      .mockResolvedValueOnce(createFetchResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "test-token";
+
+    const { run } = await loadCli({
+      readlineAnswers: ["maybe", "yes", "Add rollout details.", "n"],
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/prs.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+      spawnSyncImpl: (command, args) => {
+        if (command === "gh" && args[0] === "--version") {
+          return { status: 1, error: new Error("gh is unavailable") };
+        }
+
+        if (command === "codex" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "codex") {
+          const { metadata, runDir } = readLatestRunMetadata();
+          runtimePrompt = readFileSync(resolve(REPO_ROOT, metadata.promptFile as string), "utf8");
+          writeFileSync(
+            resolve(REPO_ROOT, metadata.draftFile as string),
+            "# Retry refine gate\n\n## Summary\nRefined draft.\n",
+            "utf8"
+          );
+          cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", runDir));
+          return { status: 0 };
+        }
+
+        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+    vi.spyOn(console, "log").mockImplementation((message?: unknown) => {
+      messages.push(String(message ?? ""));
+    });
+
+    process.argv = ["node", "prs", "issue", "refine", String(issueNumber)];
+    await run();
+
+    const createdRunDir = listRunDirectories().find((entry) => !beforeRuns.includes(entry));
+    expect(createdRunDir).toBeDefined();
+    cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string));
+    cleanupTargets.add(resolve(REPO_ROOT, ".prs", "issues", String(issueNumber)));
+
+    expect(messages.join("\n")).toContain("Choose yes or no.");
+    expect(runtimePrompt).toContain("Add rollout details.");
   });
 
   it("adds Superpowers instructions to issue refine runs and publishes the plan artifact", async () => {
@@ -2581,7 +2727,7 @@ describe("CLI integration", () => {
       ),
       async () => {
         const { run } = await loadCli({
-          readlineAnswers: ["Make it implementation ready.", "y"],
+          readlineAnswers: ["y", "Make it implementation ready.", "y"],
           execFileSyncImpl: (command, args) => {
             if (command === "git" && args[0] === "remote") {
               return "git@github.com:DevwareUK/prs.git\n";
@@ -2811,7 +2957,7 @@ describe("CLI integration", () => {
       invocation: "resume",
       sessionId,
     });
-    expect(runtimePrompt).not.toContain("What changes should be made to the specification?");
+    expect(runtimePrompt).not.toContain("What changes should be made to the original requirements?");
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
@@ -2859,7 +3005,7 @@ describe("CLI integration", () => {
 
     const messages: string[] = [];
     const { run, spawnSync } = await loadCli({
-      readlineAnswers: ["Tighten rollout notes.", "n"],
+      readlineAnswers: ["y", "Tighten rollout notes.", "n"],
       execFileSyncImpl: (command, args) => {
         if (command === "git" && args[0] === "remote") {
           return "git@github.com:DevwareUK/prs.git\n";
@@ -2905,7 +3051,7 @@ describe("CLI integration", () => {
     const staleSessionWarning =
       `Saved Codex refine session ${staleSessionId} for issue #${issueNumber} is no longer available. Starting a fresh refinement session.`;
     expect(messages.join("\n")).toContain(staleSessionWarning);
-    expect(runtimePrompt).toContain("What changes should be made to the specification?");
+    expect(runtimePrompt).toContain("What changes should be made to the original requirements?");
     expect(runtimePrompt).toContain("Tighten rollout notes.");
     const metadata = JSON.parse(
       readFileSync(
@@ -2998,7 +3144,7 @@ describe("CLI integration", () => {
       ),
       async () => {
         const { run, spawnSync } = await loadCli({
-          readlineAnswers: ["Use Claude Code for this refinement.", "n"],
+          readlineAnswers: ["y", "Use Claude Code for this refinement.", "n"],
           execFileSyncImpl: (command, args) => {
             if (command === "git" && args[0] === "remote") {
               return "git@github.com:DevwareUK/prs.git\n";
@@ -3115,7 +3261,7 @@ describe("CLI integration", () => {
     process.env.GITHUB_TOKEN = "test-token";
 
     const { run } = await loadCli({
-      readlineAnswers: ["Expand the acceptance criteria.", "y"],
+      readlineAnswers: ["y", "Expand the acceptance criteria.", "y"],
       execFileSyncImpl: (command, args) => {
         if (command === "git" && args[0] === "remote") {
           return "git@github.com:DevwareUK/prs.git\n";
@@ -3217,7 +3363,7 @@ describe("CLI integration", () => {
     process.env.GITHUB_TOKEN = "test-token";
 
     const { run } = await loadCli({
-      readlineAnswers: ["Turn it into an implementation-ready spec.", "y"],
+      readlineAnswers: ["y", "Turn it into an implementation-ready spec.", "y"],
       execFileSyncImpl: (command, args) => {
         if (command === "git" && args[0] === "remote") {
           return "git@github.com:DevwareUK/prs.git\n";
@@ -3316,7 +3462,7 @@ describe("CLI integration", () => {
     process.env.GITHUB_TOKEN = "test-token";
 
     const { run } = await loadCli({
-      readlineAnswers: ["Turn it into an implementation-ready spec.", "y"],
+      readlineAnswers: ["y", "Turn it into an implementation-ready spec.", "y"],
       execFileSyncImpl: (command, args) => {
         if (command === "git" && args[0] === "remote") {
           return "git@github.com:DevwareUK/prs.git\n";
@@ -3438,7 +3584,7 @@ describe("CLI integration", () => {
     process.env.GITHUB_TOKEN = "test-token";
 
     const { run, spawnSync } = await loadCli({
-      readlineAnswers: ["Start a new refinement after completion.", "n"],
+      readlineAnswers: ["y", "Start a new refinement after completion.", "n"],
       execFileSyncImpl: (command, args) => {
         if (command === "git" && args[0] === "remote") {
           return "git@github.com:DevwareUK/prs.git\n";
@@ -3479,7 +3625,7 @@ describe("CLI integration", () => {
     expect(createdRunDir).not.toBe(existingRunDirName);
     cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string));
 
-    expect(runtimePrompt).toContain("What changes should be made to the specification?");
+    expect(runtimePrompt).toContain("What changes should be made to the original requirements?");
     expect(runtimePrompt).toContain("Start a new refinement after completion.");
     expect(spawnSync).not.toHaveBeenCalledWith(
       "codex",
@@ -3542,7 +3688,7 @@ describe("CLI integration", () => {
 
     const messages: string[] = [];
     const { run, spawnSync } = await loadCli({
-      readlineAnswers: ["Restart from a clean workspace.", "n"],
+      readlineAnswers: ["y", "Restart from a clean workspace.", "n"],
       execFileSyncImpl: (command, args) => {
         if (command === "git" && args[0] === "remote") {
           return "git@github.com:DevwareUK/prs.git\n";
@@ -3588,7 +3734,7 @@ describe("CLI integration", () => {
     expect(messages.join("\n")).toContain(
       `Saved issue-refine workspace artifacts for issue #${issueNumber} are missing. Starting a fresh refinement session.`
     );
-    expect(runtimePrompt).toContain("What changes should be made to the specification?");
+    expect(runtimePrompt).toContain("What changes should be made to the original requirements?");
     expect(runtimePrompt).toContain("Restart from a clean workspace.");
     expect(spawnSync).not.toHaveBeenCalledWith(
       "codex",
@@ -3626,7 +3772,7 @@ describe("CLI integration", () => {
 
     const messages: string[] = [];
     const { run } = await loadCli({
-      readlineAnswers: ["Draft a linked refinement without publishing it.", "n"],
+      readlineAnswers: ["y", "Draft a linked refinement without publishing it.", "n"],
       execFileSyncImpl: (command, args) => {
         if (command === "git" && args[0] === "remote") {
           return "git@github.com:DevwareUK/prs.git\n";
