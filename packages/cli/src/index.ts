@@ -1627,7 +1627,7 @@ function buildIssueRefineRuntimePrompt(input: {
   );
   const requestedChangesSection = input.requestedChanges
     ? [
-        "What changes should be made to the specification?",
+        "What changes should be made to the original requirements?",
         input.requestedChanges,
         "",
       ]
@@ -2761,6 +2761,22 @@ async function promptForRequiredLine(prompt: string): Promise<string> {
   }
 }
 
+async function promptForYesNoDefaultNo(prompt: string): Promise<boolean> {
+  while (true) {
+    const answer = (await promptForLine(prompt)).trim().toLowerCase();
+
+    if (!answer || answer === "n" || answer === "no") {
+      return false;
+    }
+
+    if (answer === "y" || answer === "yes") {
+      return true;
+    }
+
+    console.log("Choose yes or no.");
+  }
+}
+
 function createStandaloneIssueFinalizeRunDir(repoRoot: string, issueNumber: number): string {
   const runDir = resolve(
     repoRoot,
@@ -3643,10 +3659,17 @@ async function runIssueRefineCommand(issueNumber: number): Promise<void> {
       }
     }
   }
-  const requestedChanges =
-    runtimeInvocation === "resume"
-      ? undefined
-      : await promptForRequiredLine("What changes should be made to the specification? ");
+  let requestedChanges: string | undefined;
+  if (runtimeInvocation !== "resume") {
+    const shouldSpecifyChanges = await promptForYesNoDefaultNo(
+      "Specify changes to the original requirements? [y/N]: "
+    );
+    requestedChanges = shouldSpecifyChanges
+      ? await promptForRequiredLine(
+          "What changes should be made to the original requirements? "
+        )
+      : undefined;
+  }
 
   const workspace =
     runtimeInvocation === "resume" && resumableSessionState
