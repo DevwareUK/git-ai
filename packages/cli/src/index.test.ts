@@ -10,12 +10,56 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  createIssueRefineWorkspace,
+  formatRunTimestamp,
+  getIssueRefineSessionStateFilePath,
+  getIssueRefineRunDir,
+  loadIssueRefineSessionState,
+  writeIssueRefineSessionState,
+} from "./run-artifacts";
 import { filterRepositoryPaths } from "../../core/src/path-filter";
 import { DEFAULT_REPOSITORY_AI_CONTEXT_EXCLUDE_PATHS } from "../../core/src/repository-config";
 
 const REPO_ROOT = resolve(__dirname, "../../..");
 const ORIGINAL_ARGV = [...process.argv];
 const cleanupTargets = new Set<string>();
+
+function getRepositoryIssueUrl(issueNumber: number): string {
+  const gitEntryPath = resolve(REPO_ROOT, ".git");
+  let gitConfigPath = resolve(gitEntryPath, "config");
+
+  try {
+    const gitEntryContents = readFileSync(gitEntryPath, "utf8").trim();
+    const gitDirMatch = gitEntryContents.match(/^gitdir:\s*(.+)$/i);
+    if (gitDirMatch?.[1]) {
+      const gitDirPath = resolve(REPO_ROOT, gitDirMatch[1].trim());
+      const commonDirPath = resolve(
+        gitDirPath,
+        readFileSync(resolve(gitDirPath, "commondir"), "utf8").trim()
+      );
+
+      gitConfigPath = existsSync(resolve(commonDirPath, "config"))
+        ? resolve(commonDirPath, "config")
+        : resolve(gitDirPath, "config");
+    }
+  } catch {
+    // `.git` is usually a directory; fall back to `.git/config`.
+  }
+
+  const gitConfig = readFileSync(gitConfigPath, "utf8");
+  const remoteSectionMatch = gitConfig.match(
+    /\[remote\s+"origin"\][\s\S]*?url\s*=\s*(.+?)(?:\r?\n|$)/
+  );
+  const remoteUrl = remoteSectionMatch?.[1]?.trim();
+  const repositorySlug = remoteUrl?.match(/github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/)?.[1];
+
+  if (!repositorySlug) {
+    throw new Error("Expected a GitHub origin remote for CLI integration fixtures.");
+  }
+
+  return `https://github.com/${repositorySlug}/issues/${issueNumber}`;
+}
 
 function buildManagedTestSuggestionBlock(options: {
   title: string;
@@ -583,12 +627,121 @@ function readLatestRunMetadata(): {
   };
 }
 
+async function loadGitHubForge(options: {
+  runtimeRepoRoot?: string;
+  execFileSyncImpl?: (command: string, args: string[]) => string;
+  spawnSyncImpl?: (
+    command: string,
+    args: string[],
+    rawSecondArg?: unknown
+  ) => { status: number; error?: Error; stdout?: string; stderr?: string };
+} = {}) {
+  vi.resetModules();
+
+  const runtimeRepoRoot = options.runtimeRepoRoot ?? REPO_ROOT;
+  const execFileSync = vi.fn((command: string, args: string[]) => {
+    if (
+      command === "git" &&
+      args[0] === "-C" &&
+      args[2] === "remote" &&
+      args[3] === "get-url" &&
+      args[4] === "origin"
+    ) {
+      return options.execFileSyncImpl?.(command, args.slice(2)) ??
+        "git@github.com:DevwareUK/prs.git\n";
+    }
+
+    if (options.execFileSyncImpl) {
+      if (command === "git" && args[0] === "-C") {
+        return options.execFileSyncImpl(command, args.slice(2));
+      }
+
+      return options.execFileSyncImpl(command, args);
+    }
+
+    throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+  });
+
+  const spawnSync = vi.fn((command: string, rawSecondArg?: unknown) => {
+    const args = Array.isArray(rawSecondArg) ? rawSecondArg : [];
+    const normalizedArgs =
+      command === "git" && args[0] === "-C" ? args.slice(2) : args;
+
+    if (options.spawnSyncImpl) {
+      return options.spawnSyncImpl(command, normalizedArgs, rawSecondArg);
+    }
+
+    if (command === "gh" && normalizedArgs[0] === "--version") {
+      return { status: 1, error: new Error("gh is unavailable") };
+    }
+
+    if (command === "gh" && normalizedArgs[0] === "auth" && normalizedArgs[1] === "status") {
+      return { status: 1, error: new Error("gh is unavailable") };
+    }
+
+    return { status: 0, stdout: "", stderr: "" };
+  });
+
+  vi.doMock("node:child_process", () => ({
+    execFileSync,
+    spawnSync,
+  }));
+
+  const module = await import("./github");
+
+  return {
+    createGitHubRepositoryForge: module.createGitHubRepositoryForge,
+    execFileSync,
+    spawnSync,
+  };
+}
+
 function createMockCodexHome(): string {
   const codexHome = mkdtempSync(resolve(tmpdir(), "prs-codex-home-"));
   mkdirSync(resolve(codexHome, "sessions"), { recursive: true });
   cleanupTargets.add(codexHome);
   process.env.CODEX_HOME = codexHome;
   return codexHome;
+}
+
+function createTempRepoRoot(): string {
+  const repoRoot = mkdtempSync(resolve(tmpdir(), "prs-refine-repo-"));
+  mkdirSync(resolve(repoRoot, ".git"), { recursive: true });
+  writeFileSync(
+    resolve(repoRoot, ".git", "config"),
+    [
+      '[remote "origin"]',
+      "\turl = git@github.com:DevwareUK/prs.git",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  cleanupTargets.add(repoRoot);
+  return repoRoot;
+}
+
+function createTempWorktreeRepoRoot(): string {
+  const repoRoot = mkdtempSync(resolve(tmpdir(), "prs-refine-worktree-repo-"));
+  const commonGitDir = resolve(repoRoot, ".git-common");
+  const worktreeGitDir = resolve(commonGitDir, "worktrees", "refine-test");
+  mkdirSync(worktreeGitDir, { recursive: true });
+  writeFileSync(
+    resolve(repoRoot, ".git"),
+    "gitdir: .git-common/worktrees/refine-test\n",
+    "utf8"
+  );
+  writeFileSync(resolve(worktreeGitDir, "commondir"), "../..\n", "utf8");
+  writeFileSync(
+    resolve(commonGitDir, "config"),
+    [
+      '[remote "origin"]',
+      "\turl = git@github.com:DevwareUK/prs.git",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  cleanupTargets.add(repoRoot);
+  return repoRoot;
 }
 
 function writeMockCodexSession(
@@ -1163,6 +1316,816 @@ describe("CLI integration", () => {
     });
   });
 
+  it("parses issue refine as a dedicated issue subcommand", async () => {
+    process.env.GIT_AI_DISABLE_AUTO_RUN = "1";
+    const { parseIssueCommandArgs } = await loadCli();
+
+    expect(parseIssueCommandArgs(["issue", "refine", "42"])).toEqual({
+      action: "refine",
+      issueNumber: 42,
+    });
+  });
+
+  it("rejects extra issue refine arguments", async () => {
+    process.env.GIT_AI_DISABLE_AUTO_RUN = "1";
+    const { parseIssueCommandArgs } = await loadCli();
+
+    expect(() => parseIssueCommandArgs(["issue", "refine", "42", "extra"])).toThrow(
+      'Unknown issue option "extra".'
+    );
+  });
+
+  it("builds issue refine artifact paths under the issue namespace", () => {
+    const repoRoot = createTempRepoRoot();
+    const date = new Date("2026-04-24T12:34:56.789Z");
+
+    expect(getIssueRefineSessionStateFilePath(repoRoot, 42)).toBe(
+      resolve(repoRoot, ".prs", "issues", "42", "refine-session.json")
+    );
+    expect(getIssueRefineRunDir(repoRoot, 42, date)).toBe(
+      resolve(
+        repoRoot,
+        ".prs",
+        "runs",
+        `${formatRunTimestamp(date)}-issue-refine-42`
+      )
+    );
+  });
+
+  it("creates issue refine workspaces with timestamped run artifacts", async () => {
+    const repoRoot = createTempRepoRoot();
+    const workspace = createIssueRefineWorkspace(repoRoot, 42);
+
+    expect(existsSync(workspace.runDir)).toBe(true);
+    expect(workspace).toMatchObject({
+      runDir: expect.stringMatching(/\.prs\/runs\/.+-issue-refine-42$/),
+      draftFilePath: expect.stringMatching(/issue-refine-42\.md$/),
+      promptFilePath: expect.stringMatching(/prompt\.md$/),
+      metadataFilePath: expect.stringMatching(/metadata\.json$/),
+      outputLogPath: expect.stringMatching(/output\.log$/),
+    });
+  });
+
+  it("writes and reloads issue refine session state from refine-session.json", () => {
+    const repoRoot = createTempRepoRoot();
+    const runDir = resolve(repoRoot, ".prs", "runs", "20260424T123456789Z-issue-refine-42");
+    const statePath = getIssueRefineSessionStateFilePath(repoRoot, 42);
+    const state = {
+      issueNumber: 42,
+      runtimeType: "codex" as const,
+      runDir,
+      promptFile: resolve(runDir, "prompt.md"),
+      outputLog: resolve(runDir, "output.log"),
+      latestDraftFile: resolve(runDir, "issue-refine-42.md"),
+      sessionId: "session-123",
+      completionMode: "kept-on-disk" as const,
+      createdAt: "2026-04-24T12:34:56.789Z",
+      updatedAt: "2026-04-24T12:35:56.789Z",
+    };
+
+    writeIssueRefineSessionState(repoRoot, state);
+
+    expect(existsSync(statePath)).toBe(true);
+    expect(loadIssueRefineSessionState(repoRoot, 42)).toEqual(state);
+  });
+
+  it("normalizes whitespace-padded issue refine path and session values", () => {
+    const repoRoot = createTempRepoRoot();
+    const runDir = resolve(repoRoot, ".prs", "runs", "20260424T123456789Z-issue-refine-42");
+    const statePath = getIssueRefineSessionStateFilePath(repoRoot, 42);
+    const state = {
+      issueNumber: 42,
+      runtimeType: "codex" as const,
+      runDir: `  ${runDir}  `,
+      promptFile: `  ${resolve(runDir, "prompt.md")}  `,
+      outputLog: `  ${resolve(runDir, "output.log")}  `,
+      latestDraftFile: `  ${resolve(runDir, "issue-refine-42.md")}  `,
+      sessionId: "  session-123  ",
+      createdAt: "2026-04-24T12:34:56.789Z",
+      updatedAt: "2026-04-24T12:35:56.789Z",
+    };
+
+    writeIssueRefineSessionState(repoRoot, state);
+
+    expect(existsSync(statePath)).toBe(true);
+    expect(loadIssueRefineSessionState(repoRoot, 42)).toEqual({
+      ...state,
+      runDir,
+      promptFile: resolve(runDir, "prompt.md"),
+      outputLog: resolve(runDir, "output.log"),
+      latestDraftFile: resolve(runDir, "issue-refine-42.md"),
+      sessionId: "session-123",
+    });
+  });
+
+  it("accepts completed issue refine session state with a normalized valid completion URL", () => {
+    const repoRoot = createTempRepoRoot();
+    const runDir = resolve(repoRoot, ".prs", "runs", "20260424T123456789Z-issue-refine-42");
+    const state = {
+      issueNumber: 42,
+      runtimeType: "codex" as const,
+      runDir,
+      promptFile: resolve(runDir, "prompt.md"),
+      outputLog: resolve(runDir, "output.log"),
+      latestDraftFile: resolve(runDir, "issue-refine-42.md"),
+      completionMode: "updated-existing" as const,
+      completedIssueNumber: 42,
+      completedIssueUrl: "  https://github.com/DevwareUK/prs/issues/42  ",
+      createdAt: "2026-04-24T12:34:56.789Z",
+      updatedAt: "2026-04-24T12:35:56.789Z",
+    };
+
+    writeIssueRefineSessionState(repoRoot, state);
+
+    expect(loadIssueRefineSessionState(repoRoot, 42)).toEqual({
+      ...state,
+      completedIssueUrl: "https://github.com/DevwareUK/prs/issues/42",
+    });
+  });
+
+  it("rejects inconsistent issue refine completion metadata", () => {
+    const repoRoot = createTempRepoRoot();
+    const statePath = getIssueRefineSessionStateFilePath(repoRoot, 42);
+    mkdirSync(dirname(statePath), { recursive: true });
+    writeFileSync(
+      statePath,
+      `${JSON.stringify(
+        {
+          issueNumber: 42,
+          runtimeType: "codex",
+          runDir: resolve(repoRoot, ".prs", "runs", "20260424T123456789Z-issue-refine-42"),
+          promptFile: "prompt.md",
+          outputLog: "output.log",
+          latestDraftFile: "issue-refine-42.md",
+          completionMode: "updated-existing",
+          createdAt: "2026-04-24T12:34:56.789Z",
+          updatedAt: "2026-04-24T12:35:56.789Z",
+        },
+        null,
+        2
+      )}\n`,
+      "utf8"
+    );
+
+    expect(() => loadIssueRefineSessionState(repoRoot, 42)).toThrow(
+      "is malformed"
+    );
+  });
+
+  it("rejects invalid JSON in issue refine-session.json with the malformed-state error", () => {
+    const repoRoot = createTempRepoRoot();
+    const statePath = getIssueRefineSessionStateFilePath(repoRoot, 42);
+    mkdirSync(dirname(statePath), { recursive: true });
+    writeFileSync(statePath, "{not-json\n", "utf8");
+
+    expect(() => loadIssueRefineSessionState(repoRoot, 42)).toThrow(
+      "is malformed"
+    );
+  });
+
+  it("rejects null JSON in issue refine-session.json with the malformed-state error", () => {
+    const repoRoot = createTempRepoRoot();
+    const statePath = getIssueRefineSessionStateFilePath(repoRoot, 42);
+    mkdirSync(dirname(statePath), { recursive: true });
+    writeFileSync(statePath, "null\n", "utf8");
+
+    expect(() => loadIssueRefineSessionState(repoRoot, 42)).toThrow(
+      "is malformed"
+    );
+  });
+
+  it("rejects malformed issue refine completion URLs", () => {
+    const repoRoot = createTempRepoRoot();
+    const statePath = getIssueRefineSessionStateFilePath(repoRoot, 42);
+    mkdirSync(dirname(statePath), { recursive: true });
+
+    for (const completedIssueUrl of [
+      "",
+      "   ",
+      "not-a-url",
+      "javascript:alert(1)",
+      "mailto:test@example.com",
+    ]) {
+      writeFileSync(
+        statePath,
+        `${JSON.stringify(
+          {
+            issueNumber: 42,
+            runtimeType: "codex",
+            runDir: resolve(repoRoot, ".prs", "runs", "20260424T123456789Z-issue-refine-42"),
+            promptFile: "prompt.md",
+            outputLog: "output.log",
+            latestDraftFile: "issue-refine-42.md",
+            completionMode: "created-linked",
+            completedIssueNumber: 77,
+            completedIssueUrl,
+            createdAt: "2026-04-24T12:34:56.789Z",
+            updatedAt: "2026-04-24T12:35:56.789Z",
+          },
+          null,
+          2
+        )}\n`,
+        "utf8"
+      );
+
+      expect(() => loadIssueRefineSessionState(repoRoot, 42)).toThrow(
+        "is malformed"
+      );
+    }
+  });
+
+  it("rejects non-canonical GitHub issue refine completion URLs", () => {
+    const repoRoot = createTempRepoRoot();
+    const statePath = getIssueRefineSessionStateFilePath(repoRoot, 42);
+    mkdirSync(dirname(statePath), { recursive: true });
+
+    for (const completedIssueUrl of [
+      "http://example.com/issues/42",
+      "https://github.com/issues/42",
+      "https://github.com/foo/bar/baz/issues/42",
+      "https://user:pass@github.com/DevwareUK/prs/issues/42",
+      "https://github.com:443/DevwareUK/prs/issues/42",
+      "https://github.com/DevwareUK/prs/issues/42/",
+      "https://github.com/DevwareUK/prs/issues/42?foo=1",
+      "https://github.com/DevwareUK/prs/issues/42#issuecomment-1",
+    ]) {
+      writeFileSync(
+        statePath,
+        `${JSON.stringify(
+          {
+            issueNumber: 42,
+            runtimeType: "codex",
+            runDir: resolve(repoRoot, ".prs", "runs", "20260424T123456789Z-issue-refine-42"),
+            promptFile: "prompt.md",
+            outputLog: "output.log",
+            latestDraftFile: "issue-refine-42.md",
+            completionMode: "created-linked",
+            completedIssueNumber: 77,
+            completedIssueUrl,
+            createdAt: "2026-04-24T12:34:56.789Z",
+            updatedAt: "2026-04-24T12:35:56.789Z",
+          },
+          null,
+          2
+        )}\n`,
+        "utf8"
+      );
+
+      expect(() => loadIssueRefineSessionState(repoRoot, 42)).toThrow(
+        "is malformed"
+      );
+    }
+  });
+
+  it("rejects issue refine completion URLs from a different GitHub repository", () => {
+    const repoRoot = createTempRepoRoot();
+    const statePath = getIssueRefineSessionStateFilePath(repoRoot, 42);
+    mkdirSync(dirname(statePath), { recursive: true });
+    writeFileSync(
+      statePath,
+      `${JSON.stringify(
+        {
+          issueNumber: 42,
+          runtimeType: "codex",
+          runDir: resolve(repoRoot, ".prs", "runs", "20260424T123456789Z-issue-refine-42"),
+          promptFile: resolve(
+            repoRoot,
+            ".prs",
+            "runs",
+            "20260424T123456789Z-issue-refine-42",
+            "prompt.md"
+          ),
+          outputLog: resolve(
+            repoRoot,
+            ".prs",
+            "runs",
+            "20260424T123456789Z-issue-refine-42",
+            "output.log"
+          ),
+          latestDraftFile: resolve(
+            repoRoot,
+            ".prs",
+            "runs",
+            "20260424T123456789Z-issue-refine-42",
+            "issue-refine-42.md"
+          ),
+          completionMode: "created-linked",
+          completedIssueNumber: 77,
+          completedIssueUrl: "https://github.com/other/repo/issues/77",
+          createdAt: "2026-04-24T12:34:56.789Z",
+          updatedAt: "2026-04-24T12:35:56.789Z",
+        },
+        null,
+        2
+      )}\n`,
+      "utf8"
+    );
+
+    expect(() => loadIssueRefineSessionState(repoRoot, 42)).toThrow(
+      "is malformed"
+    );
+  });
+
+  it("rejects issue refine completion URLs from a different GitHub repository in worktree-style repos", () => {
+    const repoRoot = createTempWorktreeRepoRoot();
+    const statePath = getIssueRefineSessionStateFilePath(repoRoot, 42);
+    mkdirSync(dirname(statePath), { recursive: true });
+    writeFileSync(
+      statePath,
+      `${JSON.stringify(
+        {
+          issueNumber: 42,
+          runtimeType: "codex",
+          runDir: resolve(repoRoot, ".prs", "runs", "20260424T123456789Z-issue-refine-42"),
+          promptFile: resolve(
+            repoRoot,
+            ".prs",
+            "runs",
+            "20260424T123456789Z-issue-refine-42",
+            "prompt.md"
+          ),
+          outputLog: resolve(
+            repoRoot,
+            ".prs",
+            "runs",
+            "20260424T123456789Z-issue-refine-42",
+            "output.log"
+          ),
+          latestDraftFile: resolve(
+            repoRoot,
+            ".prs",
+            "runs",
+            "20260424T123456789Z-issue-refine-42",
+            "issue-refine-42.md"
+          ),
+          completionMode: "created-linked",
+          completedIssueNumber: 77,
+          completedIssueUrl: "https://github.com/other/repo/issues/77",
+          createdAt: "2026-04-24T12:34:56.789Z",
+          updatedAt: "2026-04-24T12:35:56.789Z",
+        },
+        null,
+        2
+      )}\n`,
+      "utf8"
+    );
+
+    expect(() => loadIssueRefineSessionState(repoRoot, 42)).toThrow(
+      "is malformed"
+    );
+  });
+
+  it("accepts same-repository issue refine completion URLs in worktree-style repos", () => {
+    const repoRoot = createTempWorktreeRepoRoot();
+    const runDir = resolve(repoRoot, ".prs", "runs", "20260424T123456789Z-issue-refine-42");
+    const state = {
+      issueNumber: 42,
+      runtimeType: "codex" as const,
+      runDir,
+      promptFile: resolve(runDir, "prompt.md"),
+      outputLog: resolve(runDir, "output.log"),
+      latestDraftFile: resolve(runDir, "issue-refine-42.md"),
+      completionMode: "updated-existing" as const,
+      completedIssueNumber: 42,
+      completedIssueUrl: "https://github.com/DevwareUK/prs/issues/42",
+      createdAt: "2026-04-24T12:34:56.789Z",
+      updatedAt: "2026-04-24T12:35:56.789Z",
+    };
+
+    writeIssueRefineSessionState(repoRoot, state);
+
+    expect(loadIssueRefineSessionState(repoRoot, 42)).toEqual(state);
+  });
+
+  it("rejects issue refine state with blank required paths or session id on load", () => {
+    const repoRoot = createTempRepoRoot();
+    const statePath = getIssueRefineSessionStateFilePath(repoRoot, 42);
+    mkdirSync(dirname(statePath), { recursive: true });
+
+    for (const override of [
+      { runDir: "   " },
+      { promptFile: "" },
+      { outputLog: " " },
+      { latestDraftFile: "\t" },
+      { sessionId: "   " },
+    ]) {
+      writeFileSync(
+        statePath,
+        `${JSON.stringify(
+          {
+            issueNumber: 42,
+            runtimeType: "codex",
+            runDir: resolve(repoRoot, ".prs", "runs", "20260424T123456789Z-issue-refine-42"),
+            promptFile: "prompt.md",
+            outputLog: "output.log",
+            latestDraftFile: "issue-refine-42.md",
+            createdAt: "2026-04-24T12:34:56.789Z",
+            updatedAt: "2026-04-24T12:35:56.789Z",
+            ...override,
+          },
+          null,
+          2
+        )}\n`,
+        "utf8"
+      );
+
+      expect(() => loadIssueRefineSessionState(repoRoot, 42)).toThrow(
+        "is malformed"
+      );
+    }
+  });
+
+  it("rejects issue refine state with workspace paths outside the refine run directory on load", () => {
+    const repoRoot = createTempRepoRoot();
+    const statePath = getIssueRefineSessionStateFilePath(repoRoot, 42);
+    const runDir = resolve(repoRoot, ".prs", "runs", "20260424T123456789Z-issue-refine-42");
+    mkdirSync(dirname(statePath), { recursive: true });
+
+    for (const override of [
+      { promptFile: resolve(repoRoot, ".prs", "runs", "other", "prompt.md") },
+      { outputLog: resolve(repoRoot, ".prs", "runs", "other", "output.log") },
+      { latestDraftFile: resolve(repoRoot, ".prs", "issues", "issue-refine-42.md") },
+      { runDir: resolve(repoRoot, ".prs", "runs", "20260424T123456789Z-issue-refine-99") },
+    ]) {
+      writeFileSync(
+        statePath,
+        `${JSON.stringify(
+          {
+            issueNumber: 42,
+            runtimeType: "codex",
+            runDir,
+            promptFile: resolve(runDir, "prompt.md"),
+            outputLog: resolve(runDir, "output.log"),
+            latestDraftFile: resolve(runDir, "issue-refine-42.md"),
+            createdAt: "2026-04-24T12:34:56.789Z",
+            updatedAt: "2026-04-24T12:35:56.789Z",
+            ...override,
+          },
+          null,
+          2
+        )}\n`,
+        "utf8"
+      );
+
+      expect(() => loadIssueRefineSessionState(repoRoot, 42)).toThrow(
+        "is malformed"
+      );
+    }
+  });
+
+  it("rejects invalid issue refine timestamps on load", () => {
+    const repoRoot = createTempRepoRoot();
+    const statePath = getIssueRefineSessionStateFilePath(repoRoot, 42);
+    mkdirSync(dirname(statePath), { recursive: true });
+
+    for (const override of [
+      { createdAt: "" },
+      { createdAt: "not-a-date" },
+      { createdAt: "2026-04-24 12:34:56.789Z" },
+      { updatedAt: " " },
+      { updatedAt: "2026-04-24T12:35:56Z" },
+      { updatedAt: "2026-99-99T00:00:00.000Z" },
+    ]) {
+      writeFileSync(
+        statePath,
+        `${JSON.stringify(
+          {
+            issueNumber: 42,
+            runtimeType: "codex",
+            runDir: resolve(repoRoot, ".prs", "runs", "20260424T123456789Z-issue-refine-42"),
+            promptFile: "prompt.md",
+            outputLog: "output.log",
+            latestDraftFile: "issue-refine-42.md",
+            createdAt: "2026-04-24T12:34:56.789Z",
+            updatedAt: "2026-04-24T12:35:56.789Z",
+            ...override,
+          },
+          null,
+          2
+        )}\n`,
+        "utf8"
+      );
+
+      expect(() => loadIssueRefineSessionState(repoRoot, 42)).toThrow(
+        "is malformed"
+      );
+    }
+  });
+
+  it("rejects issue refine completion URL and issue number mismatches on load", () => {
+    const repoRoot = createTempRepoRoot();
+    const statePath = getIssueRefineSessionStateFilePath(repoRoot, 42);
+    mkdirSync(dirname(statePath), { recursive: true });
+    writeFileSync(
+      statePath,
+      `${JSON.stringify(
+        {
+          issueNumber: 42,
+          runtimeType: "codex",
+          runDir: resolve(repoRoot, ".prs", "runs", "20260424T123456789Z-issue-refine-42"),
+          promptFile: "prompt.md",
+          outputLog: "output.log",
+          latestDraftFile: "issue-refine-42.md",
+          completionMode: "created-linked",
+          completedIssueNumber: 77,
+          completedIssueUrl: "https://github.com/DevwareUK/prs/issues/78",
+          createdAt: "2026-04-24T12:34:56.789Z",
+          updatedAt: "2026-04-24T12:35:56.789Z",
+        },
+        null,
+        2
+      )}\n`,
+      "utf8"
+    );
+
+    expect(() => loadIssueRefineSessionState(repoRoot, 42)).toThrow(
+      "is malformed"
+    );
+  });
+
+  it("rejects updated-existing issue refine state pointing at a different issue on load", () => {
+    const repoRoot = createTempRepoRoot();
+    const statePath = getIssueRefineSessionStateFilePath(repoRoot, 42);
+    mkdirSync(dirname(statePath), { recursive: true });
+    writeFileSync(
+      statePath,
+      `${JSON.stringify(
+        {
+          issueNumber: 42,
+          runtimeType: "codex",
+          runDir: resolve(repoRoot, ".prs", "runs", "20260424T123456789Z-issue-refine-42"),
+          promptFile: "prompt.md",
+          outputLog: "output.log",
+          latestDraftFile: "issue-refine-42.md",
+          completionMode: "updated-existing",
+          completedIssueNumber: 77,
+          completedIssueUrl: "https://github.com/DevwareUK/prs/issues/77",
+          createdAt: "2026-04-24T12:34:56.789Z",
+          updatedAt: "2026-04-24T12:35:56.789Z",
+        },
+        null,
+        2
+      )}\n`,
+      "utf8"
+    );
+
+    expect(() => loadIssueRefineSessionState(repoRoot, 42)).toThrow(
+      "is malformed"
+    );
+  });
+
+  it("rejects created-linked issue refine state pointing back to the source issue on load", () => {
+    const repoRoot = createTempRepoRoot();
+    const statePath = getIssueRefineSessionStateFilePath(repoRoot, 42);
+    mkdirSync(dirname(statePath), { recursive: true });
+    writeFileSync(
+      statePath,
+      `${JSON.stringify(
+        {
+          issueNumber: 42,
+          runtimeType: "codex",
+          runDir: resolve(repoRoot, ".prs", "runs", "20260424T123456789Z-issue-refine-42"),
+          promptFile: "prompt.md",
+          outputLog: "output.log",
+          latestDraftFile: "issue-refine-42.md",
+          completionMode: "created-linked",
+          completedIssueNumber: 42,
+          completedIssueUrl: "https://github.com/DevwareUK/prs/issues/42",
+          createdAt: "2026-04-24T12:34:56.789Z",
+          updatedAt: "2026-04-24T12:35:56.789Z",
+        },
+        null,
+        2
+      )}\n`,
+      "utf8"
+    );
+
+    expect(() => loadIssueRefineSessionState(repoRoot, 42)).toThrow(
+      "is malformed"
+    );
+  });
+
+  it("rejects invalid issue refine session state before writing", () => {
+    const repoRoot = createTempRepoRoot();
+    const runDir = resolve(repoRoot, ".prs", "runs", "20260424T123456789Z-issue-refine-42");
+    const statePath = getIssueRefineSessionStateFilePath(repoRoot, 42);
+    const previousContents = existsSync(statePath)
+      ? readFileSync(statePath, "utf8")
+      : undefined;
+
+    expect(() =>
+      writeIssueRefineSessionState(repoRoot, {
+        issueNumber: 42,
+        runtimeType: "codex",
+        runDir,
+        promptFile: resolve(runDir, "prompt.md"),
+        outputLog: resolve(runDir, "output.log"),
+        latestDraftFile: resolve(runDir, "issue-refine-42.md"),
+        completionMode: "created-linked",
+        completedIssueNumber: 77,
+        completedIssueUrl: "javascript:alert(1)",
+        createdAt: "2026-04-24T12:34:56.789Z",
+        updatedAt: "2026-04-24T12:35:56.789Z",
+      })
+    ).toThrow("is malformed");
+    expect(existsSync(statePath)).toBe(previousContents !== undefined);
+    if (previousContents !== undefined) {
+      expect(readFileSync(statePath, "utf8")).toBe(previousContents);
+    }
+  });
+
+  it("rejects issue refine completion URL and issue number mismatches before writing", () => {
+    const repoRoot = createTempRepoRoot();
+    const runDir = resolve(repoRoot, ".prs", "runs", "20260424T123456789Z-issue-refine-42");
+    const statePath = getIssueRefineSessionStateFilePath(repoRoot, 42);
+    const previousContents = existsSync(statePath)
+      ? readFileSync(statePath, "utf8")
+      : undefined;
+
+    expect(() =>
+      writeIssueRefineSessionState(repoRoot, {
+        issueNumber: 42,
+        runtimeType: "codex",
+        runDir,
+        promptFile: resolve(runDir, "prompt.md"),
+        outputLog: resolve(runDir, "output.log"),
+        latestDraftFile: resolve(runDir, "issue-refine-42.md"),
+        completionMode: "updated-existing",
+        completedIssueNumber: 77,
+        completedIssueUrl: "https://github.com/DevwareUK/prs/issues/78",
+        createdAt: "2026-04-24T12:34:56.789Z",
+        updatedAt: "2026-04-24T12:35:56.789Z",
+      })
+    ).toThrow("is malformed");
+    expect(existsSync(statePath)).toBe(previousContents !== undefined);
+    if (previousContents !== undefined) {
+      expect(readFileSync(statePath, "utf8")).toBe(previousContents);
+    }
+  });
+
+  it("rejects updated-existing issue refine state pointing at a different issue before writing", () => {
+    const repoRoot = createTempRepoRoot();
+    const runDir = resolve(repoRoot, ".prs", "runs", "20260424T123456789Z-issue-refine-42");
+    const statePath = getIssueRefineSessionStateFilePath(repoRoot, 42);
+    const previousContents = existsSync(statePath)
+      ? readFileSync(statePath, "utf8")
+      : undefined;
+
+    expect(() =>
+      writeIssueRefineSessionState(repoRoot, {
+        issueNumber: 42,
+        runtimeType: "codex",
+        runDir,
+        promptFile: resolve(runDir, "prompt.md"),
+        outputLog: resolve(runDir, "output.log"),
+        latestDraftFile: resolve(runDir, "issue-refine-42.md"),
+        completionMode: "updated-existing",
+        completedIssueNumber: 77,
+        completedIssueUrl: "https://github.com/DevwareUK/prs/issues/77",
+        createdAt: "2026-04-24T12:34:56.789Z",
+        updatedAt: "2026-04-24T12:35:56.789Z",
+      })
+    ).toThrow("is malformed");
+    expect(existsSync(statePath)).toBe(previousContents !== undefined);
+    if (previousContents !== undefined) {
+      expect(readFileSync(statePath, "utf8")).toBe(previousContents);
+    }
+  });
+
+  it("rejects created-linked issue refine state pointing back to the source issue before writing", () => {
+    const repoRoot = createTempRepoRoot();
+    const runDir = resolve(repoRoot, ".prs", "runs", "20260424T123456789Z-issue-refine-42");
+    const statePath = getIssueRefineSessionStateFilePath(repoRoot, 42);
+    const previousContents = existsSync(statePath)
+      ? readFileSync(statePath, "utf8")
+      : undefined;
+
+    expect(() =>
+      writeIssueRefineSessionState(repoRoot, {
+        issueNumber: 42,
+        runtimeType: "codex",
+        runDir,
+        promptFile: resolve(runDir, "prompt.md"),
+        outputLog: resolve(runDir, "output.log"),
+        latestDraftFile: resolve(runDir, "issue-refine-42.md"),
+        completionMode: "created-linked",
+        completedIssueNumber: 42,
+        completedIssueUrl: "https://github.com/DevwareUK/prs/issues/42",
+        createdAt: "2026-04-24T12:34:56.789Z",
+        updatedAt: "2026-04-24T12:35:56.789Z",
+      })
+    ).toThrow("is malformed");
+    expect(existsSync(statePath)).toBe(previousContents !== undefined);
+    if (previousContents !== undefined) {
+      expect(readFileSync(statePath, "utf8")).toBe(previousContents);
+    }
+  });
+
+  it("rejects issue refine state with blank required paths or session id before writing", () => {
+    const repoRoot = createTempRepoRoot();
+    const runDir = resolve(repoRoot, ".prs", "runs", "20260424T123456789Z-issue-refine-42");
+    const statePath = getIssueRefineSessionStateFilePath(repoRoot, 42);
+    const previousContents = existsSync(statePath)
+      ? readFileSync(statePath, "utf8")
+      : undefined;
+
+    for (const override of [
+      { runDir: "   " },
+      { promptFile: "" },
+      { outputLog: " " },
+      { latestDraftFile: "\t" },
+      { sessionId: "   " },
+    ]) {
+      expect(() =>
+        writeIssueRefineSessionState(repoRoot, {
+          issueNumber: 42,
+          runtimeType: "codex",
+          runDir,
+          promptFile: resolve(runDir, "prompt.md"),
+          outputLog: resolve(runDir, "output.log"),
+          latestDraftFile: resolve(runDir, "issue-refine-42.md"),
+          createdAt: "2026-04-24T12:34:56.789Z",
+          updatedAt: "2026-04-24T12:35:56.789Z",
+          ...override,
+        })
+      ).toThrow("is malformed");
+    }
+    expect(existsSync(statePath)).toBe(previousContents !== undefined);
+    if (previousContents !== undefined) {
+      expect(readFileSync(statePath, "utf8")).toBe(previousContents);
+    }
+  });
+
+  it("rejects invalid issue refine timestamps before writing", () => {
+    const repoRoot = createTempRepoRoot();
+    const runDir = resolve(repoRoot, ".prs", "runs", "20260424T123456789Z-issue-refine-42");
+    const statePath = getIssueRefineSessionStateFilePath(repoRoot, 42);
+    const previousContents = existsSync(statePath)
+      ? readFileSync(statePath, "utf8")
+      : undefined;
+
+    for (const override of [
+      { createdAt: "" },
+      { createdAt: "not-a-date" },
+      { createdAt: "2026-04-24 12:34:56.789Z" },
+      { updatedAt: " " },
+      { updatedAt: "2026-04-24T12:35:56Z" },
+      { updatedAt: "2026-99-99T00:00:00.000Z" },
+    ]) {
+      expect(() =>
+        writeIssueRefineSessionState(repoRoot, {
+          issueNumber: 42,
+          runtimeType: "codex",
+          runDir,
+          promptFile: resolve(runDir, "prompt.md"),
+          outputLog: resolve(runDir, "output.log"),
+          latestDraftFile: resolve(runDir, "issue-refine-42.md"),
+          createdAt: "2026-04-24T12:34:56.789Z",
+          updatedAt: "2026-04-24T12:35:56.789Z",
+          ...override,
+        })
+      ).toThrow("is malformed");
+    }
+    expect(existsSync(statePath)).toBe(previousContents !== undefined);
+    if (previousContents !== undefined) {
+      expect(readFileSync(statePath, "utf8")).toBe(previousContents);
+    }
+  });
+
+  it("rejects issue refine state with workspace paths outside the refine run directory before writing", () => {
+    const repoRoot = createTempRepoRoot();
+    const runDir = resolve(repoRoot, ".prs", "runs", "20260424T123456789Z-issue-refine-42");
+    const statePath = getIssueRefineSessionStateFilePath(repoRoot, 42);
+    const previousContents = existsSync(statePath)
+      ? readFileSync(statePath, "utf8")
+      : undefined;
+
+    for (const override of [
+      { promptFile: resolve(repoRoot, ".prs", "runs", "other", "prompt.md") },
+      { outputLog: resolve(repoRoot, ".prs", "runs", "other", "output.log") },
+      { latestDraftFile: resolve(repoRoot, ".prs", "issues", "issue-refine-42.md") },
+      { runDir: resolve(repoRoot, ".prs", "runs", "20260424T123456789Z-issue-refine-99") },
+    ]) {
+      expect(() =>
+        writeIssueRefineSessionState(repoRoot, {
+          issueNumber: 42,
+          runtimeType: "codex",
+          runDir,
+          promptFile: resolve(runDir, "prompt.md"),
+          outputLog: resolve(runDir, "output.log"),
+          latestDraftFile: resolve(runDir, "issue-refine-42.md"),
+          createdAt: "2026-04-24T12:34:56.789Z",
+          updatedAt: "2026-04-24T12:35:56.789Z",
+          ...override,
+        })
+      ).toThrow("is malformed");
+    }
+    expect(existsSync(statePath)).toBe(previousContents !== undefined);
+    if (previousContents !== undefined) {
+      expect(readFileSync(statePath, "utf8")).toBe(previousContents);
+    }
+  });
+
   it("parses issue batch as an unattended issue subcommand", async () => {
     process.env.GIT_AI_DISABLE_AUTO_RUN = "1";
     const { parseIssueCommandArgs } = await loadCli();
@@ -1308,6 +2271,7 @@ describe("CLI integration", () => {
     expect(stdout.output()).toContain("Advanced:");
     expect(stdout.output()).toContain("Beta:");
     expect(stdout.output()).toContain("prs issue draft");
+    expect(stdout.output()).toContain("prs issue refine <number>");
     expect(stdout.output()).toContain("prs pr prepare-review <pr-number>");
   });
 
@@ -1371,6 +2335,1131 @@ describe("CLI integration", () => {
         expect(output).toContain("`prs issue plan <number> [--refresh]`");
       }
     );
+  });
+
+  it("prompts for requested issue changes and starts a fresh issue refine session", async () => {
+    const beforeRuns = listRunDirectories();
+    const issueNumber = 55;
+    let runtimePrompt = "";
+    createMockCodexHome();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          title: "Improve release automation",
+          body: "Current issue body with a short summary.",
+          html_url: getRepositoryIssueUrl(issueNumber),
+        })
+      )
+      .mockResolvedValueOnce(
+        createFetchResponse([
+          {
+            id: 1,
+            body: "Customer impact is deployment safety.",
+            html_url:
+              `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-1`,
+            created_at: "2026-04-24T10:00:00Z",
+            updated_at: "2026-04-24T10:00:00Z",
+            user: {
+              login: "customer-user",
+              type: "User",
+            },
+          },
+        ])
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "test-token";
+
+    const { run } = await loadCli({
+      readlineAnswers: ["Clarify the rollback plan and edge cases.", "n"],
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/prs.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+      spawnSyncImpl: (command, args) => {
+        if (command === "gh" && args[0] === "--version") {
+          return { status: 1, error: new Error("gh is unavailable") };
+        }
+
+        if (command === "codex" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "codex") {
+          const { metadata, runDir } = readLatestRunMetadata();
+          runtimePrompt = readFileSync(resolve(REPO_ROOT, metadata.promptFile as string), "utf8");
+          writeFileSync(
+            resolve(REPO_ROOT, metadata.draftFile as string),
+            "# Improve release automation\n\n## Summary\nRefined spec.\n",
+            "utf8"
+          );
+          cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", runDir));
+          return { status: 0 };
+        }
+
+        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.argv = ["node", "prs", "issue", "refine", String(issueNumber)];
+    await run();
+
+    const createdRunDir = listRunDirectories().find((entry) => !beforeRuns.includes(entry));
+    expect(createdRunDir).toBeDefined();
+    cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string));
+    cleanupTargets.add(resolve(REPO_ROOT, ".prs", "issues", String(issueNumber)));
+
+    expect(runtimePrompt).toContain("What changes should be made to the specification?");
+    expect(runtimePrompt).toContain("Clarify the rollback plan and edge cases.");
+    expect(runtimePrompt).toContain("Current issue body with a short summary.");
+    expect(runtimePrompt).toContain("@customer-user");
+    expect(runtimePrompt).toContain("Customer impact is deployment safety.");
+
+    const metadata = JSON.parse(
+      readFileSync(
+        resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string, "metadata.json"),
+        "utf8"
+      )
+    ) as {
+      flow?: string;
+      requestedChanges?: string;
+      draftFile?: string;
+    };
+    expect(metadata).toMatchObject({
+      flow: "issue-refine",
+      requestedChanges: "Clarify the rollback plan and edge cases.",
+      draftFile: `.prs/runs/${createdRunDir}/issue-refine-${issueNumber}.md`,
+    });
+    expect(
+      readFileSync(resolve(REPO_ROOT, metadata.draftFile as string), "utf8")
+    ).toBe("# Improve release automation\n\n## Summary\nRefined spec.");
+    expect(loadIssueRefineSessionState(REPO_ROOT, issueNumber)).toMatchObject({
+      issueNumber,
+      latestDraftFile: resolve(
+        REPO_ROOT,
+        ".prs",
+        "runs",
+        createdRunDir as string,
+        `issue-refine-${issueNumber}.md`
+      ),
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("resumes the saved Codex issue refine session when it is still tracked", async () => {
+    const issueNumber = 56;
+    const sessionId = "019d5002-0000-7111-8222-933344445555";
+    const codexHome = createMockCodexHome();
+    const sessionStateDir = resolve(REPO_ROOT, ".prs", "issues", String(issueNumber));
+    const sessionStatePath = getIssueRefineSessionStateFilePath(REPO_ROOT, issueNumber);
+    const existingRunDir = resolve(
+      REPO_ROOT,
+      ".prs",
+      "runs",
+      "20260424T110000000Z-issue-refine-56"
+    );
+    const existingRunDirName = "20260424T110000000Z-issue-refine-56";
+    const existingDraftPath = resolve(existingRunDir, `issue-refine-${issueNumber}.md`);
+    let runtimePrompt = "";
+
+    writeMockCodexSession(codexHome, sessionId, REPO_ROOT, "2026-04-24T11:00:00.000Z");
+    cleanupTargets.add(sessionStateDir);
+    cleanupTargets.add(existingRunDir);
+    mkdirSync(existingRunDir, { recursive: true });
+    writeFileSync(resolve(existingRunDir, "prompt.md"), "Saved prompt for resumable refine.\n", "utf8");
+    writeFileSync(resolve(existingRunDir, "output.log"), "# saved refine log\n", "utf8");
+    writeFileSync(
+      resolve(existingRunDir, "metadata.json"),
+      `${JSON.stringify(
+        {
+          flow: "issue-refine",
+          issueNumber,
+          draftFile: `.prs/runs/${existingRunDirName}/issue-refine-${issueNumber}.md`,
+          promptFile: `.prs/runs/${existingRunDirName}/prompt.md`,
+          outputLog: `.prs/runs/${existingRunDirName}/output.log`,
+          runDir: `.prs/runs/${existingRunDirName}`,
+          runtime: {
+            type: "codex",
+            invocation: "new",
+            sessionId,
+          },
+        },
+        null,
+        2
+      )}\n`,
+      "utf8"
+    );
+    writeIssueRefineSessionState(REPO_ROOT, {
+      issueNumber,
+      runtimeType: "codex",
+      runDir: existingRunDir,
+      promptFile: resolve(existingRunDir, "prompt.md"),
+      outputLog: resolve(existingRunDir, "output.log"),
+      latestDraftFile: resolve(existingRunDir, `issue-refine-${issueNumber}.md`),
+      sessionId,
+      createdAt: "2026-04-24T11:00:00.000Z",
+      updatedAt: "2026-04-24T11:00:00.000Z",
+    });
+    const beforeRuns = listRunDirectories();
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          title: "Resume issue refine session",
+          body: "<!-- prs:managed-issue -->\n\nOriginal managed issue body.",
+          html_url: getRepositoryIssueUrl(issueNumber),
+        })
+      )
+      .mockResolvedValueOnce(createFetchResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "test-token";
+
+    const { run, spawnSync } = await loadCli({
+      readlineAnswers: ["n"],
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/prs.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+      spawnSyncImpl: (command, args) => {
+        if (command === "gh" && args[0] === "--version") {
+          return { status: 1, error: new Error("gh is unavailable") };
+        }
+
+        if (command === "codex" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "codex" && args[0] === "resume" && args[1] === sessionId) {
+          runtimePrompt = readFileSync(resolve(existingRunDir, "prompt.md"), "utf8");
+          writeFileSync(
+            existingDraftPath,
+            "# Resume issue refine session\n\n## Summary\nRefined draft after resume.\n",
+            "utf8"
+          );
+          return { status: 0 };
+        }
+
+        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.argv = ["node", "prs", "issue", "refine", String(issueNumber)];
+    await run();
+
+    const createdRunDir = listRunDirectories().find((entry) => !beforeRuns.includes(entry));
+    expect(createdRunDir).toBeUndefined();
+
+    expect(spawnSync).toHaveBeenCalledWith(
+      "codex",
+      expect.arrayContaining(["resume", sessionId, "--sandbox", "workspace-write"]),
+      expect.objectContaining({
+        cwd: REPO_ROOT,
+        stdio: "inherit",
+      })
+    );
+    expect(JSON.parse(readFileSync(sessionStatePath, "utf8"))).toMatchObject({
+      issueNumber,
+      runtimeType: "codex",
+      sessionId,
+      runDir: existingRunDir,
+      promptFile: resolve(existingRunDir, "prompt.md"),
+      outputLog: resolve(existingRunDir, "output.log"),
+      latestDraftFile: existingDraftPath,
+    });
+    const metadata = JSON.parse(
+      readFileSync(resolve(existingRunDir, "metadata.json"), "utf8")
+    ) as {
+      requestedChanges?: string;
+      runtime?: {
+        invocation?: string;
+        sessionId?: string;
+      };
+    };
+    expect(metadata.requestedChanges).toBeUndefined();
+    expect(metadata.runtime).toMatchObject({
+      invocation: "resume",
+      sessionId,
+    });
+    expect(runtimePrompt).not.toContain("What changes should be made to the specification?");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("warns and starts a fresh Codex refine session when the saved session is stale", async () => {
+    const beforeRuns = listRunDirectories();
+    const issueNumber = 57;
+    const staleSessionId = "019d5003-0000-7111-8222-933344445555";
+    const sessionStateDir = resolve(REPO_ROOT, ".prs", "issues", String(issueNumber));
+    const existingRunDir = resolve(
+      REPO_ROOT,
+      ".prs",
+      "runs",
+      "20260424T113000000Z-issue-refine-57"
+    );
+    let runtimePrompt = "";
+
+    createMockCodexHome();
+    cleanupTargets.add(sessionStateDir);
+    writeIssueRefineSessionState(REPO_ROOT, {
+      issueNumber,
+      runtimeType: "codex",
+      runDir: existingRunDir,
+      promptFile: resolve(existingRunDir, "prompt.md"),
+      outputLog: resolve(existingRunDir, "output.log"),
+      latestDraftFile: resolve(existingRunDir, `issue-refine-${issueNumber}.md`),
+      sessionId: staleSessionId,
+      createdAt: "2026-04-24T11:30:00.000Z",
+      updatedAt: "2026-04-24T11:30:00.000Z",
+    });
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          title: "Refresh stale refine session",
+          body: "<!-- prs:managed-issue -->\n\nOriginal managed issue body.",
+          html_url: getRepositoryIssueUrl(issueNumber),
+        })
+      )
+      .mockResolvedValueOnce(createFetchResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "test-token";
+
+    const messages: string[] = [];
+    const { run, spawnSync } = await loadCli({
+      readlineAnswers: ["Tighten rollout notes.", "n"],
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/prs.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+      spawnSyncImpl: (command, args) => {
+        if (command === "gh" && args[0] === "--version") {
+          return { status: 1, error: new Error("gh is unavailable") };
+        }
+
+        if (command === "codex" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "codex" && args[0] === "--sandbox") {
+          const { metadata, runDir } = readLatestRunMetadata();
+          runtimePrompt = readFileSync(resolve(REPO_ROOT, metadata.promptFile as string), "utf8");
+          writeFileSync(
+            resolve(REPO_ROOT, metadata.draftFile as string),
+            "# Refresh stale refine session\n\n## Summary\nStarted fresh after stale session.\n",
+            "utf8"
+          );
+          cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", runDir));
+          return { status: 0 };
+        }
+
+        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+    vi.spyOn(console, "log").mockImplementation((message?: unknown) => {
+      messages.push(String(message ?? ""));
+    });
+
+    process.argv = ["node", "prs", "issue", "refine", String(issueNumber)];
+    await run();
+
+    const createdRunDir = listRunDirectories().find((entry) => !beforeRuns.includes(entry));
+    expect(createdRunDir).toBeDefined();
+    cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string));
+
+    const staleSessionWarning =
+      `Saved Codex refine session ${staleSessionId} for issue #${issueNumber} is no longer available. Starting a fresh refinement session.`;
+    expect(messages.join("\n")).toContain(staleSessionWarning);
+    expect(runtimePrompt).toContain("What changes should be made to the specification?");
+    expect(runtimePrompt).toContain("Tighten rollout notes.");
+    const metadata = JSON.parse(
+      readFileSync(
+        resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string, "metadata.json"),
+        "utf8"
+      )
+    ) as {
+      runtime?: {
+        warnings?: string[];
+      };
+      outputLog?: string;
+    };
+    expect(metadata.runtime?.warnings).toContain(staleSessionWarning);
+    expect(
+      readFileSync(resolve(REPO_ROOT, metadata.outputLog as string), "utf8")
+    ).toContain(staleSessionWarning);
+    expect(spawnSync).not.toHaveBeenCalledWith(
+      "codex",
+      expect.arrayContaining(["resume", staleSessionId]),
+      expect.any(Object)
+    );
+    expect(spawnSync).toHaveBeenCalledWith(
+      "codex",
+      expect.arrayContaining([
+        "--sandbox",
+        "workspace-write",
+        "--ask-for-approval",
+        "on-request",
+        "--cd",
+        REPO_ROOT,
+      ]),
+      expect.objectContaining({
+        cwd: REPO_ROOT,
+        stdio: "inherit",
+      })
+    );
+  });
+
+  it("warns and starts a fresh refine session when the configured runtime changed", async () => {
+    const beforeRuns = listRunDirectories();
+    const issueNumber = 58;
+    const sessionStateDir = resolve(REPO_ROOT, ".prs", "issues", String(issueNumber));
+    const existingRunDir = resolve(
+      REPO_ROOT,
+      ".prs",
+      "runs",
+      "20260424T114500000Z-issue-refine-58"
+    );
+
+    cleanupTargets.add(sessionStateDir);
+    writeIssueRefineSessionState(REPO_ROOT, {
+      issueNumber,
+      runtimeType: "codex",
+      runDir: existingRunDir,
+      promptFile: resolve(existingRunDir, "prompt.md"),
+      outputLog: resolve(existingRunDir, "output.log"),
+      latestDraftFile: resolve(existingRunDir, `issue-refine-${issueNumber}.md`),
+      sessionId: "019d5004-0000-7111-8222-933344445555",
+      createdAt: "2026-04-24T11:45:00.000Z",
+      updatedAt: "2026-04-24T11:45:00.000Z",
+    });
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          title: "Switch refine runtime",
+          body: "<!-- prs:managed-issue -->\n\nOriginal managed issue body.",
+          html_url: getRepositoryIssueUrl(issueNumber),
+        })
+      )
+      .mockResolvedValueOnce(createFetchResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "test-token";
+
+    const messages: string[] = [];
+    await withRepositoryConfig(
+      JSON.stringify(
+        {
+          ai: {
+            runtime: {
+              type: "claude-code",
+            },
+          },
+        },
+        null,
+        2
+      ),
+      async () => {
+        const { run, spawnSync } = await loadCli({
+          readlineAnswers: ["Use Claude Code for this refinement.", "n"],
+          execFileSyncImpl: (command, args) => {
+            if (command === "git" && args[0] === "remote") {
+              return "git@github.com:DevwareUK/prs.git\n";
+            }
+
+            throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+          },
+          spawnSyncImpl: (command, args) => {
+            if (command === "gh" && args[0] === "--version") {
+              return { status: 1, error: new Error("gh is unavailable") };
+            }
+
+            if (command === "claude" && args[0] === "--version") {
+              return { status: 0 };
+            }
+
+            if (command === "claude") {
+              const { metadata, runDir } = readLatestRunMetadata();
+              writeFileSync(
+                resolve(REPO_ROOT, metadata.draftFile as string),
+                "# Switch refine runtime\n\n## Summary\nFresh Claude Code refinement.\n",
+                "utf8"
+              );
+              cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", runDir));
+              return { status: 0 };
+            }
+
+            throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+          },
+        });
+        vi.spyOn(console, "log").mockImplementation((message?: unknown) => {
+          messages.push(String(message ?? ""));
+        });
+
+        process.argv = ["node", "prs", "issue", "refine", String(issueNumber)];
+        await run();
+
+        expect(spawnSync).toHaveBeenCalledWith(
+          "claude",
+          expect.any(Array),
+          expect.objectContaining({
+            cwd: REPO_ROOT,
+            stdio: "inherit",
+          })
+        );
+      }
+    );
+
+    const createdRunDir = listRunDirectories().find((entry) => !beforeRuns.includes(entry));
+    expect(createdRunDir).toBeDefined();
+    cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string));
+
+    const runtimeMismatchWarning =
+      "The saved issue-refine session used Codex, but the configured runtime is Claude Code. Starting a fresh refinement session.";
+    expect(messages.join("\n")).toContain(runtimeMismatchWarning);
+    const metadata = JSON.parse(
+      readFileSync(
+        resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string, "metadata.json"),
+        "utf8"
+      )
+    ) as {
+      runtime?: {
+        warnings?: string[];
+      };
+      outputLog?: string;
+    };
+    expect(metadata.runtime?.warnings).toContain(runtimeMismatchWarning);
+    expect(
+      readFileSync(resolve(REPO_ROOT, metadata.outputLog as string), "utf8")
+    ).toContain(runtimeMismatchWarning);
+    expect(
+      JSON.parse(
+        readFileSync(getIssueRefineSessionStateFilePath(REPO_ROOT, issueNumber), "utf8")
+      )
+    ).toMatchObject({
+      issueNumber,
+      runtimeType: "claude-code",
+      runDir: resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string),
+    });
+  });
+
+  it("updates the existing PRS-managed issue body after review approval", async () => {
+    const beforeRuns = listRunDirectories();
+    const issueNumber = 59;
+    createMockCodexHome();
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = String(input);
+
+      if (url.endsWith(`/issues/${issueNumber}`) && init?.method === "PATCH") {
+        return createFetchResponse({
+          number: issueNumber,
+          title: "Managed refine title",
+          html_url: getRepositoryIssueUrl(issueNumber),
+        });
+      }
+
+      if (url.endsWith(`/issues/${issueNumber}`)) {
+        return createFetchResponse({
+          title: "Managed refine title",
+          body: "<!-- prs:managed-issue -->\n\n## Summary\nOriginal managed issue body.",
+          html_url: getRepositoryIssueUrl(issueNumber),
+        });
+      }
+
+      if (url.includes(`/issues/${issueNumber}/comments?`)) {
+        return createFetchResponse([]);
+      }
+
+      throw new Error(`Unexpected fetch call: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "test-token";
+
+    const { run } = await loadCli({
+      readlineAnswers: ["Expand the acceptance criteria.", "y"],
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/prs.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+      spawnSyncImpl: (command, args) => {
+        if (command === "gh" && args[0] === "--version") {
+          return { status: 1, error: new Error("gh is unavailable") };
+        }
+
+        if (command === "codex" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "codex") {
+          const { metadata, runDir } = readLatestRunMetadata();
+          writeFileSync(
+            resolve(REPO_ROOT, metadata.draftFile as string),
+            "# Managed refine title\n\n## Summary\nRefined managed issue body.\n",
+            "utf8"
+          );
+          cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", runDir));
+          return { status: 0 };
+        }
+
+        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.argv = ["node", "prs", "issue", "refine", String(issueNumber)];
+    await run();
+
+    const createdRunDir = listRunDirectories().find((entry) => !beforeRuns.includes(entry));
+    expect(createdRunDir).toBeDefined();
+    cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string));
+    cleanupTargets.add(resolve(REPO_ROOT, ".prs", "issues", String(issueNumber)));
+
+    const patchCall = fetchMock.mock.calls.find(
+      ([input, init]) =>
+        String(input).endsWith(`/issues/${issueNumber}`) &&
+        (init as RequestInit | undefined)?.method === "PATCH"
+    );
+    expect(patchCall).toBeDefined();
+    expect(JSON.parse(String(patchCall?.[1] && (patchCall[1] as RequestInit).body))).toEqual({
+      title: "Managed refine title",
+      body: "<!-- prs:managed-issue -->\n\n## Summary\nRefined managed issue body.",
+    });
+    expect(
+      JSON.parse(
+        readFileSync(getIssueRefineSessionStateFilePath(REPO_ROOT, issueNumber), "utf8")
+      )
+    ).toMatchObject({
+      completionMode: "updated-existing",
+      completedIssueNumber: issueNumber,
+      completedIssueUrl: getRepositoryIssueUrl(issueNumber),
+    });
+  });
+
+  it("does not treat incidental managed-marker text in a normal issue body as a PRS-managed issue", async () => {
+    const beforeRuns = listRunDirectories();
+    const issueNumber = 63;
+    const createdIssueNumber = 163;
+    createMockCodexHome();
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = String(input);
+
+      if (url.endsWith(`/issues/${issueNumber}`) && init?.method === "PATCH") {
+        throw new Error("Issue refine should not overwrite a non-managed source issue.");
+      }
+
+      if (url.endsWith(`/issues/${issueNumber}`)) {
+        return createFetchResponse({
+          title: "Customer report about marker text",
+          body:
+            "The docs literally mention <!-- prs:managed-issue --> in one example, but this source issue is not PRS-managed.",
+          html_url: getRepositoryIssueUrl(issueNumber),
+        });
+      }
+
+      if (url.includes(`/issues/${issueNumber}/comments?`)) {
+        return createFetchResponse([]);
+      }
+
+      if (url.endsWith("/issues") && init?.method === "POST") {
+        return createFetchResponse({
+          number: createdIssueNumber,
+          title: "Customer report about marker text refined",
+          html_url: getRepositoryIssueUrl(createdIssueNumber),
+        });
+      }
+
+      throw new Error(`Unexpected fetch call: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "test-token";
+
+    const { run } = await loadCli({
+      readlineAnswers: ["Turn it into an implementation-ready spec.", "y"],
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/prs.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+      spawnSyncImpl: (command, args) => {
+        if (command === "gh" && args[0] === "--version") {
+          return { status: 1, error: new Error("gh is unavailable") };
+        }
+
+        if (command === "codex" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "codex") {
+          const { metadata, runDir } = readLatestRunMetadata();
+          writeFileSync(
+            resolve(REPO_ROOT, metadata.draftFile as string),
+            "# Customer report about marker text refined\n\n## Summary\nDedicated managed issue body.\n",
+            "utf8"
+          );
+          cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", runDir));
+          return { status: 0 };
+        }
+
+        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.argv = ["node", "prs", "issue", "refine", String(issueNumber)];
+    await run();
+
+    const createdRunDir = listRunDirectories().find((entry) => !beforeRuns.includes(entry));
+    expect(createdRunDir).toBeDefined();
+    cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string));
+    cleanupTargets.add(resolve(REPO_ROOT, ".prs", "issues", String(issueNumber)));
+
+    const patchCall = fetchMock.mock.calls.find(
+      ([input, init]) =>
+        String(input).endsWith(`/issues/${issueNumber}`) &&
+        (init as RequestInit | undefined)?.method === "PATCH"
+    );
+    expect(patchCall).toBeUndefined();
+
+    const createCall = fetchMock.mock.calls.find(
+      ([input, init]) =>
+        String(input).endsWith("/issues") &&
+        (init as RequestInit | undefined)?.method === "POST"
+    );
+    expect(createCall).toBeDefined();
+    expect(JSON.parse(String(createCall?.[1] && (createCall[1] as RequestInit).body))).toMatchObject({
+      title: "Customer report about marker text refined",
+      body: expect.stringContaining("<!-- prs:managed-issue -->"),
+    });
+  });
+
+  it("creates a linked PRS-managed issue instead of overwriting a non-managed source issue", async () => {
+    const beforeRuns = listRunDirectories();
+    const issueNumber = 60;
+    const createdIssueNumber = 160;
+    createMockCodexHome();
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = String(input);
+
+      if (url.endsWith(`/issues/${issueNumber}`)) {
+        return createFetchResponse({
+          title: "Customer request",
+          body: "Plain issue body from GitHub.",
+          html_url: getRepositoryIssueUrl(issueNumber),
+        });
+      }
+
+      if (url.includes(`/issues/${issueNumber}/comments?`)) {
+        return createFetchResponse([]);
+      }
+
+      if (url.endsWith("/issues?state=open&per_page=100")) {
+        throw new Error("Issue refine should not search for reusable same-title issues.");
+      }
+
+      if (url.endsWith("/issues") && init?.method === "POST") {
+        return createFetchResponse({
+          number: createdIssueNumber,
+          title: "Customer request refined",
+          html_url: getRepositoryIssueUrl(createdIssueNumber),
+        });
+      }
+
+      throw new Error(`Unexpected fetch call: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "test-token";
+
+    const { run } = await loadCli({
+      readlineAnswers: ["Turn it into an implementation-ready spec.", "y"],
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/prs.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+      spawnSyncImpl: (command, args) => {
+        if (command === "gh" && args[0] === "--version") {
+          return { status: 1, error: new Error("gh is unavailable") };
+        }
+
+        if (command === "codex" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "codex") {
+          const { metadata, runDir } = readLatestRunMetadata();
+          writeFileSync(
+            resolve(REPO_ROOT, metadata.draftFile as string),
+            "# Customer request refined\n\n## Summary\nRefined linked issue body.\n",
+            "utf8"
+          );
+          cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", runDir));
+          return { status: 0 };
+        }
+
+        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.argv = ["node", "prs", "issue", "refine", String(issueNumber)];
+    await run();
+
+    const createdRunDir = listRunDirectories().find((entry) => !beforeRuns.includes(entry));
+    expect(createdRunDir).toBeDefined();
+    cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string));
+    cleanupTargets.add(resolve(REPO_ROOT, ".prs", "issues", String(issueNumber)));
+
+    const patchCall = fetchMock.mock.calls.find(
+      ([input, init]) =>
+        String(input).endsWith(`/issues/${issueNumber}`) &&
+        (init as RequestInit | undefined)?.method === "PATCH"
+    );
+    expect(patchCall).toBeUndefined();
+
+    const createCall = fetchMock.mock.calls.find(
+      ([input, init]) =>
+        String(input).endsWith("/issues") &&
+        (init as RequestInit | undefined)?.method === "POST"
+    );
+    expect(createCall).toBeDefined();
+    expect(JSON.parse(String(createCall?.[1] && (createCall[1] as RequestInit).body))).toMatchObject({
+      title: "Customer request refined",
+      body: [
+        "<!-- prs:managed-issue -->",
+        "",
+        `Refined from source issue #${issueNumber}.`,
+        "",
+        "## Summary\nRefined linked issue body.",
+      ].join("\n"),
+    });
+    expect(
+      JSON.parse(
+        readFileSync(getIssueRefineSessionStateFilePath(REPO_ROOT, issueNumber), "utf8")
+      )
+    ).toMatchObject({
+      completionMode: "created-linked",
+      completedIssueNumber: createdIssueNumber,
+      completedIssueUrl: getRepositoryIssueUrl(createdIssueNumber),
+    });
+  });
+
+  it("starts a fresh refine run after a completed refine state instead of resuming", async () => {
+    const issueNumber = 62;
+    const sessionId = "019d5005-0000-7111-8222-933344445555";
+    const codexHome = createMockCodexHome();
+    const sessionStateDir = resolve(REPO_ROOT, ".prs", "issues", String(issueNumber));
+    const existingRunDir = resolve(
+      REPO_ROOT,
+      ".prs",
+      "runs",
+      "20260424T120000000Z-issue-refine-62"
+    );
+    const existingRunDirName = "20260424T120000000Z-issue-refine-62";
+    let runtimePrompt = "";
+
+    writeMockCodexSession(codexHome, sessionId, REPO_ROOT, "2026-04-24T12:00:00.000Z");
+    cleanupTargets.add(sessionStateDir);
+    cleanupTargets.add(existingRunDir);
+    mkdirSync(existingRunDir, { recursive: true });
+    writeIssueRefineSessionState(REPO_ROOT, {
+      issueNumber,
+      runtimeType: "codex",
+      runDir: existingRunDir,
+      promptFile: resolve(existingRunDir, "prompt.md"),
+      outputLog: resolve(existingRunDir, "output.log"),
+      latestDraftFile: resolve(existingRunDir, `issue-refine-${issueNumber}.md`),
+      sessionId,
+      completionMode: "kept-on-disk",
+      createdAt: "2026-04-24T12:00:00.000Z",
+      updatedAt: "2026-04-24T12:00:00.000Z",
+    });
+    const beforeRuns = listRunDirectories();
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          title: "Completed refine rerun",
+          body: "<!-- prs:managed-issue -->\n\nOriginal managed issue body.",
+          html_url: `https://github.com/DevwareUK/prs/issues/${issueNumber}`,
+        })
+      )
+      .mockResolvedValueOnce(createFetchResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "test-token";
+
+    const { run, spawnSync } = await loadCli({
+      readlineAnswers: ["Start a new refinement after completion.", "n"],
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/prs.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+      spawnSyncImpl: (command, args) => {
+        if (command === "gh" && args[0] === "--version") {
+          return { status: 1, error: new Error("gh is unavailable") };
+        }
+
+        if (command === "codex" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "codex" && args[0] === "--sandbox") {
+          const { metadata, runDir } = readLatestRunMetadata();
+          runtimePrompt = readFileSync(resolve(REPO_ROOT, metadata.promptFile as string), "utf8");
+          writeFileSync(
+            resolve(REPO_ROOT, metadata.draftFile as string),
+            "# Completed refine rerun\n\n## Summary\nFresh rerun after completion.\n",
+            "utf8"
+          );
+          cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", runDir));
+          return { status: 0 };
+        }
+
+        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.argv = ["node", "prs", "issue", "refine", String(issueNumber)];
+    await run();
+
+    const createdRunDir = listRunDirectories().find((entry) => !beforeRuns.includes(entry));
+    expect(createdRunDir).toBeDefined();
+    expect(createdRunDir).not.toBe(existingRunDirName);
+    cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string));
+
+    expect(runtimePrompt).toContain("What changes should be made to the specification?");
+    expect(runtimePrompt).toContain("Start a new refinement after completion.");
+    expect(spawnSync).not.toHaveBeenCalledWith(
+      "codex",
+      expect.arrayContaining(["resume", sessionId]),
+      expect.any(Object)
+    );
+    expect(
+      JSON.parse(
+        readFileSync(getIssueRefineSessionStateFilePath(REPO_ROOT, issueNumber), "utf8")
+      )
+    ).toMatchObject({
+      runDir: resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string),
+      createdAt: expect.not.stringMatching(/^2026-04-24T12:00:00.000Z$/),
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("warns and starts a fresh refine session when the saved resumable workspace artifacts are missing", async () => {
+    const beforeRuns = listRunDirectories();
+    const issueNumber = 64;
+    const sessionId = "019d5006-0000-7111-8222-933344445555";
+    const codexHome = createMockCodexHome();
+    const sessionStateDir = resolve(REPO_ROOT, ".prs", "issues", String(issueNumber));
+    const missingRunDir = resolve(
+      REPO_ROOT,
+      ".prs",
+      "runs",
+      "20260424T121500000Z-issue-refine-64"
+    );
+    let runtimePrompt = "";
+
+    writeMockCodexSession(codexHome, sessionId, REPO_ROOT, "2026-04-24T12:15:00.000Z");
+    cleanupTargets.add(sessionStateDir);
+    writeIssueRefineSessionState(REPO_ROOT, {
+      issueNumber,
+      runtimeType: "codex",
+      runDir: missingRunDir,
+      promptFile: resolve(missingRunDir, "prompt.md"),
+      outputLog: resolve(missingRunDir, "output.log"),
+      latestDraftFile: resolve(missingRunDir, `issue-refine-${issueNumber}.md`),
+      sessionId,
+      createdAt: "2026-04-24T12:15:00.000Z",
+      updatedAt: "2026-04-24T12:15:00.000Z",
+    });
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          title: "Resume with missing artifacts",
+          body: "<!-- prs:managed-issue -->\n\nOriginal managed issue body.",
+          html_url: `https://github.com/DevwareUK/prs/issues/${issueNumber}`,
+        })
+      )
+      .mockResolvedValueOnce(createFetchResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "test-token";
+
+    const messages: string[] = [];
+    const { run, spawnSync } = await loadCli({
+      readlineAnswers: ["Restart from a clean workspace.", "n"],
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/prs.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+      spawnSyncImpl: (command, args) => {
+        if (command === "gh" && args[0] === "--version") {
+          return { status: 1, error: new Error("gh is unavailable") };
+        }
+
+        if (command === "codex" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "codex" && args[0] === "--sandbox") {
+          const { metadata, runDir } = readLatestRunMetadata();
+          runtimePrompt = readFileSync(resolve(REPO_ROOT, metadata.promptFile as string), "utf8");
+          writeFileSync(
+            resolve(REPO_ROOT, metadata.draftFile as string),
+            "# Resume with missing artifacts\n\n## Summary\nFresh refinement after missing workspace artifacts.\n",
+            "utf8"
+          );
+          cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", runDir));
+          return { status: 0 };
+        }
+
+        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+    vi.spyOn(console, "log").mockImplementation((message?: unknown) => {
+      messages.push(String(message ?? ""));
+    });
+
+    process.argv = ["node", "prs", "issue", "refine", String(issueNumber)];
+    await run();
+
+    const createdRunDir = listRunDirectories().find((entry) => !beforeRuns.includes(entry));
+    expect(createdRunDir).toBeDefined();
+    cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string));
+
+    expect(messages.join("\n")).toContain(
+      `Saved issue-refine workspace artifacts for issue #${issueNumber} are missing. Starting a fresh refinement session.`
+    );
+    expect(runtimePrompt).toContain("What changes should be made to the specification?");
+    expect(runtimePrompt).toContain("Restart from a clean workspace.");
+    expect(spawnSync).not.toHaveBeenCalledWith(
+      "codex",
+      expect.arrayContaining(["resume", sessionId]),
+      expect.any(Object)
+    );
+    expect(
+      JSON.parse(
+        readFileSync(getIssueRefineSessionStateFilePath(REPO_ROOT, issueNumber), "utf8")
+      )
+    ).toMatchObject({
+      runDir: resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string),
+      createdAt: expect.not.stringMatching(/^2026-04-24T12:15:00.000Z$/),
+    });
+  });
+
+  it("keeps non-managed issue refinements on disk when linked issue creation is declined", async () => {
+    const beforeRuns = listRunDirectories();
+    const issueNumber = 61;
+    createMockCodexHome();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          title: "Keep linked refine draft on disk",
+          body: "Plain issue body from GitHub.",
+          html_url: `https://github.com/DevwareUK/prs/issues/${issueNumber}`,
+        })
+      )
+      .mockResolvedValueOnce(createFetchResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "test-token";
+
+    const messages: string[] = [];
+    const { run } = await loadCli({
+      readlineAnswers: ["Draft a linked refinement without publishing it.", "n"],
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/prs.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+      spawnSyncImpl: (command, args) => {
+        if (command === "gh" && args[0] === "--version") {
+          return { status: 1, error: new Error("gh is unavailable") };
+        }
+
+        if (command === "codex" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "codex") {
+          const { metadata, runDir } = readLatestRunMetadata();
+          writeFileSync(
+            resolve(REPO_ROOT, metadata.draftFile as string),
+            "# Keep linked refine draft on disk\n\n## Summary\nRefined linked draft kept on disk.\n",
+            "utf8"
+          );
+          cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", runDir));
+          return { status: 0 };
+        }
+
+        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+    vi.spyOn(console, "log").mockImplementation((message?: unknown) => {
+      messages.push(String(message ?? ""));
+    });
+
+    process.argv = ["node", "prs", "issue", "refine", String(issueNumber)];
+    await run();
+
+    const createdRunDir = listRunDirectories().find((entry) => !beforeRuns.includes(entry));
+    expect(createdRunDir).toBeDefined();
+    cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string));
+    cleanupTargets.add(resolve(REPO_ROOT, ".prs", "issues", String(issueNumber)));
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(messages.join("\n")).toContain(
+      `.prs/runs/${createdRunDir}/issue-refine-${issueNumber}.md`
+    );
+    expect(
+      JSON.parse(
+        readFileSync(getIssueRefineSessionStateFilePath(REPO_ROOT, issueNumber), "utf8")
+      )
+    ).toMatchObject({
+      completionMode: "kept-on-disk",
+    });
   });
 
   it("does not print a launch-stage notice for primary-offer test-backlog runs", async () => {
@@ -5634,6 +7723,123 @@ describe("CLI integration", () => {
     });
     expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toMatchObject({
       body: expect.stringContaining("### Done definition"),
+    });
+  });
+
+  it("lists issue comments through the GitHub repository forge adapter", async () => {
+    const issueNumber = 42;
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      createFetchResponse([
+        {
+          id: 3001,
+          body: "First refinement note.",
+          html_url: `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-3001`,
+          created_at: "2026-04-24T10:00:00Z",
+          updated_at: "2026-04-24T10:05:00Z",
+          user: {
+            login: "alice",
+            type: "User",
+          },
+        },
+        {
+          id: 3002,
+          body: "Automated summary.",
+          html_url: `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-3002`,
+          created_at: "2026-04-24T10:06:00Z",
+          updated_at: "2026-04-24T10:06:00Z",
+          user: {
+            login: "prs-bot",
+            type: "Bot",
+          },
+        },
+      ])
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "test-token";
+
+    const { createGitHubRepositoryForge } = await loadGitHubForge();
+    const forge = createGitHubRepositoryForge(REPO_ROOT);
+
+    await expect((forge as any).fetchIssueComments(issueNumber)).resolves.toEqual([
+      {
+        id: 3001,
+        body: "First refinement note.",
+        url: `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-3001`,
+        createdAt: "2026-04-24T10:00:00Z",
+        updatedAt: "2026-04-24T10:05:00Z",
+        author: "alice",
+        isBot: false,
+      },
+      {
+        id: 3002,
+        body: "Automated summary.",
+        url: `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-3002`,
+        createdAt: "2026-04-24T10:06:00Z",
+        updatedAt: "2026-04-24T10:06:00Z",
+        author: "prs-bot",
+        isBot: true,
+      },
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `https://api.github.com/repos/DevwareUK/prs/issues/${issueNumber}/comments?per_page=100`,
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: "Bearer test-token",
+          "User-Agent": "prs-cli",
+        },
+      }
+    );
+  });
+
+  it("updates issue bodies through the GitHub repository forge adapter", async () => {
+    const issueNumber = 42;
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      createFetchResponse({
+        number: issueNumber,
+        title: "Refined title",
+        html_url: `https://github.com/DevwareUK/prs/issues/${issueNumber}`,
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "test-token";
+
+    const { createGitHubRepositoryForge } = await loadGitHubForge();
+    const forge = createGitHubRepositoryForge(REPO_ROOT);
+
+    await expect(
+      (forge as any).updateIssue(
+        issueNumber,
+        "Refined title",
+        "<!-- prs:managed-issue -->\n\n## Summary\nRefined body."
+      )
+    ).resolves.toEqual({
+      number: issueNumber,
+      title: "Refined title",
+      url: `https://github.com/DevwareUK/prs/issues/${issueNumber}`,
+      status: "existing",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `https://api.github.com/repos/DevwareUK/prs/issues/${issueNumber}`,
+      expect.objectContaining({
+        method: "PATCH",
+        headers: expect.objectContaining({
+          Accept: "application/vnd.github+json",
+          Authorization: "Bearer test-token",
+          "Content-Type": "application/json",
+          "User-Agent": "prs-cli",
+        }),
+      })
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      title: "Refined title",
+      body: "<!-- prs:managed-issue -->\n\n## Summary\nRefined body.",
     });
   });
 

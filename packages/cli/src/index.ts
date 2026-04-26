@@ -56,6 +56,7 @@ import {
   type CreatedIssueRecord,
   type IssueDetails,
   type IssuePlanComment,
+  type RepositoryComment,
   type RepositoryForge,
 } from "./forge";
 import {
@@ -78,15 +79,20 @@ import {
   type InteractiveRuntimeType,
 } from "./runtime";
 import {
+  createIssueRefineWorkspace,
   formatRunTimestamp,
   getIssueBatchRunDir,
   getIssueBatchStateDir,
   getIssueBatchStateFilePath,
+  type IssueRefineSessionState,
+  type IssueRefineWorkspace,
   getIssueSessionStateFilePath,
   getIssueStateDir,
+  loadIssueRefineSessionState,
   resolveExistingIssueBatchStateFilePath,
   resolveExistingIssueSessionStateFilePath,
   toRepoRelativePath,
+  writeIssueRefineSessionState,
 } from "./run-artifacts";
 import { parseSetupCommandArgs, runSetupCommand } from "./setup";
 import {
@@ -152,6 +158,10 @@ type IssueCommandOptions =
     }
   | {
       action: "draft";
+    }
+  | {
+      action: "refine";
+      issueNumber: number;
     };
 
 type GeneratedIssueResolutionPlan = Awaited<
@@ -235,6 +245,8 @@ type GeneratedIssuePullRequest = {
   bodyFilePath?: string;
 };
 
+const PRS_MANAGED_ISSUE_MARKER = "<!-- prs:managed-issue -->";
+
 type IssueBatchStatus = "pending" | "running" | "completed" | "failed";
 
 type IssueBatchAttempt = {
@@ -285,6 +297,7 @@ const ISSUE_USAGE = [
   "  prs issue <number> [--mode <interactive|unattended>]",
   "  prs issue batch <number> <number> [...number] [--mode unattended]",
   "  prs issue draft",
+  "  prs issue refine <number>",
   "  prs issue plan <number> [--refresh]",
   "  prs issue prepare <number> [--mode <local|github-action>]",
   "  prs issue finalize <number>",
@@ -323,6 +336,7 @@ const TOP_LEVEL_HELP = [
   "",
   "Advanced:",
   "  prs issue draft",
+  "  prs issue refine <number>",
   "  prs issue plan <number> [--refresh]",
   "  prs issue <number> [--mode <interactive|unattended>]",
   "  prs issue prepare <number> [--mode <local|github-action>]",
@@ -782,6 +796,18 @@ export function parseIssueCommandArgs(args: string[]): IssueCommandOptions {
 
     return {
       action: "draft",
+    };
+  }
+
+  if (subcommand === "refine") {
+    const optionArgs = issueArgs.slice(2);
+    if (optionArgs.length > 0) {
+      throw new Error(`Unknown issue option "${optionArgs[0]}". ${ISSUE_USAGE}`);
+    }
+
+    return {
+      action: "refine",
+      issueNumber: parseIssueNumber(issueArgs[1]),
     };
   }
 
@@ -1458,6 +1484,326 @@ function writeIssueDraftWorkspaceFiles(
     ].join("\n"),
     "utf8"
   );
+}
+
+function isPrsManagedIssue(issue: IssueDetails): boolean {
+  return issue.body.trimStart().startsWith(PRS_MANAGED_ISSUE_MARKER);
+}
+
+function formatIssueRefineComments(comments: RepositoryComment[]): string {
+  if (comments.length === 0) {
+    return "- (No issue comments.)";
+  }
+
+  return comments
+    .map((comment) => {
+      const author = comment.author.trim() || "unknown";
+      const body = comment.body.trim() || "(No comment body provided.)";
+      return `- @${author}: ${body}`;
+    })
+    .join("\n");
+}
+
+function buildIssueRefineRuntimePrompt(input: {
+  repoRoot: string;
+  workspace: IssueRefineWorkspace;
+  issue: IssueDetails;
+  issueNumber: number;
+  requestedChanges?: string;
+  comments: RepositoryComment[];
+}): string {
+  const draftFile = toRepoRelativePath(input.repoRoot, input.workspace.draftFilePath);
+  const runDir = toRepoRelativePath(input.repoRoot, input.workspace.runDir);
+  const requestedChangesSection = input.requestedChanges
+    ? [
+        "What changes should be made to the specification?",
+        input.requestedChanges,
+        "",
+      ]
+    : [];
+
+  return [
+    "You are working in the current repository.",
+    "",
+    `Refine GitHub issue #${input.issueNumber} into an implementation-ready specification.`,
+    "",
+    "The issue body remains the canonical source of truth for execution.",
+    "Issue comments are refinement context only.",
+    "",
+    ...requestedChangesSection,
+    "Current issue title:",
+    input.issue.title,
+    "",
+    "Current issue body:",
+    input.issue.body.trim() || "(No issue body provided.)",
+    "",
+    "Relevant issue comments:",
+    formatIssueRefineComments(input.comments),
+    "",
+    `Write the refined markdown to \`${draftFile}\`.`,
+    `Use \`${runDir}\` for run artifacts created by this workflow.`,
+    "",
+    "Instructions to the coding agent:",
+    "- inspect the repository only as needed to refine the specification",
+    "- keep the refined draft grounded in the current repository structure and existing patterns",
+    "- treat issue comments as context, not as the canonical spec",
+    "- write an implementation-ready Markdown issue draft with a top-level title heading and concrete sections when they add value",
+    "- write the completed draft to the provided draft path before exiting",
+    "- do not create or update GitHub issues directly",
+    "- do not modify unrelated repository files",
+    "- do not modify `.prs/` except for the provided draft file and local workflow artifacts",
+    "",
+    "When the refined specification is complete and saved, stop.",
+  ].join("\n");
+}
+
+function appendIssueRefineLog(outputLogPath: string, message: string): void {
+  appendFileSync(outputLogPath, `${message}\n`, "utf8");
+}
+
+function updateIssueRefineWorkspaceMetadata(
+  workspace: IssueRefineWorkspace,
+  updater: (currentMetadata: Record<string, unknown>) => Record<string, unknown>
+): void {
+  const currentMetadata = JSON.parse(
+    readFileSync(workspace.metadataFilePath, "utf8")
+  ) as Record<string, unknown>;
+  writeFileSync(
+    workspace.metadataFilePath,
+    `${JSON.stringify(updater(currentMetadata), null, 2)}\n`,
+    "utf8"
+  );
+}
+
+function writeIssueRefineWorkspaceFiles(
+  repoRoot: string,
+  workspace: IssueRefineWorkspace,
+  runtimeType: InteractiveRuntimeType,
+  issueNumber: number,
+  issue: IssueDetails,
+  comments: RepositoryComment[],
+  requestedChanges: string | undefined,
+  runtimeInvocation: "new" | "resume",
+  sessionId?: string,
+  warnings: string[] = []
+): void {
+  const createdAt = new Date().toISOString();
+  const runtime = getInteractiveRuntimeByType(runtimeType);
+  const prompt = buildIssueRefineRuntimePrompt({
+    repoRoot,
+    workspace,
+    issue,
+    issueNumber,
+    requestedChanges,
+    comments,
+  });
+
+  writeFileSync(workspace.promptFilePath, `${prompt}\n`, "utf8");
+  writeFileSync(
+    workspace.metadataFilePath,
+    `${JSON.stringify(
+      {
+        createdAt,
+        flow: "issue-refine",
+        issueNumber,
+        issueTitle: issue.title,
+        issueUrl: issue.url,
+        sourceIssueManaged: isPrsManagedIssue(issue),
+        ...(requestedChanges ? { requestedChanges } : {}),
+        commentCount: comments.length,
+        draftFile: toRepoRelativePath(repoRoot, workspace.draftFilePath),
+        promptFile: toRepoRelativePath(repoRoot, workspace.promptFilePath),
+        outputLog: toRepoRelativePath(repoRoot, workspace.outputLogPath),
+        runDir: toRepoRelativePath(repoRoot, workspace.runDir),
+        runtime: {
+          type: runtime.type,
+          displayName: runtime.displayName,
+          command: runtime.metadata.command,
+          invocation: runtimeInvocation,
+          sessionId,
+          sandboxMode: runtime.metadata.sandboxMode,
+          approvalPolicy: runtime.metadata.approvalPolicy,
+          warnings,
+        },
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+  writeFileSync(
+    workspace.outputLogPath,
+    [
+      "# prs issue refine run log",
+      "",
+      `Created: ${createdAt}`,
+      `Issue number: ${issueNumber}`,
+      `Issue URL: ${issue.url}`,
+      `Draft file: ${toRepoRelativePath(repoRoot, workspace.draftFilePath)}`,
+      `Prompt file: ${toRepoRelativePath(repoRoot, workspace.promptFilePath)}`,
+      `Runtime: ${runtime.displayName}`,
+      `Runtime invocation: ${runtimeInvocation}`,
+      ...(sessionId ? [`Runtime session: ${sessionId}`] : []),
+      ...warnings.map((warning) => `Warning: ${warning}`),
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+}
+
+function createIssueRefineSessionState(
+  repoRoot: string,
+  issueNumber: number,
+  runtimeType: InteractiveRuntimeType,
+  workspace: IssueRefineWorkspace,
+  sessionId?: string,
+  completion?:
+    | {
+        mode: "updated-existing" | "created-linked";
+        issueNumber: number;
+        issueUrl: string;
+      }
+    | {
+        mode: "kept-on-disk";
+      }
+): IssueRefineSessionState {
+  const previousState = loadIssueRefineSessionState(repoRoot, issueNumber);
+  const createdAt =
+    previousState && previousState.runDir === workspace.runDir
+      ? previousState.createdAt
+      : new Date().toISOString();
+
+  return {
+    issueNumber,
+    runtimeType,
+    runDir: workspace.runDir,
+    promptFile: workspace.promptFilePath,
+    outputLog: workspace.outputLogPath,
+    latestDraftFile: workspace.draftFilePath,
+    ...(sessionId ? { sessionId } : {}),
+    ...(completion?.mode === "kept-on-disk"
+      ? {
+          completionMode: "kept-on-disk" as const,
+        }
+      : completion
+        ? {
+            completionMode: completion.mode,
+            completedIssueNumber: completion.issueNumber,
+            completedIssueUrl: completion.issueUrl,
+          }
+        : {}),
+    createdAt,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function persistIssueRefineSessionState(
+  repoRoot: string,
+  issueNumber: number,
+  runtimeType: InteractiveRuntimeType,
+  workspace: IssueRefineWorkspace,
+  sessionId?: string,
+  completion?:
+    | {
+        mode: "updated-existing" | "created-linked";
+        issueNumber: number;
+        issueUrl: string;
+      }
+    | {
+        mode: "kept-on-disk";
+      }
+): void {
+  writeIssueRefineSessionState(
+    repoRoot,
+    createIssueRefineSessionState(
+      repoRoot,
+      issueNumber,
+      runtimeType,
+      workspace,
+      sessionId,
+      completion
+    )
+  );
+}
+
+function createIssueRefineWorkspaceFromState(
+  state: Pick<
+    IssueRefineSessionState,
+    "runDir" | "promptFile" | "outputLog" | "latestDraftFile"
+  >
+): IssueRefineWorkspace {
+  return {
+    runDir: state.runDir,
+    draftFilePath: state.latestDraftFile,
+    promptFilePath: state.promptFile,
+    metadataFilePath: resolve(state.runDir, "metadata.json"),
+    outputLogPath: state.outputLog,
+  };
+}
+
+function buildIssueRefineStaleSessionWarning(
+  issueNumber: number,
+  runtimeType: InteractiveRuntimeType,
+  sessionId: string
+): string {
+  return `Saved ${
+    getInteractiveRuntimeByType(runtimeType).displayName
+  } refine session ${sessionId} for issue #${issueNumber} is no longer available. Starting a fresh refinement session.`;
+}
+
+function buildIssueRefineRuntimeMismatchWarning(
+  savedRuntimeType: InteractiveRuntimeType,
+  currentRuntimeType: InteractiveRuntimeType
+): string {
+  return `The saved issue-refine session used ${
+    getInteractiveRuntimeByType(savedRuntimeType).displayName
+  }, but the configured runtime is ${
+    getInteractiveRuntimeByType(currentRuntimeType).displayName
+  }. Starting a fresh refinement session.`;
+}
+
+function buildIssueRefineMissingWorkspaceWarning(issueNumber: number): string {
+  return `Saved issue-refine workspace artifacts for issue #${issueNumber} are missing. Starting a fresh refinement session.`;
+}
+
+function ensurePrsManagedIssueBody(body: string): string {
+  const trimmed = body.trim();
+  if (trimmed.startsWith(PRS_MANAGED_ISSUE_MARKER)) {
+    return trimmed;
+  }
+
+  return `${PRS_MANAGED_ISSUE_MARKER}\n\n${trimmed}`;
+}
+
+function buildLinkedPrsManagedIssueBody(
+  sourceIssueNumber: number,
+  body: string
+): string {
+  return [
+    PRS_MANAGED_ISSUE_MARKER,
+    "",
+    `Refined from source issue #${sourceIssueNumber}.`,
+    "",
+    body.trim(),
+  ].join("\n");
+}
+
+function parseCreatedIssueUrl(issueUrl: string): { issueNumber: number; issueUrl: string } {
+  const normalizedUrl = issueUrl.trim();
+  const match = normalizedUrl.match(/^https:\/\/github\.com\/[^/]+\/[^/]+\/issues\/(\d+)$/);
+  if (!match) {
+    throw new Error(`Created issue URL is not a canonical GitHub issue URL: ${normalizedUrl}`);
+  }
+
+  const issueNumber = Number.parseInt(match[1] ?? "", 10);
+  if (!Number.isSafeInteger(issueNumber) || issueNumber <= 0) {
+    throw new Error(`Created issue URL does not include a valid issue number: ${normalizedUrl}`);
+  }
+
+  return {
+    issueNumber,
+    issueUrl: normalizedUrl,
+  };
 }
 
 function loadIssueSessionState(
@@ -2984,6 +3330,231 @@ async function runIssueDraftCommand(): Promise<void> {
   console.log(`Created issue: ${issueUrl}`);
 }
 
+async function runIssueRefineCommand(issueNumber: number): Promise<void> {
+  const repoRoot = getDefaultRepoRoot();
+  const forge = getRepositoryForge(repoRoot);
+  const repositoryConfig = getRepositoryConfig(repoRoot);
+  const runtime = selectInteractiveRuntime(repositoryConfig.ai.runtime, {
+    onFallback: (message) => {
+      console.log(message);
+    },
+  });
+
+  console.log(`Fetching issue #${issueNumber}...`);
+  const issue = await forge.fetchIssueDetails(issueNumber);
+  const comments = await forge.fetchIssueComments(issueNumber);
+  const existingSessionState = loadIssueRefineSessionState(repoRoot, issueNumber);
+  const resumableSessionState =
+    existingSessionState?.completionMode === undefined ? existingSessionState : undefined;
+  const warnings: string[] = [];
+  let runtimeInvocation: "new" | "resume" = "new";
+  let sessionId: string | undefined;
+
+  if (resumableSessionState) {
+    if (resumableSessionState.runtimeType !== runtime.type) {
+      warnings.push(
+        buildIssueRefineRuntimeMismatchWarning(
+          resumableSessionState.runtimeType,
+          runtime.type
+        )
+      );
+    } else if (
+      resumableSessionState.sessionId &&
+      getInteractiveRuntimeByType(runtime.type).metadata.supportsSessionTracking
+    ) {
+      const savedSession = findTrackedRuntimeSessionById(
+        runtime.type,
+        repoRoot,
+        resumableSessionState.sessionId
+      );
+
+      if (savedSession) {
+        if (existsSync(resumableSessionState.runDir)) {
+          runtimeInvocation = "resume";
+          sessionId = resumableSessionState.sessionId;
+        } else {
+          warnings.push(buildIssueRefineMissingWorkspaceWarning(issueNumber));
+        }
+      } else {
+        warnings.push(
+          buildIssueRefineStaleSessionWarning(
+            issueNumber,
+            runtime.type,
+            resumableSessionState.sessionId
+          )
+        );
+      }
+    }
+  }
+  const requestedChanges =
+    runtimeInvocation === "resume"
+      ? undefined
+      : await promptForRequiredLine("What changes should be made to the specification? ");
+
+  const workspace =
+    runtimeInvocation === "resume" && resumableSessionState
+      ? createIssueRefineWorkspaceFromState(resumableSessionState)
+      : createIssueRefineWorkspace(repoRoot, issueNumber);
+  writeIssueRefineWorkspaceFiles(
+    repoRoot,
+    workspace,
+    runtime.type,
+    issueNumber,
+    issue,
+    comments,
+    requestedChanges,
+    runtimeInvocation,
+    sessionId,
+    warnings
+  );
+
+  for (const warning of warnings) {
+    console.log(warning);
+    appendIssueRefineLog(workspace.outputLogPath, `Warning: ${warning}`);
+  }
+
+  const runtimeLaunch = runtime.launch(
+    repoRoot,
+    {
+      promptFilePath: workspace.promptFilePath,
+      outputLogPath: workspace.outputLogPath,
+    },
+    runtimeInvocation === "resume" ? { resumeSessionId: sessionId } : undefined
+  );
+  const resolvedSessionId = runtimeLaunch.sessionId;
+  persistIssueRefineSessionState(
+    repoRoot,
+    issueNumber,
+    runtime.type,
+    workspace,
+    resolvedSessionId
+  );
+  updateIssueRefineWorkspaceMetadata(workspace, (currentMetadata) => ({
+    ...currentMetadata,
+    runtime: {
+      ...((currentMetadata.runtime as Record<string, unknown> | undefined) ?? {}),
+      type: runtime.type,
+      displayName: runtime.displayName,
+      command: runtime.metadata.command,
+      invocation: runtimeLaunch.invocation,
+      sessionId: resolvedSessionId,
+      sandboxMode: runtime.metadata.sandboxMode,
+      approvalPolicy: runtime.metadata.approvalPolicy,
+      warnings,
+    },
+  }));
+
+  if (!existsSync(workspace.draftFilePath)) {
+    throw new Error(
+      `${runtime.displayName} did not write the refined issue draft to ${toRepoRelativePath(repoRoot, workspace.draftFilePath)}.`
+    );
+  }
+
+  const draftContents = readFileSync(workspace.draftFilePath, "utf8").trim();
+  if (!draftContents) {
+    throw new Error(
+      `${runtime.displayName} wrote an empty refined issue draft at ${toRepoRelativePath(repoRoot, workspace.draftFilePath)}.`
+    );
+  }
+
+  if (!forge.isAuthenticated()) {
+    printGeneratedTextPreview("Generated refined issue draft", draftContents);
+    console.log(
+      forge.type === "github"
+        ? "Issue refinement apply step skipped because GitHub access is unavailable."
+        : "Issue refinement apply step skipped because repository forge support is disabled by .prs/config.json."
+    );
+    persistIssueRefineSessionState(
+      repoRoot,
+      issueNumber,
+      runtime.type,
+      workspace,
+      resolvedSessionId,
+      {
+        mode: "kept-on-disk",
+      }
+    );
+    return;
+  }
+
+  const managedSourceIssue = isPrsManagedIssue(issue);
+  const reviewedDraft = await reviewGeneratedText({
+    filePath: workspace.draftFilePath,
+    initialContent: draftContents,
+    previewHeading: "Generated refined issue draft",
+    prompt: managedSourceIssue
+      ? `Update PRS-managed issue #${issueNumber} in GitHub with this refined specification? [Y/n/m]: `
+      : "Create a linked PRS-managed issue from this refined specification? [Y/n/m]: ",
+    emptyContentMessage: "Issue refine draft cannot be empty.",
+    editorDescription: "issue refine draft",
+    promptForLine,
+    validate: (content) => {
+      parseIssueDraftDocument(content);
+    },
+  });
+
+  if (!reviewedDraft) {
+    persistIssueRefineSessionState(
+      repoRoot,
+      issueNumber,
+      runtime.type,
+      workspace,
+      resolvedSessionId,
+      {
+        mode: "kept-on-disk",
+      }
+    );
+    console.log(
+      `Refined draft kept at ${toRepoRelativePath(repoRoot, workspace.draftFilePath)}.`
+    );
+    return;
+  }
+
+  const parsedDraft = parseIssueDraftDocument(reviewedDraft.content);
+
+  if (managedSourceIssue) {
+    const updatedIssue = await forge.updateIssue(
+      issueNumber,
+      parsedDraft.title,
+      ensurePrsManagedIssueBody(parsedDraft.body)
+    );
+    persistIssueRefineSessionState(
+      repoRoot,
+      issueNumber,
+      runtime.type,
+      workspace,
+      resolvedSessionId,
+      {
+        mode: "updated-existing",
+        issueNumber: updatedIssue.number,
+        issueUrl: updatedIssue.url,
+      }
+    );
+    console.log(`Updated issue: ${updatedIssue.url}`);
+    return;
+  }
+
+  const linkedIssue = parseCreatedIssueUrl(
+    await forge.createDraftIssue(
+      parsedDraft.title,
+      buildLinkedPrsManagedIssueBody(issueNumber, parsedDraft.body)
+    )
+  );
+  persistIssueRefineSessionState(
+    repoRoot,
+    issueNumber,
+    runtime.type,
+    workspace,
+    resolvedSessionId,
+    {
+      mode: "created-linked",
+      issueNumber: linkedIssue.issueNumber,
+      issueUrl: linkedIssue.issueUrl,
+    }
+  );
+  console.log(`Created linked issue: ${linkedIssue.issueUrl}`);
+}
+
 async function runIssuePlanCommand(
   issueNumber: number,
   options: { refresh: boolean }
@@ -3523,6 +4094,11 @@ async function runIssueCommand(): Promise<void> {
     await runIssuePlanCommand(issueCommand.issueNumber, {
       refresh: issueCommand.refresh,
     });
+    return;
+  }
+
+  if (issueCommand.action === "refine") {
+    await runIssueRefineCommand(issueCommand.issueNumber);
     return;
   }
 

@@ -129,6 +129,27 @@ function parseIssuePlanCommentPayload(
   };
 }
 
+function parseCreatedIssueRecordPayload(
+  payload: {
+    number?: number;
+    title?: string;
+    html_url?: string;
+  },
+  errorMessage: string,
+  status: CreatedIssueRecord["status"]
+): CreatedIssueRecord {
+  if (!payload.number || !payload.title || !payload.html_url) {
+    throw new Error(errorMessage);
+  }
+
+  return {
+    number: payload.number,
+    title: payload.title,
+    url: payload.html_url,
+    status,
+  };
+}
+
 function appendRunLog(
   outputLogPath: string,
   command: string,
@@ -590,6 +611,11 @@ class GitHubRepositoryForge implements RepositoryForge {
       .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
   }
 
+  async fetchIssueComments(issueNumber: number): Promise<RepositoryComment[]> {
+    const { owner, repo } = parseGitHubRepoFromRemote(this.repoRoot);
+    return listIssueComments(owner, repo, issueNumber);
+  }
+
   async fetchPullRequestDetails(prNumber: number): Promise<PullRequestDetails> {
     const { owner, repo } = parseGitHubRepoFromRemote(this.repoRoot);
     const ghPullRequest = tryFetchPullRequestWithGh(owner, repo, prNumber);
@@ -714,6 +740,46 @@ class GitHubRepositoryForge implements RepositoryForge {
     );
     const createdIssue = await createGitHubIssue(owner, repo, token, title, body, []);
     return createdIssue.url;
+  }
+
+  async updateIssue(
+    issueNumber: number,
+    title: string,
+    body: string
+  ): Promise<CreatedIssueRecord> {
+    const { owner, repo } = parseGitHubRepoFromRemote(this.repoRoot);
+    const token = getGitHubApiToken(
+      "Updating GitHub issues requires GH_TOKEN or GITHUB_TOKEN to be set, or gh to be installed and authenticated."
+    );
+    const response = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}`,
+      {
+        method: "PATCH",
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "User-Agent": "prs-cli",
+        },
+        body: JSON.stringify({ title, body }),
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Failed to update GitHub issue #${issueNumber} (${response.status} ${response.statusText}).`
+      );
+    }
+
+    return parseCreatedIssueRecordPayload(
+      (await response.json()) as {
+        number?: number;
+        title?: string;
+        html_url?: string;
+      },
+      `GitHub issue update for #${issueNumber} returned an incomplete payload.`,
+      "existing"
+    );
   }
 
   async createOrReuseIssue(
