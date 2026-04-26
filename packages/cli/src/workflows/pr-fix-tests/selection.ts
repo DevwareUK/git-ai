@@ -343,12 +343,12 @@ export function parsePullRequestTestSuggestionSelection(
   suggestionCount: number
 ): number[] {
   const normalized = selection.trim().toLowerCase();
-  if (!normalized || normalized === "none") {
-    return [];
+  if (!normalized || normalized === "all") {
+    return Array.from({ length: suggestionCount }, (_, index) => index);
   }
 
-  if (normalized === "all") {
-    return Array.from({ length: suggestionCount }, (_, index) => index);
+  if (normalized === "none") {
+    return [];
   }
 
   const entries = normalized

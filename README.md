@@ -459,8 +459,8 @@ Important behavior:
 - if you decline the reviewed commit message, `prs pr fix-comments <pr-number>` and `prs pr fix-tests <pr-number>` leave the changes uncommitted and do not attempt a push
 - local interactive runtime prompts end with an explicit done-state summary, a short note about how to see the result or what was verified, and plain-language next steps
 - the command expects the relevant PR branch to already be checked out locally before the runtime starts editing
-- the interactive selector accepts numbered thread choices and, when available, grouped task choices like `g1`; `all` still selects every individual thread
-- `prs pr fix-tests <pr-number>` accepts `all`, `none`, or a comma-separated suggestion list like `1,2`
+- the interactive comment selector accepts numbered thread choices, grouped task choices like `g1` when available, `all`, `none`, and blank input; pressing Enter selects every individual thread
+- `prs pr fix-tests <pr-number>` accepts `all`, `none`, blank input, or a comma-separated suggestion list like `1,2`; pressing Enter selects every suggestion
 - managed AI test suggestions now carry behavior covered, regression risk, suggested test type, protected paths, suggestion-level edge cases, and a short implementation note so the selected snapshot can be used directly as implementation guidance
 - when `forge.type` is `github`, PR fetching uses `gh pr view` when available, otherwise the GitHub API
 - when `forge.type` is `github`, GitHub API access for PR metadata, review comments, and PR issue comments uses `GH_TOKEN` or `GITHUB_TOKEN` when present

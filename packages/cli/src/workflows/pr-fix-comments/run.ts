@@ -123,8 +123,8 @@ async function selectPullRequestReviewComments(
 
   const selectionPrompt =
     groupTasks.length > 0
-      ? "Select tasks to address [all|none|g1,2,...] (`all` selects every individual thread): "
-      : "Select tasks to address [all|none|1,2,...]: ";
+      ? "Select tasks to address [All|none|g1,2,...] (default: All; `all` selects every individual thread): "
+      : "Select tasks to address [All|none|1,2,...] (default: All): ";
   const selection = await promptForLine(selectionPrompt);
   const selectedEntries = parsePullRequestReviewSelection(
     selection,
