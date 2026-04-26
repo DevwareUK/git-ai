@@ -1352,6 +1352,9 @@ async function loadCli(options: {
   return {
     readReviewDiffForAutomation: module.readReviewDiffForAutomation,
     run: module.run,
+    extractIssuePlanLikelyFiles: module.extractIssuePlanLikelyFiles,
+    findOverlappingPullRequests: module.findOverlappingPullRequests,
+    recommendIssueBranchBase: module.recommendIssueBranchBase,
     parseFeatureBacklogCommandArgs: module.parseFeatureBacklogCommandArgs,
     parseIssueCommandArgs: module.parseIssueCommandArgs,
     parsePrCommandArgs: module.parsePrCommandArgs,
@@ -1430,6 +1433,119 @@ describe("CLI integration", () => {
       issueNumber: 42,
       mode: "local",
       refresh: true,
+    });
+  });
+
+  it("extracts concrete likely files from managed issue plan comments", async () => {
+    const { extractIssuePlanLikelyFiles } = await loadCli();
+
+    expect(
+      extractIssuePlanLikelyFiles(
+        [
+          "<!-- prs:issue-plan -->",
+          "## Issue Resolution Plan",
+          "",
+          "### Likely files",
+          "",
+          "- `packages/cli/src/index.ts`",
+          "- ./packages/cli/src/github.ts",
+          "- README.md",
+          "- Open Questions",
+          "- `packages/cli/src/index.ts`",
+          "",
+          "### Test Plan",
+          "",
+          "- Run vitest.",
+        ].join("\n")
+      )
+    ).toEqual([
+      "packages/cli/src/index.ts",
+      "packages/cli/src/github.ts",
+      "README.md",
+    ]);
+  });
+
+  it("matches planned files to open pull requests and recommends a stacked base", async () => {
+    const { findOverlappingPullRequests, recommendIssueBranchBase } = await loadCli();
+    const overlappingPullRequests = findOverlappingPullRequests(
+      ["packages/cli/src/index.ts", "README.md"],
+      [
+        {
+          number: 123,
+          title: "Existing issue workflow change",
+          url: "https://github.com/DevwareUK/prs/pull/123",
+          baseRefName: "main",
+          headRefName: "feat/existing-issue-workflow-change",
+          files: ["./packages/cli/src/index.ts"],
+        },
+        {
+          number: 124,
+          title: "Unrelated docs",
+          url: "https://github.com/DevwareUK/prs/pull/124",
+          baseRefName: "main",
+          headRefName: "docs/unrelated",
+          files: ["docs/notes.md"],
+        },
+      ]
+    );
+
+    expect(overlappingPullRequests).toEqual([
+      {
+        number: 123,
+        title: "Existing issue workflow change",
+        url: "https://github.com/DevwareUK/prs/pull/123",
+        baseRefName: "main",
+        headRefName: "feat/existing-issue-workflow-change",
+        matchingFiles: ["packages/cli/src/index.ts"],
+      },
+    ]);
+    expect(
+      recommendIssueBranchBase({
+        configuredBaseBranch: "main",
+        overlappingPullRequests,
+        plannedFiles: ["packages/cli/src/index.ts", "README.md"],
+      })
+    ).toMatchObject({
+      branchName: "feat/existing-issue-workflow-change",
+      pullRequestBaseBranch: "feat/existing-issue-workflow-change",
+      source: "pull-request-head",
+    });
+  });
+
+  it("falls back to the configured base when open PR overlap is ambiguous", async () => {
+    const { findOverlappingPullRequests, recommendIssueBranchBase } = await loadCli();
+    const overlappingPullRequests = findOverlappingPullRequests(
+      ["packages/cli/src/index.ts", "README.md"],
+      [
+        {
+          number: 123,
+          title: "Existing CLI change",
+          url: "https://github.com/DevwareUK/prs/pull/123",
+          baseRefName: "main",
+          headRefName: "feat/existing-cli-change",
+          files: ["packages/cli/src/index.ts"],
+        },
+        {
+          number: 124,
+          title: "Existing docs change",
+          url: "https://github.com/DevwareUK/prs/pull/124",
+          baseRefName: "main",
+          headRefName: "docs/existing-docs-change",
+          files: ["README.md"],
+        },
+      ]
+    );
+
+    expect(
+      recommendIssueBranchBase({
+        configuredBaseBranch: "main",
+        overlappingPullRequests,
+        plannedFiles: ["packages/cli/src/index.ts", "README.md"],
+      })
+    ).toMatchObject({
+      branchName: "main",
+      pullRequestBaseBranch: "main",
+      source: "configured-base",
     });
   });
 
@@ -9105,6 +9221,68 @@ describe("CLI integration", () => {
     });
   });
 
+  it("lists open pull requests with changed files through the GitHub repository forge adapter", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createFetchResponse([
+          {
+            number: 123,
+            title: "Existing issue workflow change",
+            html_url: "https://github.com/DevwareUK/prs/pull/123",
+            base: { ref: "main" },
+            head: { ref: "feat/existing-issue-workflow-change" },
+          },
+        ])
+      )
+      .mockResolvedValueOnce(
+        createFetchResponse([
+          { filename: "packages/cli/src/index.ts" },
+          { filename: "README.md" },
+        ])
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "test-token";
+
+    const { createGitHubRepositoryForge } = await loadGitHubForge();
+    const forge = createGitHubRepositoryForge(REPO_ROOT);
+
+    await expect((forge as any).listOpenPullRequestChanges()).resolves.toEqual([
+      {
+        number: 123,
+        title: "Existing issue workflow change",
+        url: "https://github.com/DevwareUK/prs/pull/123",
+        baseRefName: "main",
+        headRefName: "feat/existing-issue-workflow-change",
+        files: ["packages/cli/src/index.ts", "README.md"],
+      },
+    ]);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "https://api.github.com/repos/DevwareUK/prs/pulls?state=open&per_page=100",
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: "Bearer test-token",
+          "User-Agent": "prs-cli",
+        },
+      }
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "https://api.github.com/repos/DevwareUK/prs/pulls/123/files?per_page=100",
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: "Bearer test-token",
+          "User-Agent": "prs-cli",
+        },
+      }
+    );
+  });
+
   it("prepares an issue run and writes automation artifacts", async () => {
     const issueNumber = 91234;
     const issueTitle = "CLI issue prepare integration fixture";
@@ -9341,6 +9519,10 @@ describe("CLI integration", () => {
         });
       }
 
+      if (url.endsWith("/pulls?state=open&per_page=100")) {
+        return createFetchResponse([]);
+      }
+
       throw new Error(`Unexpected fetch call: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -9443,6 +9625,283 @@ describe("CLI integration", () => {
     );
   });
 
+  it("stops interactive issue preparation before branch creation when review-first overlap remains", async () => {
+    const issueNumber = 91236;
+    const issueTitle = "Stop before overlapping PR branch";
+    const gitCommands: string[][] = [];
+    const originalIsTTY = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, "isTTY", {
+      value: true,
+      configurable: true,
+    });
+
+    const fetchMock = vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url.endsWith(`/issues/${issueNumber}`)) {
+        return createFetchResponse({
+          title: issueTitle,
+          body: "Avoid starting duplicate work while an open PR changes the same files.",
+          html_url: getRepositoryIssueUrl(issueNumber),
+        });
+      }
+
+      if (url.includes(`/issues/${issueNumber}/comments?`)) {
+        return createFetchResponse([
+          {
+            id: 617,
+            body: [
+              "<!-- prs:issue-plan -->",
+              "### Likely files",
+              "",
+              "- packages/cli/src/index.ts",
+            ].join("\n"),
+            html_url:
+              `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-617`,
+            updated_at: "2026-04-26T13:05:00Z",
+          },
+        ]);
+      }
+
+      if (url.endsWith("/pulls?state=open&per_page=100")) {
+        return createFetchResponse([
+          {
+            number: 123,
+            title: "Existing issue workflow change",
+            html_url: "https://github.com/DevwareUK/prs/pull/123",
+            base: { ref: "main" },
+            head: { ref: "feat/existing-issue-workflow-change" },
+          },
+        ]);
+      }
+
+      if (url.endsWith("/pulls/123/files?per_page=100")) {
+        return createFetchResponse([{ filename: "packages/cli/src/index.ts" }]);
+      }
+
+      throw new Error(`Unexpected fetch call: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const { run } = await loadCli({
+        readlineAnswers: [""],
+        execFileSyncImpl: (command, args) => {
+          if (command === "git" && args[0] === "status") {
+            return "";
+          }
+
+          if (command === "git" && args[0] === "remote") {
+            return "git@github.com:DevwareUK/prs.git\n";
+          }
+
+          throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+        },
+        spawnSyncImpl: (command, args) => {
+          if (command === "gh" && args[0] === "--version") {
+            return { status: 1, error: new Error("gh is unavailable") };
+          }
+
+          if (command === "codex" && args[0] === "--version") {
+            return { status: 1, error: new Error("codex is unavailable") };
+          }
+
+          if (command === "git" && args[0] === "rev-parse") {
+            gitCommands.push(args);
+            return { status: args[2] === "refs/heads/main" ? 0 : 1, stdout: "" };
+          }
+
+          if (command === "git" && args[0] === "fetch") {
+            gitCommands.push(args);
+            return { status: 0 };
+          }
+
+          throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+        },
+      });
+
+      process.env.GITHUB_TOKEN = "test-token";
+      process.env.OPENAI_API_KEY = "test-key";
+      process.argv = ["node", "prs", "issue", "prepare", String(issueNumber)];
+
+      await expect(run()).rejects.toThrow(
+        "Open pull requests still change planned files: #123 Existing issue workflow change"
+      );
+      expect(gitCommands).not.toContainEqual([
+        "checkout",
+        "-b",
+        "feat/issue-91236-stop-before-overlapping-pr-branch",
+      ]);
+    } finally {
+      Object.defineProperty(process.stdin, "isTTY", {
+        value: originalIsTTY,
+        configurable: true,
+      });
+    }
+  });
+
+  it("stacks unattended issue runs on the recommended PR head and adds an overlap note", async () => {
+    const issueNumber = 91237;
+    const branchName = "feat/issue-91237-stack-on-overlapping-pr-head";
+    const sessionStateDir = resolve(REPO_ROOT, ".prs", "issues", String(issueNumber));
+    const issueWorkspaceDir = resolve(
+      REPO_ROOT,
+      ".prs",
+      "issues",
+      "91237-stack-on-overlapping-pr-head"
+    );
+    rmSync(sessionStateDir, { recursive: true, force: true });
+    rmSync(issueWorkspaceDir, { recursive: true, force: true });
+    cleanupTargets.add(sessionStateDir);
+    cleanupTargets.add(issueWorkspaceDir);
+
+    let gitStatusCallCount = 0;
+    const gitCommands: string[][] = [];
+    const fetchMock = vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url.endsWith(`/issues/${issueNumber}`)) {
+        return createFetchResponse({
+          title: "Stack on overlapping PR head",
+          body: "Continue non-interactively from the safest overlapping PR base.",
+          html_url: getRepositoryIssueUrl(issueNumber),
+        });
+      }
+
+      if (url.includes(`/issues/${issueNumber}/comments?`)) {
+        return createFetchResponse([
+          {
+            id: 618,
+            body: [
+              "<!-- prs:issue-plan -->",
+              "### Likely files",
+              "",
+              "- packages/cli/src/index.ts",
+            ].join("\n"),
+            html_url:
+              `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-618`,
+            updated_at: "2026-04-26T13:10:00Z",
+          },
+        ]);
+      }
+
+      if (url.endsWith("/pulls?state=open&per_page=100")) {
+        return createFetchResponse([
+          {
+            number: 123,
+            title: "Existing issue workflow change",
+            html_url: "https://github.com/DevwareUK/prs/pull/123",
+            base: { ref: "main" },
+            head: { ref: "feat/existing-issue-workflow-change" },
+          },
+        ]);
+      }
+
+      if (url.endsWith("/pulls/123/files?per_page=100")) {
+        return createFetchResponse([{ filename: "packages/cli/src/index.ts" }]);
+      }
+
+      throw new Error(`Unexpected fetch call: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.GITHUB_TOKEN = "test-token";
+
+    const { run, spawnSync } = await loadCli({
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "status") {
+          gitStatusCallCount += 1;
+          return gitStatusCallCount === 1 ? "" : " M packages/cli/src/index.ts\n";
+        }
+
+        if (command === "git" && args[0] === "diff" && args[1] === "--name-only") {
+          return "packages/cli/src/index.ts\n";
+        }
+
+        if (
+          command === "git" &&
+          args[0] === "diff" &&
+          args[1] === "HEAD" &&
+          args[2] === "--" &&
+          args[3] === "packages/cli/src/index.ts"
+        ) {
+          return "diff --git a/packages/cli/src/index.ts b/packages/cli/src/index.ts";
+        }
+
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/prs.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+      spawnSyncImpl: (command, args) => {
+        if (command === "gh" && args[0] === "--version") return { status: 0 };
+        if (command === "gh" && args[0] === "auth" && args[1] === "status") {
+          return { status: 0 };
+        }
+        if (command === "gh" && args[0] === "issue" && args[1] === "view") {
+          return { status: 1 };
+        }
+        if (command === "git" && args[0] === "rev-parse") {
+          gitCommands.push(args);
+          if (args[2] === "refs/heads/main") return { status: 0, stdout: "main-tip\n" };
+          if (args[2] === "refs/remotes/origin/main") {
+            return { status: 0, stdout: "main-remote-tip\n" };
+          }
+          if (args[2] === "refs/remotes/origin/feat/existing-issue-workflow-change") {
+            return { status: 0, stdout: "pr-head-tip\n" };
+          }
+          return { status: 1 };
+        }
+        if (command === "git" && args[0] === "fetch") {
+          gitCommands.push(args);
+          return { status: 0 };
+        }
+        if (command === "git" && args[0] === "checkout") {
+          gitCommands.push(args);
+          return { status: 0 };
+        }
+        if (command === "git" && args[0] === "merge-base") return { status: 0 };
+        if (command === "codex" && args[0] === "--version") return { status: 0 };
+        if (command === "codex" && args[0] === "exec") return { status: 0 };
+        if (command === "pnpm" && args[0] === "--version") return { status: 0 };
+        if (command === "pnpm" && args[0] === "build") return { status: 0 };
+        if (command === "git" && args[0] === "add") return { status: 0 };
+        if (command === "git" && args[0] === "commit") return { status: 0 };
+        if (command === "git" && args[0] === "push") return { status: 0 };
+        if (command === "gh" && args[0] === "pr" && args[1] === "create") {
+          return { status: 0, stdout: "https://github.com/DevwareUK/prs/pull/91237\n" };
+        }
+        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.argv = ["node", "prs", "issue", String(issueNumber), "--mode", "unattended"];
+    await run();
+
+    expect(gitCommands).toContainEqual([
+      "checkout",
+      "-b",
+      "feat/existing-issue-workflow-change",
+      "origin/feat/existing-issue-workflow-change",
+    ]);
+    expect(gitCommands).toContainEqual(["checkout", "-b", branchName]);
+    const prCreateCall = spawnSync.mock.calls.find(
+      ([command, args]) =>
+        command === "gh" &&
+        Array.isArray(args) &&
+        args[0] === "pr" &&
+        args[1] === "create"
+    );
+    expect(prCreateCall).toBeDefined();
+    const prArgs = prCreateCall?.[1] as string[];
+    expect(prArgs[prArgs.indexOf("--base") + 1]).toBe(
+      "feat/existing-issue-workflow-change"
+    );
+    const body = prArgs[prArgs.indexOf("--body") + 1];
+    expect(body).toContain("## Open PR File Overlap");
+    expect(body).toContain("- #123 Existing issue workflow change");
+  });
+
   it("writes local issue prompts with plain-language next steps", async () => {
     const issueNumber = 91235;
     const issueTitle = "Local issue prompt uses conversational completion guidance";
@@ -9469,6 +9928,10 @@ describe("CLI integration", () => {
             `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-616`,
           updated_at: "2026-04-26T10:55:00Z",
         });
+      }
+
+      if (url.endsWith("/pulls?state=open&per_page=100")) {
+        return createFetchResponse([]);
       }
 
       throw new Error(`Unexpected fetch call: ${url}`);
@@ -9543,7 +10006,7 @@ describe("CLI integration", () => {
     );
     expect(readFileSync(promptFilePath, "utf8")).not.toContain("[1] Continue refining");
     expect(readFileSync(promptFilePath, "utf8")).not.toContain("/commit");
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
   it("runs issue batches sequentially, records batch progress, and resumes from the first incomplete issue", async () => {
@@ -9614,6 +10077,10 @@ describe("CLI integration", () => {
             `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-${7000 + issueNumber}`,
           updated_at: "2026-04-26T10:45:00Z",
         });
+      }
+
+      if (url.endsWith("/pulls?state=open&per_page=100")) {
+        return createFetchResponse([]);
       }
 
       throw new Error(`Unexpected fetch call: ${url}`);
@@ -9848,6 +10315,10 @@ describe("CLI integration", () => {
         });
       }
 
+      if (url.endsWith("/pulls?state=open&per_page=100")) {
+        return createFetchResponse([]);
+      }
+
       throw new Error(`Unexpected fetch call: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -10035,6 +10506,10 @@ describe("CLI integration", () => {
         });
       }
 
+      if (url.endsWith("/pulls?state=open&per_page=100")) {
+        return createFetchResponse([]);
+      }
+
       throw new Error(`Unexpected fetch call: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -10207,7 +10682,7 @@ describe("CLI integration", () => {
     expect(readFileSync(issueFilePath, "utf8")).toContain(
       "Generated plan summary for full issue execution."
     );
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
   it("resumes the saved Codex session for later full issue runs", async () => {
@@ -12270,7 +12745,17 @@ describe("CLI integration", () => {
           html_url: `https://github.com/DevwareUK/prs/issues/${issueNumber}`,
         })
       )
-      .mockResolvedValueOnce(createFetchResponse([]));
+      .mockResolvedValueOnce(
+        createFetchResponse([
+          {
+            id: 616,
+            body: "<!-- prs:issue-plan -->\nGenerated plan without likely files.",
+            html_url:
+              `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-616`,
+            updated_at: "2026-04-26T10:55:00Z",
+          },
+        ])
+      );
     vi.stubGlobal("fetch", fetchMock);
 
     const { run } = await loadCli({
@@ -12357,7 +12842,7 @@ describe("CLI integration", () => {
     await expect(run()).rejects.toThrow(
       'Failed to fast-forward base branch "main" to origin/main.'
     );
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("fails clearly when .prs/config.json contains malformed JSON", async () => {
