@@ -613,11 +613,12 @@ function readIssueBatchState(issueNumbers: number[]): {
 
 function readLatestRunMetadata(): {
   runDir: string;
-  metadata: {
-    draftFile?: string;
-    promptFile?: string;
-    outputLog?: string;
-    runDir?: string;
+    metadata: {
+      draftFile?: string;
+      issueSetFile?: string;
+      promptFile?: string;
+      outputLog?: string;
+      runDir?: string;
   };
 } {
   const runDir = [...listRunDirectories()]
@@ -1195,6 +1196,79 @@ async function loadCli(options: {
     includesManagedMarker: (body: string, markers: string[]) =>
       markers.some((marker) => body.includes(marker)),
     ISSUE_PLAN_COMMENT_MARKER: "<!-- prs:issue-plan -->",
+    IssueDraftSet: {
+      parse: (value: unknown) => {
+        const manifest = value as {
+          version?: unknown;
+          mode?: unknown;
+          sourceIssueNumber?: unknown;
+          linkingStrategy?: unknown;
+          issues?: Array<{
+            id?: unknown;
+            draftFile?: unknown;
+            dependsOn?: unknown;
+            blocks?: unknown;
+            related?: unknown;
+          }>;
+        };
+
+        if (
+          manifest.version !== 1 ||
+          (manifest.mode !== "single" && manifest.mode !== "multiple") ||
+          !Array.isArray(manifest.issues) ||
+          manifest.issues.length === 0
+        ) {
+          throw new Error("Invalid issue set manifest.");
+        }
+
+        if (manifest.mode === "multiple" && manifest.issues.length < 2) {
+          throw new Error("multiple issue sets require at least two issues");
+        }
+
+        const ids = new Set<string>();
+        const normalizedIssues = manifest.issues.map((issue) => {
+          if (typeof issue.id !== "string" || !issue.id.trim()) {
+            throw new Error("issue id must be non-empty");
+          }
+          if (typeof issue.draftFile !== "string" || !issue.draftFile.trim()) {
+            throw new Error("draftFile must be non-empty");
+          }
+          const id = issue.id.trim();
+          if (ids.has(id)) {
+            throw new Error(`duplicate issue id "${id}"`);
+          }
+          ids.add(id);
+
+          return {
+            id,
+            draftFile: issue.draftFile.trim(),
+            dependsOn: Array.isArray(issue.dependsOn) ? issue.dependsOn : [],
+            blocks: Array.isArray(issue.blocks) ? issue.blocks : [],
+            related: Array.isArray(issue.related) ? issue.related : [],
+          };
+        });
+
+        for (const issue of normalizedIssues) {
+          for (const target of [...issue.dependsOn, ...issue.blocks, ...issue.related]) {
+            if (typeof target !== "string" || !ids.has(target)) {
+              throw new Error(`issue "${issue.id}" references unknown issue "${target}"`);
+            }
+          }
+        }
+
+        return {
+          version: 1 as const,
+          mode: manifest.mode,
+          ...(typeof manifest.sourceIssueNumber === "number"
+            ? { sourceIssueNumber: manifest.sourceIssueNumber }
+            : {}),
+          ...(typeof manifest.linkingStrategy === "string"
+            ? { linkingStrategy: manifest.linkingStrategy.trim() }
+            : {}),
+          issues: normalizedIssues,
+        };
+      },
+    },
     LEGACY_PRODUCT_SHORT_NAME: "git-ai",
     LEGACY_REPOSITORY_STATE_DIRECTORY: ".git-ai",
     PRODUCT_SHORT_NAME: "prs",
@@ -1403,6 +1477,7 @@ describe("CLI integration", () => {
     expect(workspace).toMatchObject({
       runDir: expect.stringMatching(/\.prs\/runs\/.+-issue-refine-42$/),
       draftFilePath: expect.stringMatching(/issue-refine-42\.md$/),
+      issueSetFilePath: expect.stringMatching(/issue-set\.json$/),
       promptFilePath: expect.stringMatching(/prompt\.md$/),
       metadataFilePath: expect.stringMatching(/metadata\.json$/),
       outputLogPath: expect.stringMatching(/output\.log$/),
@@ -3533,6 +3608,157 @@ describe("CLI integration", () => {
       completionMode: "created-linked",
       completedIssueNumber: createdIssueNumber,
       completedIssueUrl: getRepositoryIssueUrl(createdIssueNumber),
+    });
+  });
+
+  it("creates multiple linked PRS-managed issues when refining a non-managed source issue", async () => {
+    const beforeRuns = listRunDirectories();
+    const issueNumber = 66;
+    createMockCodexHome();
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method;
+
+      if (url.endsWith(`/issues/${issueNumber}`) && method !== "PATCH") {
+        return createFetchResponse({
+          title: "Split customer request",
+          body: "Plain source issue body.",
+          html_url: getRepositoryIssueUrl(issueNumber),
+        });
+      }
+
+      if (url.includes(`/issues/${issueNumber}/comments?`)) {
+        return createFetchResponse([]);
+      }
+
+      if (url.endsWith("/issues") && method === "POST") {
+        const body = JSON.parse(String(init?.body)) as { title: string };
+        const createdNumber = body.title.includes("Contract") ? 301 : 302;
+        return createFetchResponse({
+          number: createdNumber,
+          title: body.title,
+          html_url: getRepositoryIssueUrl(createdNumber),
+        });
+      }
+
+      if (url.endsWith("/issues/301") && method === "PATCH") {
+        return createFetchResponse({
+          number: 301,
+          title: "Refine Contract Work",
+          html_url: getRepositoryIssueUrl(301),
+        });
+      }
+
+      if (url.endsWith("/issues/302") && method === "PATCH") {
+        return createFetchResponse({
+          number: 302,
+          title: "Refine CLI Work",
+          html_url: getRepositoryIssueUrl(302),
+        });
+      }
+
+      throw new Error(`Unexpected fetch call: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "test-token";
+
+    const { run } = await loadCli({
+      readlineAnswers: ["n", "y"],
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/prs.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+      spawnSyncImpl: (command, args) => {
+        if (command === "gh" && args[0] === "--version") {
+          return { status: 1, error: new Error("gh is unavailable") };
+        }
+
+        if (command === "codex" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "codex") {
+          const { metadata, runDir } = readLatestRunMetadata();
+          const runDirPath = resolve(REPO_ROOT, metadata.runDir as string);
+          writeFileSync(
+            resolve(runDirPath, "contract.md"),
+            "# Refine Contract Work\n\n## Summary\nCreate the manifest contract.\n",
+            "utf8"
+          );
+          writeFileSync(
+            resolve(runDirPath, "cli.md"),
+            "# Refine CLI Work\n\n## Summary\nApply linked issue sets.\n",
+            "utf8"
+          );
+          writeFileSync(
+            resolve(REPO_ROOT, metadata.issueSetFile as string),
+            `${JSON.stringify({
+              version: 1,
+              mode: "multiple",
+              linkingStrategy: "Split the source request into implementation units.",
+              sourceIssueNumber: issueNumber,
+              issues: [
+                {
+                  id: "contract",
+                  draftFile: `.prs/runs/${runDir}/contract.md`,
+                  blocks: ["cli"],
+                },
+                {
+                  id: "cli",
+                  draftFile: `.prs/runs/${runDir}/cli.md`,
+                  dependsOn: ["contract"],
+                },
+              ],
+            })}\n`,
+            "utf8"
+          );
+          cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", runDir));
+          return { status: 0 };
+        }
+
+        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.argv = ["node", "prs", "issue", "refine", String(issueNumber)];
+    await run();
+
+    const createdRunDir = listRunDirectories().find((entry) => !beforeRuns.includes(entry));
+    expect(createdRunDir).toBeDefined();
+    cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string));
+    cleanupTargets.add(resolve(REPO_ROOT, ".prs", "issues", String(issueNumber)));
+
+    const sourcePatchCall = fetchMock.mock.calls.find(
+      ([input, init]) =>
+        String(input).endsWith(`/issues/${issueNumber}`) &&
+        (init as RequestInit | undefined)?.method === "PATCH"
+    );
+    expect(sourcePatchCall).toBeUndefined();
+
+    const patchBodies = fetchMock.mock.calls
+      .filter(([, init]) => (init as RequestInit | undefined)?.method === "PATCH")
+      .map(([, init]) => JSON.parse(String((init as RequestInit).body)) as { body: string });
+    expect(patchBodies).toHaveLength(2);
+    expect(patchBodies[0]?.body).toContain("<!-- prs:managed-issue -->");
+    expect(patchBodies[0]?.body).toContain(`Source issue: #${issueNumber}`);
+    expect(patchBodies[0]?.body).toContain("Blocks: #302");
+    expect(patchBodies[1]?.body).toContain("<!-- prs:managed-issue -->");
+    expect(patchBodies[1]?.body).toContain(`Source issue: #${issueNumber}`);
+    expect(patchBodies[1]?.body).toContain("Depends on: #301");
+    expect(
+      JSON.parse(
+        readFileSync(getIssueRefineSessionStateFilePath(REPO_ROOT, issueNumber), "utf8")
+      )
+    ).toMatchObject({
+      completionMode: "created-linked",
+      completedIssues: [
+        { issueNumber: 301, issueUrl: getRepositoryIssueUrl(301) },
+        { issueNumber: 302, issueUrl: getRepositoryIssueUrl(302) },
+      ],
     });
   });
 
@@ -7179,6 +7405,7 @@ describe("CLI integration", () => {
       "avoid asking questions that are already answerable from the codebase"
     );
     expect(runtimePrompt).toContain("Write the final Markdown issue draft");
+    expect(runtimePrompt).toContain("write an issue-set manifest");
 
     const createdDraft = listIssueDraftFiles().find((entry) => !beforeDrafts.includes(entry));
     expect(createdDraft).toBeDefined();
@@ -7197,6 +7424,7 @@ describe("CLI integration", () => {
       flow: string;
       featureIdea: string;
       draftFile: string;
+      issueSetFile: string;
       promptFile: string;
       runDir: string;
       runtime?: {
@@ -7208,6 +7436,7 @@ describe("CLI integration", () => {
       featureIdea:
         "Combine PR description and review summary into a single PR assistant action.",
       draftFile: `.prs/issues/${createdDraft}`,
+      issueSetFile: `.prs/runs/${createdRunDir}/issue-set.json`,
       promptFile: `.prs/runs/${createdRunDir}/prompt.md`,
       runDir: `.prs/runs/${createdRunDir}`,
       runtime: {
@@ -8101,6 +8330,323 @@ describe("CLI integration", () => {
       labels: [],
     });
   });
+
+  it("creates multiple linked draft issues from an issue set manifest", async () => {
+    const beforeRuns = listRunDirectories();
+    createMockCodexHome();
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method;
+
+      if (url.endsWith("/issues") && method === "POST") {
+        const body = JSON.parse(String(init?.body)) as { title: string };
+        const issueNumber = body.title.includes("Contract") ? 201 : 202;
+        return createFetchResponse({
+          number: issueNumber,
+          title: body.title,
+          html_url: getRepositoryIssueUrl(issueNumber),
+        });
+      }
+
+      if (url.endsWith("/issues/201") && method === "PATCH") {
+        return createFetchResponse({
+          number: 201,
+          title: "Add Issue Set Contract",
+          html_url: getRepositoryIssueUrl(201),
+        });
+      }
+
+      if (url.endsWith("/issues/202") && method === "PATCH") {
+        return createFetchResponse({
+          number: 202,
+          title: "Apply Issue Set Manifest",
+          html_url: getRepositoryIssueUrl(202),
+        });
+      }
+
+      throw new Error(`Unexpected fetch call: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "test-token";
+
+    const { run } = await loadCli({
+      readlineAnswers: ["Split draft workflow support.", "y"],
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/prs.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+      spawnSyncImpl: (command, args) => {
+        if (command === "codex" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "gh" && args[0] === "--version") {
+          return { status: 1, error: new Error("gh is unavailable") };
+        }
+
+        if (command === "codex") {
+          const { metadata, runDir } = readLatestRunMetadata();
+          const runDirPath = resolve(REPO_ROOT, metadata.runDir as string);
+          writeFileSync(
+            resolve(runDirPath, "contract.md"),
+            "# Add Issue Set Contract\n\n## Summary\nDefine and validate manifest contracts.\n",
+            "utf8"
+          );
+          writeFileSync(
+            resolve(runDirPath, "cli.md"),
+            "# Apply Issue Set Manifest\n\n## Summary\nCreate linked issues from manifests.\n",
+            "utf8"
+          );
+          writeFileSync(
+            resolve(REPO_ROOT, metadata.issueSetFile as string),
+            `${JSON.stringify(
+              {
+                version: 1,
+                mode: "multiple",
+                linkingStrategy: "Split manifest contracts from CLI apply behavior.",
+                issues: [
+                  {
+                    id: "contract",
+                    draftFile: `.prs/runs/${runDir}/contract.md`,
+                    blocks: ["cli"],
+                    related: ["cli"],
+                  },
+                  {
+                    id: "cli",
+                    draftFile: `.prs/runs/${runDir}/cli.md`,
+                    dependsOn: ["contract"],
+                    related: ["contract"],
+                  },
+                ],
+              },
+              null,
+              2
+            )}\n`,
+            "utf8"
+          );
+          cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", runDir));
+          return { status: 0 };
+        }
+
+        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.argv = ["node", "prs", "issue", "draft"];
+    const messages: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((message?: unknown) => {
+      messages.push(String(message ?? ""));
+    });
+    await run();
+
+    const createdRunDir = listRunDirectories().find((entry) => !beforeRuns.includes(entry));
+    expect(createdRunDir).toBeDefined();
+    cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string));
+
+    const patchBodies = fetchMock.mock.calls
+      .filter(([, init]) => (init as RequestInit | undefined)?.method === "PATCH")
+      .map(([, init]) => JSON.parse(String((init as RequestInit).body)) as { body: string });
+    expect(patchBodies).toHaveLength(2);
+    expect(patchBodies[0]?.body).toContain("## Linked Issues");
+    expect(patchBodies[0]?.body).toContain("Blocks: #202");
+    expect(patchBodies[0]?.body).toContain("Related: #202");
+    expect(patchBodies[1]?.body).toContain("Depends on: #201");
+    expect(patchBodies[1]?.body).toContain("Related: #201");
+    expect(messages.join("\n")).toContain("Created issue: https://github.com/DevwareUK/prs/issues/201");
+    expect(messages.join("\n")).toContain("Created issue: https://github.com/DevwareUK/prs/issues/202");
+  });
+
+  it("rejects invalid issue-set manifests before creating draft issues", async () => {
+    createMockCodexHome();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "test-token";
+
+    const { run } = await loadCli({
+      readlineAnswers: ["Split draft workflow support."],
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/prs.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+      spawnSyncImpl: (command, args) => {
+        if (command === "codex" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "gh" && args[0] === "--version") {
+          return { status: 1, error: new Error("gh is unavailable") };
+        }
+
+        if (command === "codex") {
+          const { metadata, runDir } = readLatestRunMetadata();
+          const runDirPath = resolve(REPO_ROOT, metadata.runDir as string);
+          writeFileSync(
+            resolve(runDirPath, "one.md"),
+            "# One\n\n## Summary\nValid markdown draft.\n",
+            "utf8"
+          );
+          writeFileSync(
+            resolve(REPO_ROOT, metadata.issueSetFile as string),
+            `${JSON.stringify({
+              version: 1,
+              mode: "multiple",
+              issues: [
+                { id: "duplicate", draftFile: `.prs/runs/${runDir}/one.md` },
+                { id: "duplicate", draftFile: `.prs/runs/${runDir}/one.md` },
+              ],
+            })}\n`,
+            "utf8"
+          );
+          cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", runDir));
+          return { status: 0 };
+        }
+
+        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.argv = ["node", "prs", "issue", "draft"];
+    await expect(run()).rejects.toThrow(/duplicate issue id/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      name: "missing draft files",
+      expected: /does not exist/,
+      writeArtifacts: (metadata: { issueSetFile?: string; runDir?: string }, runDir: string) => {
+        writeFileSync(
+          resolve(REPO_ROOT, metadata.issueSetFile as string),
+          `${JSON.stringify({
+            version: 1,
+            mode: "multiple",
+            issues: [
+              { id: "one", draftFile: `.prs/runs/${runDir}/missing-one.md` },
+              { id: "two", draftFile: `.prs/runs/${runDir}/missing-two.md` },
+            ],
+          })}\n`,
+          "utf8"
+        );
+      },
+    },
+    {
+      name: "draft files outside the run directory",
+      expected: /must stay inside/,
+      writeArtifacts: (metadata: { issueSetFile?: string; runDir?: string }, runDir: string) => {
+        const outsideDraft = resolve(REPO_ROOT, ".prs", "issues", "outside-run.md");
+        writeFileSync(outsideDraft, "# Outside\n\n## Summary\nOutside run directory.\n", "utf8");
+        cleanupTargets.add(outsideDraft);
+        writeFileSync(
+          resolve(REPO_ROOT, metadata.issueSetFile as string),
+          `${JSON.stringify({
+            version: 1,
+            mode: "multiple",
+            issues: [
+              { id: "outside", draftFile: ".prs/issues/outside-run.md" },
+              { id: "missing", draftFile: `.prs/runs/${runDir}/missing.md` },
+            ],
+          })}\n`,
+          "utf8"
+        );
+      },
+    },
+    {
+      name: "malformed markdown drafts",
+      expected: /Issue draft must start with a top-level markdown heading/,
+      writeArtifacts: (metadata: { issueSetFile?: string; runDir?: string }, runDir: string) => {
+        const runDirPath = resolve(REPO_ROOT, metadata.runDir as string);
+        writeFileSync(resolve(runDirPath, "bad.md"), "## Bad\n\nNo top-level heading.\n", "utf8");
+        writeFileSync(resolve(runDirPath, "good.md"), "# Good\n\n## Summary\nValid.\n", "utf8");
+        writeFileSync(
+          resolve(REPO_ROOT, metadata.issueSetFile as string),
+          `${JSON.stringify({
+            version: 1,
+            mode: "multiple",
+            issues: [
+              { id: "bad", draftFile: `.prs/runs/${runDir}/bad.md` },
+              { id: "good", draftFile: `.prs/runs/${runDir}/good.md` },
+            ],
+          })}\n`,
+          "utf8"
+        );
+      },
+    },
+    {
+      name: "unknown relationship targets",
+      expected: /references unknown issue/,
+      writeArtifacts: (metadata: { issueSetFile?: string; runDir?: string }, runDir: string) => {
+        const runDirPath = resolve(REPO_ROOT, metadata.runDir as string);
+        writeFileSync(resolve(runDirPath, "one.md"), "# One\n\n## Summary\nValid.\n", "utf8");
+        writeFileSync(resolve(runDirPath, "two.md"), "# Two\n\n## Summary\nValid.\n", "utf8");
+        writeFileSync(
+          resolve(REPO_ROOT, metadata.issueSetFile as string),
+          `${JSON.stringify({
+            version: 1,
+            mode: "multiple",
+            issues: [
+              {
+                id: "one",
+                draftFile: `.prs/runs/${runDir}/one.md`,
+                dependsOn: ["missing"],
+              },
+              { id: "two", draftFile: `.prs/runs/${runDir}/two.md` },
+            ],
+          })}\n`,
+          "utf8"
+        );
+      },
+    },
+  ])(
+    "rejects multi-issue draft validation errors for $name before network writes",
+    async ({ expected, writeArtifacts }) => {
+      createMockCodexHome();
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      process.env.GH_TOKEN = "";
+      process.env.GITHUB_TOKEN = "test-token";
+
+      const { run } = await loadCli({
+        readlineAnswers: ["Split draft workflow support."],
+        execFileSyncImpl: (command, args) => {
+          if (command === "git" && args[0] === "remote") {
+            return "git@github.com:DevwareUK/prs.git\n";
+          }
+
+          throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+        },
+        spawnSyncImpl: (command, args) => {
+          if (command === "codex" && args[0] === "--version") {
+            return { status: 0 };
+          }
+
+          if (command === "gh" && args[0] === "--version") {
+            return { status: 1, error: new Error("gh is unavailable") };
+          }
+
+          if (command === "codex") {
+            const { metadata, runDir } = readLatestRunMetadata();
+            writeArtifacts(metadata, runDir);
+            cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", runDir));
+            return { status: 0 };
+          }
+
+          throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+        },
+      });
+
+      process.argv = ["node", "prs", "issue", "draft"];
+      await expect(run()).rejects.toThrow(expected);
+      expect(fetchMock).not.toHaveBeenCalled();
+    }
+  );
 
   it("generates an issue resolution plan comment when none exists", async () => {
     const issueNumber = 42;

@@ -153,6 +153,7 @@ export type IssuePlanWorkspace = {
 export type IssueRefineWorkspace = {
   runDir: string;
   draftFilePath: string;
+  issueSetFilePath: string;
   promptFilePath: string;
   metadataFilePath: string;
   outputLogPath: string;
@@ -187,6 +188,7 @@ export type IssueRefineSessionState = {
   sessionId?: string;
   completedIssueNumber?: number;
   completedIssueUrl?: string;
+  completedIssues?: Array<{ issueNumber: number; issueUrl: string }>;
   completionMode?: "updated-existing" | "created-linked" | "kept-on-disk";
   createdAt: string;
   updatedAt: string;
@@ -202,6 +204,7 @@ export function createIssueRefineWorkspace(
   return {
     runDir,
     draftFilePath: resolve(runDir, `issue-refine-${issueNumber}.md`),
+    issueSetFilePath: resolve(runDir, "issue-set.json"),
     promptFilePath: resolve(runDir, "prompt.md"),
     metadataFilePath: resolve(runDir, "metadata.json"),
     outputLogPath: resolve(runDir, "output.log"),
@@ -227,7 +230,9 @@ function hasCompletedIssueMetadata(
   state: Partial<IssueRefineSessionState>
 ): boolean {
   return (
-    state.completedIssueNumber !== undefined || state.completedIssueUrl !== undefined
+    state.completedIssueNumber !== undefined ||
+    state.completedIssueUrl !== undefined ||
+    state.completedIssues !== undefined
   );
 }
 
@@ -352,12 +357,29 @@ function hasConsistentCompletionMetadata(
     repositorySlug?: string;
   }
 ): boolean {
+  const normalizedCompletedIssues = normalizeCompletedIssues(
+    state.completedIssues,
+    state.repositorySlug
+  );
+
   if (state.completionMode === undefined) {
     return !hasCompletedIssueMetadata(state);
   }
 
   if (state.completionMode === "kept-on-disk") {
     return !hasCompletedIssueMetadata(state);
+  }
+
+  if (state.completionMode === "created-linked" && state.completedIssues !== undefined) {
+    return (
+      normalizedCompletedIssues !== undefined &&
+      normalizedCompletedIssues.length > 0 &&
+      normalizedCompletedIssues.every(
+        (issue) => issue.issueNumber !== state.issueNumber
+      ) &&
+      state.completedIssueNumber === undefined &&
+      state.completedIssueUrl === undefined
+    );
   }
 
   const parsedUrl = parseCompletedIssueUrl(
@@ -385,6 +407,50 @@ function hasConsistentCompletionMetadata(
   return true;
 }
 
+function normalizeCompletedIssues(
+  value: unknown,
+  expectedRepositorySlug?: string
+): Array<{ issueNumber: number; issueUrl: string }> | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (!Array.isArray(value) || value.length === 0) {
+    return undefined;
+  }
+
+  const normalized: Array<{ issueNumber: number; issueUrl: string }> = [];
+  for (const issue of value) {
+    if (typeof issue !== "object" || issue === null) {
+      return undefined;
+    }
+
+    const parsed = issue as {
+      issueNumber?: unknown;
+      issueUrl?: unknown;
+    };
+    const parsedUrl = parseCompletedIssueUrl(
+      parsed.issueUrl,
+      expectedRepositorySlug
+    );
+    if (
+      !Number.isSafeInteger(parsed.issueNumber) ||
+      (parsed.issueNumber as number) <= 0 ||
+      parsedUrl === undefined ||
+      parsedUrl.issueNumber !== parsed.issueNumber
+    ) {
+      return undefined;
+    }
+
+    normalized.push({
+      issueNumber: parsed.issueNumber as number,
+      issueUrl: parsedUrl.normalizedUrl,
+    });
+  }
+
+  return normalized;
+}
+
 function normalizeIssueRefineSessionState(
   repoRoot: string,
   issueNumber: number,
@@ -408,6 +474,10 @@ function normalizeIssueRefineSessionState(
       ? undefined
       : parseCompletedIssueUrl(parsed.completedIssueUrl, repositorySlug);
   const normalizedCompletedIssueUrl = parsedCompletedIssueUrl?.normalizedUrl;
+  const normalizedCompletedIssues = normalizeCompletedIssues(
+    parsed.completedIssues,
+    repositorySlug
+  );
 
   const hasCoherentWorkspacePaths =
     normalizedRunDir !== undefined &&
@@ -431,6 +501,7 @@ function normalizeIssueRefineSessionState(
       (!Number.isSafeInteger(parsed.completedIssueNumber) ||
         parsed.completedIssueNumber <= 0)) ||
     (parsed.completedIssueUrl !== undefined && normalizedCompletedIssueUrl === undefined) ||
+    (parsed.completedIssues !== undefined && normalizedCompletedIssues === undefined) ||
     (parsed.completedIssueNumber !== undefined &&
       parsedCompletedIssueUrl !== undefined &&
       parsed.completedIssueNumber !== parsedCompletedIssueUrl.issueNumber) ||
@@ -448,6 +519,7 @@ function normalizeIssueRefineSessionState(
       latestDraftFile: normalizedLatestDraftFile,
       ...(normalizedSessionId === undefined ? {} : { sessionId: normalizedSessionId }),
       completedIssueUrl: normalizedCompletedIssueUrl,
+      completedIssues: normalizedCompletedIssues,
     }) ||
     !hasCoherentWorkspacePaths ||
     normalizedCreatedAt === undefined ||
@@ -468,6 +540,9 @@ function normalizeIssueRefineSessionState(
     ...(normalizedCompletedIssueUrl === undefined
       ? {}
       : { completedIssueUrl: normalizedCompletedIssueUrl }),
+    ...(normalizedCompletedIssues === undefined
+      ? {}
+      : { completedIssues: normalizedCompletedIssues }),
   } as IssueRefineSessionState;
 }
 
