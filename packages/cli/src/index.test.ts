@@ -125,6 +125,14 @@ function createTestBacklogAnalysis() {
       evidence: ["Vitest dependency in package.json"],
       testDirectories: ["packages/core/src", "packages/cli/src"],
       notes: ["CLI entrypoint coverage is still missing."],
+      frameworkRecommendation: {
+        recommended: "Vitest",
+        rationale: "Vitest fits package-level TypeScript and CLI integration tests.",
+        alternatives: [
+          "Jest is mature but more configuration-heavy for this workspace.",
+          "node:test is minimal but less ergonomic for CLI coverage.",
+        ],
+      },
       ciIntegration: {
         status: "partial" as const,
         hasGitHubActions: true,
@@ -4484,6 +4492,12 @@ describe("CLI integration", () => {
       });
       expect(stdout.output()).toContain("# AI Test Backlog");
       expect(stdout.output()).toContain("## Summary");
+      expect(stdout.output()).toContain("- Status: Partial");
+      expect(stdout.output()).toContain("- CI integration: Partial");
+      expect(stdout.output()).toContain("- Recommended framework: Vitest");
+      expect(stdout.output()).toContain(
+        "- Recommendation rationale: Vitest fits package-level TypeScript and CLI integration tests."
+      );
       expect(stdout.output()).toContain("### Missing CLI integration coverage for issue prepare");
       expect(stdout.output()).toContain(
         "- Draft issue title: Add CLI integration coverage for prs issue prepare"
