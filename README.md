@@ -540,6 +540,8 @@ Important behavior:
 - reports include the current testing setup, detected frameworks, CI test integration status, and supporting evidence where available
 - when no suitable unit or integration framework is detected, the report recommends a default framework with repository-specific rationale and concise alternatives
 - CI assessment distinguishes missing, partial, and established test integration so local-only or manual-only test commands do not look fully enforced
+- mature or unsupported repository shapes can return an empty findings list instead of forcing a placeholder issue
+- Drupal repositories with custom themes or custom modules receive focused findings for repository-owned behavior even when broad theme or module tests already exist elsewhere
 - when `--create-issues` is enabled, generated issue bodies include implementation steps, first tests to add, target paths, and acceptance criteria for focused backlog items
 - when `--create-issues` is enabled, `prs` checks for matching open issue titles first so it can reuse existing backlog items instead of creating duplicates
 - if `forge.type` is `none`, backlog issue creation is disabled for that repository

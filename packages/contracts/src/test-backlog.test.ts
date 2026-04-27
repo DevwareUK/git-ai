@@ -87,4 +87,17 @@ describe("TestBacklogOutput", () => {
       })
     ).toThrow();
   });
+
+  it("accepts an empty findings list when no backlog gaps are detected", () => {
+    expect(
+      TestBacklogOutput.parse({
+        ...validPayload(),
+        notableCoverageGaps: [],
+        findings: [],
+      })
+    ).toMatchObject({
+      notableCoverageGaps: [],
+      findings: [],
+    });
+  });
 });

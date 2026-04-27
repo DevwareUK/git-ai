@@ -3900,19 +3900,24 @@ function formatTestBacklogMarkdown(
   }
 
   lines.push("", "## Prioritized findings", "");
-  for (const finding of result.findings) {
-    lines.push(`### ${finding.title}`);
-    lines.push(`- Priority: ${toTitleCase(finding.priority)}`);
-    lines.push(`- Suggested test types: ${finding.suggestedTestTypes.join(", ")}`);
-    lines.push(`- Rationale: ${finding.rationale}`);
-    if (finding.existingCoverage) {
-      lines.push(`- Existing coverage signal: ${finding.existingCoverage}`);
-    }
-    lines.push(
-      `- Related paths: ${finding.relatedPaths.map((path) => `\`${path}\``).join(", ")}`
-    );
-    lines.push(`- Draft issue title: ${finding.issueTitle}`);
+  if (result.findings.length === 0) {
+    lines.push("No prioritized testing backlog findings were detected for this repository.");
     lines.push("");
+  } else {
+    for (const finding of result.findings) {
+      lines.push(`### ${finding.title}`);
+      lines.push(`- Priority: ${toTitleCase(finding.priority)}`);
+      lines.push(`- Suggested test types: ${finding.suggestedTestTypes.join(", ")}`);
+      lines.push(`- Rationale: ${finding.rationale}`);
+      if (finding.existingCoverage) {
+        lines.push(`- Existing coverage signal: ${finding.existingCoverage}`);
+      }
+      lines.push(
+        `- Related paths: ${finding.relatedPaths.map((path) => `\`${path}\``).join(", ")}`
+      );
+      lines.push(`- Draft issue title: ${finding.issueTitle}`);
+      lines.push("");
+    }
   }
 
   if (createdIssues.length > 0) {

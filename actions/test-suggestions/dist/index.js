@@ -16642,7 +16642,7 @@ var require_dist = __commonJS({
       summary: import_zod11.z.string().trim().min(1, "summary must be non-empty"),
       currentTestingSetup: CurrentTestingSetup,
       notableCoverageGaps: import_zod11.z.array(import_zod11.z.string().trim().min(1)),
-      findings: import_zod11.z.array(TestBacklogFinding).min(1)
+      findings: import_zod11.z.array(TestBacklogFinding)
     });
     var import_zod12 = require_zod();
     var TestSuggestionString = import_zod12.z.string().trim().min(1);
@@ -18740,6 +18740,12 @@ ${managedSection}`;
       const actionDirs = uniquePaths3(
         allFiles.map((filePath) => filePath.match(/^actions\/([^/]+)/)?.[0]).filter((value) => Boolean(value))
       );
+      const customThemeDirs = uniquePaths3(
+        allFiles.map((filePath) => filePath.match(/^web\/themes\/custom\/([^/]+)/)?.[0]).filter((value) => Boolean(value))
+      );
+      const customModuleDirs = uniquePaths3(
+        allFiles.map((filePath) => filePath.match(/^web\/modules\/custom\/([^/]+)/)?.[0]).filter((value) => Boolean(value))
+      );
       return {
         allFiles,
         packageJsons,
@@ -18752,6 +18758,8 @@ ${managedSection}`;
         workflowPaths,
         actionDirs,
         packageDirs,
+        customThemeDirs,
+        customModuleDirs,
         rootHasAction: allFiles.includes("action.yml"),
         rootHasCli: packageJsons.some((packageJson) => {
           const payload = readJsonFile2((0, import_node_path22.resolve)(repoRoot, packageJson.path));
@@ -18942,6 +18950,72 @@ ${managedSection}`;
           suggestedTestTypes: ["integration", "unit"]
         });
       }
+      if (snapshot.customThemeDirs.length > 0) {
+        components.push({
+          id: "custom-theme-coverage",
+          title: "Regression coverage for custom theme behavior",
+          issueTitle: "Add focused regression coverage for custom theme behavior",
+          kind: "core",
+          relatedPaths: existingPaths(snapshot, [
+            ...snapshot.customThemeDirs,
+            ...snapshot.customThemeDirs.map((themeDir) => `${themeDir}/package.json`),
+            ...snapshot.customThemeDirs.map((themeDir) => `${themeDir}/cypress.config.ts`),
+            ...snapshot.customThemeDirs.map((themeDir) => `${themeDir}/vite.config.ts`)
+          ]),
+          coverageEvidence: relatedCoverage(
+            snapshot.testFiles,
+            [],
+            snapshot.customThemeDirs
+          ),
+          rationale: "Custom theme code is a user-facing surface where regressions in rendering, interactive behavior, or accessibility can ship even when generic library and workflow tests exist.",
+          repoFit: "This repository has Drupal custom theme code under `web/themes/custom`, so the highest-value backlog item should point reviewers toward behavior in that local product surface instead of reporting no gaps.",
+          implementationPlan: [
+            `Use ${unitFramework} for fast theme utility and component-level tests, and keep Cypress for browser-level flows that need Drupal-rendered pages.`,
+            "Identify one high-traffic theme behavior or template interaction that is not directly asserted today, then add the smallest focused regression around it.",
+            "Keep the issue scoped to custom theme behavior rather than vendor libraries or generic workflow YAML."
+          ],
+          starterTests: [
+            "A theme utility or component test for a local behavior under `web/themes/custom`.",
+            "A Cypress regression for one high-value page interaction or accessibility-sensitive behavior."
+          ],
+          acceptanceCriteria: [
+            "The added tests target custom theme code owned by the repository, not vendored library fixtures.",
+            "At least one regression would fail if the selected theme behavior is removed or broken.",
+            "The tests run through the existing theme test command enforced in CI."
+          ],
+          suggestedTestTypes: ["unit", "integration", "smoke"]
+        });
+      }
+      if (snapshot.customModuleDirs.length > 0) {
+        components.push({
+          id: "custom-module-coverage",
+          title: "Regression coverage for custom Drupal module behavior",
+          issueTitle: "Add focused regression coverage for custom Drupal module behavior",
+          kind: "core",
+          relatedPaths: existingPaths(snapshot, snapshot.customModuleDirs),
+          coverageEvidence: relatedCoverage(
+            snapshot.testFiles,
+            [],
+            snapshot.customModuleDirs
+          ),
+          rationale: "Custom Drupal modules usually contain business rules and integrations that are not protected by theme, vendor, or generic workflow tests.",
+          repoFit: "This repository has custom module code under `web/modules/custom`, so backlog issues should target repository-owned Drupal behavior directly.",
+          implementationPlan: [
+            "Choose one custom module behavior with clear business value and add a focused unit, kernel, or functional regression test around it.",
+            "Avoid broad module-wide snapshots; prefer one behavior with concrete setup and assertions."
+          ],
+          starterTests: [
+            "A kernel or unit test for a custom service, plugin, or hook behavior.",
+            "A functional regression for one high-value module workflow if browser/runtime behavior is required."
+          ],
+          acceptanceCriteria: [
+            "The test covers repository-owned custom module code.",
+            "The regression fails when the selected business behavior is removed or misconfigured.",
+            "The test command is documented or already enforced in CI."
+          ],
+          suggestedTestTypes: ["unit", "integration"]
+        });
+      }
       const actionCoverageEvidence = relatedCoverage(snapshot.testFiles, ["action", "workflow"], [
         "actions",
         ".github/workflows"
@@ -19056,6 +19130,8 @@ ${managedSection}`;
         "prs-test-backlog-cli": 94,
         "prs-issue-cli": 92,
         "core-test-backlog-analysis": 88,
+        "custom-theme-coverage": 86,
+        "custom-module-coverage": 85,
         "test-backlog-contract": 84,
         actions: 80,
         workflow: 76,
@@ -19186,6 +19262,9 @@ ${managedSection}`;
       const frameworkSummary = setup.frameworks.length > 0 ? setup.frameworks.join(", ") : "no detected frameworks";
       const ciSummary = setup.ciIntegration.status;
       const recommendationSummary = setup.frameworkRecommendation ? ` Recommended default framework: ${setup.frameworkRecommendation.recommended}.` : "";
+      if (findings.length === 0) {
+        return `Repository scan found ${sourceFileCount} source file${sourceFileCount === 1 ? "" : "s"}, ${setup.testFileCount} test file${setup.testFileCount === 1 ? "" : "s"}, and ${frameworkSummary}. Current testing setup is ${setup.status} and CI test integration is ${ciSummary}.${recommendationSummary} No prioritized testing backlog gaps were detected.`;
+      }
       const topPriorities = findings.slice(0, 3).map((finding) => finding.title.toLowerCase()).join("; ");
       return `Repository scan found ${sourceFileCount} source file${sourceFileCount === 1 ? "" : "s"}, ${setup.testFileCount} test file${setup.testFileCount === 1 ? "" : "s"}, and ${frameworkSummary}. Current testing setup is ${setup.status} and CI test integration is ${ciSummary}.${recommendationSummary} Highest-value gaps focus on ${topPriorities}.`;
     }

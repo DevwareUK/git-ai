@@ -4505,6 +4505,30 @@ describe("CLI integration", () => {
     });
   });
 
+  it("renders test-backlog markdown output when no findings are detected", async () => {
+    const analysis = {
+      ...createTestBacklogAnalysis(),
+      summary: "No prioritized testing backlog gaps were detected.",
+      notableCoverageGaps: [],
+      findings: [],
+    };
+    const { run } = await loadCli({
+      analysisResult: analysis,
+    });
+
+    await withoutRepositoryConfig(async () => {
+      process.argv = ["node", "prs", "test-backlog"];
+
+      const stdout = captureStdout();
+      await run();
+
+      expect(stdout.output()).toContain("## Prioritized findings");
+      expect(stdout.output()).toContain(
+        "No prioritized testing backlog findings were detected for this repository."
+      );
+    });
+  });
+
   it("runs review in markdown mode with linked issue context", async () => {
     const review = createPRReviewResult();
     const { run, generatePRReview } = await loadCli({

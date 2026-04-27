@@ -309,6 +309,113 @@ describe("analyzeTestBacklog", () => {
     expect(result.findings.map((finding) => finding.id)).not.toContain("ci-test-execution");
   });
 
+  it("returns an empty finding list instead of throwing when no backlog gaps are detected", async () => {
+    const repoRoot = mkdtempSync(resolve(tmpdir(), "prs-test-backlog-no-gaps-"));
+
+    writeFile(
+      repoRoot,
+      "package.json",
+      JSON.stringify(
+        {
+          name: "fixture-repo",
+          private: true,
+          scripts: { test: "vitest run" },
+          devDependencies: { vitest: "^3.2.4" },
+        },
+        null,
+        2
+      )
+    );
+    writeFile(repoRoot, "src/example.ts", "export const value = 1;\n");
+    writeFile(repoRoot, "src/example.test.ts", "import { it } from 'vitest';\nit('works', () => {});\n");
+    writeFile(repoRoot, "tests/workflow.test.ts", "import { it } from 'vitest';\nit('covers workflow checks', () => {});\n");
+    writeFile(
+      repoRoot,
+      ".github/workflows/test.yml",
+      [
+        "name: Test",
+        "on: [pull_request, push]",
+        "jobs:",
+        "  test:",
+        "    steps:",
+        "      - run: pnpm test",
+      ].join("\n")
+    );
+
+    const result = await analyzeTestBacklog({ repoRoot, maxFindings: 10 });
+
+    expect(result.currentTestingSetup.status).toBe("established");
+    expect(result.currentTestingSetup.ciIntegration.status).toBe("established");
+    expect(result.findings).toEqual([]);
+    expect(result.notableCoverageGaps).toEqual([]);
+  });
+
+  it("suggests focused coverage for Drupal custom theme repositories", async () => {
+    const repoRoot = mkdtempSync(resolve(tmpdir(), "prs-test-backlog-drupal-theme-"));
+
+    writeFile(
+      repoRoot,
+      "web/themes/custom/bos/package.json",
+      JSON.stringify(
+        {
+          name: "bos-theme",
+          private: true,
+          scripts: { test: "vitest run && cypress run" },
+          devDependencies: {
+            cypress: "^13.0.0",
+            vitest: "^3.2.4",
+          },
+        },
+        null,
+        2
+      )
+    );
+    writeFile(
+      repoRoot,
+      "web/themes/custom/bos/src/search.ts",
+      "export function normalizeQuery(value: string): string { return value.trim(); }\n"
+    );
+    writeFile(
+      repoRoot,
+      "web/themes/custom/bos/src/search.test.ts",
+      "import { it } from 'vitest';\nit('normalizes queries', () => {});\n"
+    );
+    writeFile(
+      repoRoot,
+      "web/themes/custom/bos/cypress/e2e/search.cy.ts",
+      "describe('search', () => { it('loads results', () => {}); });\n"
+    );
+    writeFile(
+      repoRoot,
+      "web/core/modules/system/tests/src/Functional/ThemeSuggestionsTest.php",
+      "<?php\n// Drupal core fixture that should not count as custom theme coverage.\n"
+    );
+    writeFile(
+      repoRoot,
+      ".github/workflows/theme-tests.yml",
+      [
+        "name: Theme tests",
+        "on: [pull_request, push]",
+        "jobs:",
+        "  test:",
+        "    steps:",
+        "      - run: npm test",
+      ].join("\n")
+    );
+
+    const result = await analyzeTestBacklog({ repoRoot, maxFindings: 10 });
+
+    expect(result.currentTestingSetup.status).toBe("established");
+    expect(result.currentTestingSetup.ciIntegration.status).toBe("established");
+    expect(result.findings.map((finding) => finding.id)).toContain("custom-theme-coverage");
+    expect(result.findings.find((finding) => finding.id === "custom-theme-coverage")?.issueTitle).toContain(
+      "custom theme"
+    );
+    expect(
+      result.findings.find((finding) => finding.id === "custom-theme-coverage")?.existingCoverage
+    ).not.toContain("web/core");
+  });
+
   it("generates focused findings for CLI, core analyzer, and contract surfaces", async () => {
     const result = await analyzeTestBacklog({ repoRoot: resolve("."), maxFindings: 5 });
     const ids = result.findings.map((finding) => finding.id);
