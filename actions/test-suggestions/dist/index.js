@@ -18450,6 +18450,7 @@ ${managedSection}`;
     var CI_TEST_COMMAND_PATTERNS = [
       { pattern: /\bpnpm\s+(?:exec\s+)?vitest\b/i, label: "Vitest command" },
       { pattern: /\bpnpm\s+test(?:\s|$)/i, label: "pnpm test script" },
+      { pattern: /\bpnpm\s+--filter\s+\S+\s+(?:run\s+)?test(?:\s|$)/i, label: "package-specific pnpm test command" },
       { pattern: /\bnpm\s+(?:run\s+)?test(?:\s|$)/i, label: "npm test script" },
       { pattern: /\byarn\s+test(?:\s|$)/i, label: "yarn test script" },
       { pattern: /\bbun\s+test(?:\s|$)/i, label: "bun test script" },
@@ -18457,6 +18458,12 @@ ${managedSection}`;
       { pattern: /\bplaywright\s+test\b/i, label: "Playwright command" },
       { pattern: /\bcypress\s+run\b/i, label: "Cypress command" },
       { pattern: /\bnode\s+--test\b/i, label: "node:test command" }
+    ];
+    var SHARED_REPO_TEST_COMMAND_PATTERNS = [
+      /\bpnpm\s+test(?:\s|$)/i,
+      /\bnpm\s+(?:run\s+)?test(?:\s|$)/i,
+      /\byarn\s+test(?:\s|$)/i,
+      /\bbun\s+test(?:\s|$)/i
     ];
     function normalizePath2(filePath) {
       return filePath.split("\\").join("/");
@@ -18650,28 +18657,60 @@ ${managedSection}`;
       const workflows = snapshot.workflowPaths;
       const evidence = /* @__PURE__ */ new Set();
       const notes = [];
+      let hasRecognizedTestCommand = false;
+      let hasPackageSpecificTestCommand = false;
+      let hasSharedRepoTestCommand = false;
+      let hasEnforcedTestCommand = false;
+      let hasManualOrScheduledTestCommand = false;
       for (const workflowFile of snapshot.workflowFiles) {
+        const hasEnforcementTrigger = hasPullRequestOrPushTrigger(workflowFile.content);
+        const hasManualOrScheduledTrigger = hasManualOrScheduledTriggerOnly(workflowFile.content);
+        let workflowHasTestCommand = false;
         for (const candidate of CI_TEST_COMMAND_PATTERNS) {
           if (candidate.pattern.test(workflowFile.content)) {
+            workflowHasTestCommand = true;
+            hasRecognizedTestCommand = true;
             evidence.add(`${candidate.label} found in ${workflowFile.path}`);
+            if (candidate.label === "package-specific pnpm test command") {
+              hasPackageSpecificTestCommand = true;
+            }
           }
+        }
+        if (SHARED_REPO_TEST_COMMAND_PATTERNS.some((pattern) => pattern.test(workflowFile.content))) {
+          hasSharedRepoTestCommand = true;
+        }
+        if (!workflowHasTestCommand) {
+          continue;
+        }
+        if (hasEnforcementTrigger) {
+          hasEnforcedTestCommand = true;
+          evidence.add(`pull request or push test enforcement found in ${workflowFile.path}`);
+        } else if (hasManualOrScheduledTrigger) {
+          hasManualOrScheduledTestCommand = true;
+          evidence.add(`manual or scheduled test workflow found in ${workflowFile.path}`);
         }
       }
       let status = "missing";
-      if (evidence.size > 0) {
-        status = setup.hasTests ? "established" : "partial";
+      if (hasEnforcedTestCommand && (!hasPackageSpecificTestCommand || hasSharedRepoTestCommand)) {
+        status = "established";
+      } else if (hasRecognizedTestCommand) {
+        status = "partial";
       }
       if (workflows.length === 0) {
         notes.push("No GitHub Actions workflows were detected, so tests are not currently enforceable in CI.");
-      } else if (evidence.size === 0) {
+      } else if (!hasRecognizedTestCommand) {
         notes.push("GitHub Actions workflows exist, but none appear to invoke a test command.");
         notes.push(
           "Current workflows validate install/build flows only, so automated test regressions would still merge unnoticed."
         );
+      } else if (hasManualOrScheduledTestCommand && !hasEnforcedTestCommand) {
+        notes.push("Tests run in a manual or scheduled workflow, but not on a clear pull request or push enforcement path.");
+      } else if (hasPackageSpecificTestCommand && !hasSharedRepoTestCommand) {
+        notes.push("Tests run through a package-specific command, but the shared repository test command is not enforced in CI.");
       } else if (!setup.hasTests) {
         notes.push("A workflow appears ready to execute tests, but the repository scan did not find test files yet.");
       }
-      if (setup.hasTests && evidence.size === 0) {
+      if (setup.hasTests && !hasRecognizedTestCommand) {
         notes.push("Tests appear to exist locally, but they are not wired into GitHub Actions.");
       }
       return {
@@ -18681,6 +18720,13 @@ ${managedSection}`;
         evidence: [...evidence].sort((left, right) => left.localeCompare(right)),
         notes
       };
+    }
+    function hasPullRequestOrPushTrigger(content) {
+      return /(?:^|\n)\s*on\s*:\s*\[[^\]]*\b(?:pull_request|push)\b[^\]]*\]/i.test(content) || /(?:^|\n)\s*(?:pull_request|push)\s*:/i.test(content);
+    }
+    function hasManualOrScheduledTriggerOnly(content) {
+      const hasManualOrScheduled = /(?:^|\n)\s*on\s*:\s*\[[^\]]*\b(?:workflow_dispatch|schedule)\b[^\]]*\]/i.test(content) || /(?:^|\n)\s*(?:workflow_dispatch|schedule)\s*:/i.test(content);
+      return hasManualOrScheduled && !hasPullRequestOrPushTrigger(content);
     }
     function collectSnapshot2(repoRoot, excludePaths) {
       const allFiles = walkFiles2(repoRoot, createRepositoryPathMatcher(excludePaths));
@@ -18738,50 +18784,86 @@ ${managedSection}`;
       const components = [];
       if (snapshot.packageDirs.includes("packages/cli") || snapshot.rootHasCli) {
         components.push({
-          id: "cli",
-          title: "CLI integration coverage for issue and test-backlog flows",
-          issueTitle: "Add CLI integration coverage for `prs issue` and `prs test-backlog`",
+          id: "prs-test-backlog-cli",
+          title: "CLI coverage for `prs test-backlog` output and issue creation",
+          issueTitle: "Add CLI coverage for `prs test-backlog` output and issue creation",
           kind: "cli",
           relatedPaths: existingPaths(snapshot, [
             "packages/cli/src/index.ts",
             "packages/cli/package.json",
             "package.json"
           ]),
-          coverageEvidence: relatedCoverage(snapshot.testFiles, ["cli", "command", "issue", "backlog"], ["packages/cli"]),
-          rationale: "The CLI is the highest-leverage entry point in this repo. Regressions in argument parsing, git orchestration, or issue creation break core daily workflows immediately.",
-          repoFit: "This repository routes issue preparation, issue finalization, and test backlog generation through a single CLI entrypoint, so one focused integration suite can protect several user-facing flows at once.",
+          coverageEvidence: relatedCoverage(snapshot.testFiles, ["test-backlog"], [
+            "packages/cli/src/index.test"
+          ]),
+          rationale: "`prs test-backlog` is a user-facing command whose markdown, JSON, and GitHub issue creation output must stay stable as the analyzer becomes more opinionated.",
+          repoFit: "This repository exposes the backlog analyzer through the CLI and can test formatting and duplicate issue reuse at the command boundary without live GitHub calls.",
           implementationPlan: [
             `Use ${unitFramework} to exercise the CLI against fixture repositories and mocked environment variables instead of relying on broad end-to-end tests first.`,
-            "Cover `test-backlog` option parsing, markdown/json formatting, and duplicate-issue reuse logic with GitHub API calls mocked at the boundary.",
-            "Cover `issue prepare` and `issue finalize` paths with fixture git state so branch naming, prompt file creation, and commit behavior are verified."
+            "Cover `test-backlog` option parsing, markdown/json formatting, and duplicate-issue reuse logic with GitHub API calls mocked at the boundary."
           ],
           starterTests: [
-            "`prs test-backlog --format json --top 3` returns stable JSON and preserves the generated issue titles.",
-            "`prs issue prepare <n>` writes the expected run artifacts and output metadata for downstream automation.",
-            "`prs issue finalize <n>` fails clearly when the branch or artifact state is incomplete."
+            "`prs test-backlog --format json --top 3` returns stable JSON and preserves the generated issue titles and issue bodies.",
+            "`prs test-backlog` markdown prints setup status, CI status, recommendations, and draft issue titles.",
+            "`prs test-backlog --create-issues` reuses matching open issues before creating new ones."
           ],
           acceptanceCriteria: [
             "CLI coverage runs in-process or via lightweight child-process wrappers without requiring live GitHub or OpenAI calls.",
-            "The tests assert at least one success path and one failure path for both `issue` and `test-backlog` flows.",
-            "The suite is wired into the repo-level test command introduced by the baseline framework setup."
+            "The tests assert success and failure paths for `test-backlog` argument parsing, output rendering, and issue creation.",
+            "The suite is wired into the repo-level test command."
+          ],
+          suggestedTestTypes: ["cli", "integration"]
+        });
+        components.push({
+          id: "prs-issue-cli",
+          title: "CLI coverage for `prs issue` prepare and finalize orchestration",
+          issueTitle: "Add CLI coverage for `prs issue` prepare and finalize orchestration",
+          kind: "cli",
+          relatedPaths: existingPaths(snapshot, [
+            "packages/cli/src/index.ts",
+            "packages/cli/src/workflows/pr-prepare-review/run.ts",
+            "packages/cli/src/workflows/pr-fix-tests/run.ts",
+            "packages/cli/package.json"
+          ]),
+          coverageEvidence: relatedCoverage(snapshot.testFiles, ["issue prepare", "issue finalize", "pr-prepare"], [
+            "packages/cli/src/workflows/pr-prepare-review",
+            "packages/cli/src/workflows/pr-fix-tests"
+          ]),
+          rationale: "`prs issue` prepares and finalizes branch, artifact, and workflow state. Regressions here can block the handoff from an issue snapshot to an implementation branch.",
+          repoFit: "The repository already separates issue workflow helpers under `packages/cli/src/workflows`, so a focused CLI suite can cover orchestration without mixing in test-backlog behavior.",
+          implementationPlan: [
+            `Use ${unitFramework} fixtures to exercise \`prs issue prepare\` and \`prs issue finalize\` with mocked git and GitHub boundaries.`,
+            "Assert run artifact creation, branch naming, prompt file paths, and clear failure messages for incomplete state.",
+            "Keep provider/model calls stubbed so the tests remain deterministic."
+          ],
+          starterTests: [
+            "`prs issue prepare <n>` writes the expected run artifacts and output metadata for downstream automation.",
+            "`prs issue finalize <n>` fails clearly when the branch or artifact state is incomplete.",
+            "`prs issue finalize <n>` surfaces the done-state expectations when Codex output is missing."
+          ],
+          acceptanceCriteria: [
+            "Tests cover at least one success path and one failure path for issue preparation.",
+            "Tests cover finalize preflight failures without requiring live GitHub or model calls.",
+            "`prs issue` coverage is separate from `prs test-backlog` coverage."
           ],
           suggestedTestTypes: ["cli", "integration"]
         });
       }
       if (snapshot.packageDirs.includes("packages/core")) {
         components.push({
-          id: "core",
-          title: "Unit coverage for test backlog analysis and issue drafting",
-          issueTitle: "Add unit coverage for test backlog analysis and issue drafting",
+          id: "core-test-backlog-analysis",
+          title: "Unit coverage for test backlog analysis and issue body rendering",
+          issueTitle: "Add unit coverage for test backlog analysis and issue body rendering",
           kind: "core",
           relatedPaths: existingPaths(snapshot, [
             "packages/core/src/test-backlog.ts",
-            "packages/core/src/structured-generation.ts",
             "packages/core/package.json"
           ]),
-          coverageEvidence: relatedCoverage(snapshot.testFiles, ["backlog", "structured", "diff", "commit"], ["packages/core"]),
-          rationale: "The `packages/core` layer contains the ranking, recommendation, and prompt-shaping logic that everything else depends on. Small behavior changes here can silently reshape generated output across the repo.",
-          repoFit: "This issue specifically targets the logic that scans the repository, scores findings, and drafts implementation-ready issue bodies, which is the highest-risk part of the new test backlog workflow.",
+          coverageEvidence: relatedCoverage(snapshot.testFiles, ["test-backlog"], [
+            "packages/core/src/test-backlog"
+          ]),
+          rationale: "The test backlog analyzer owns framework detection, CI classification, ranking, and generated issue bodies. Small behavior changes here can silently reshape every generated backlog item.",
+          repoFit: "This repository keeps the analyzer static and deterministic in `packages/core/src/test-backlog.ts`, making fixture-based unit coverage the most direct protection.",
           implementationPlan: [
             `Add ${unitFramework} unit tests around repository snapshot analysis, framework detection, CI detection, and finding prioritization in \`packages/core/src/test-backlog.ts\`.`,
             "Add focused coverage for the issue body drafting helpers so recommendations, alternatives, and acceptance criteria remain opinionated instead of regressing back to generic text.",
@@ -18802,7 +18884,7 @@ ${managedSection}`;
       }
       if (snapshot.packageDirs.includes("packages/contracts")) {
         components.push({
-          id: "contracts",
+          id: "test-backlog-contract",
           title: "Schema coverage for public test-backlog contracts",
           issueTitle: "Add schema coverage for test backlog output contracts",
           kind: "contracts",
@@ -18811,7 +18893,9 @@ ${managedSection}`;
             "packages/contracts/src/index.ts",
             "packages/contracts/package.json"
           ]),
-          coverageEvidence: relatedCoverage(snapshot.testFiles, ["contract", "schema", "zod", "backlog"], ["packages/contracts"]),
+          coverageEvidence: relatedCoverage(snapshot.testFiles, ["test-backlog"], [
+            "packages/contracts/src/test-backlog"
+          ]),
           rationale: "Contract drift breaks CLI consumers and GitHub workflow summaries quickly. Targeted schema tests keep the public shape stable as the backlog output becomes richer.",
           repoFit: "The test backlog command now carries framework recommendations and CI metadata, so the Zod contract is the boundary that should lock those additions down.",
           implementationPlan: [
@@ -18858,7 +18942,11 @@ ${managedSection}`;
           suggestedTestTypes: ["integration", "unit"]
         });
       }
-      if (snapshot.actionDirs.length > 0 || snapshot.rootHasAction) {
+      const actionCoverageEvidence = relatedCoverage(snapshot.testFiles, ["action", "workflow"], [
+        "actions",
+        ".github/workflows"
+      ]);
+      if ((snapshot.actionDirs.length > 0 || snapshot.rootHasAction) && !actionCoverageEvidence) {
         components.push({
           id: "actions",
           title: "Smoke coverage for bundled GitHub Action entrypoints",
@@ -18868,7 +18956,7 @@ ${managedSection}`;
             "actions/pr-assistant/src/index.ts",
             "actions/test-suggestions/src/index.ts"
           ]),
-          coverageEvidence: relatedCoverage(snapshot.testFiles, ["action", "workflow"], ["actions", ".github/workflows"]),
+          coverageEvidence: actionCoverageEvidence,
           rationale: "The packaged GitHub Actions are public delivery surfaces. Light smoke coverage catches broken inputs, outputs, and packaging assumptions before users hit them in CI.",
           repoFit: "Each action wrapper is intentionally thin, so smoke tests can validate input parsing and output wiring without building a large harness around the GitHub runner.",
           implementationPlan: [
@@ -18886,14 +18974,17 @@ ${managedSection}`;
           suggestedTestTypes: ["smoke", "workflow"]
         });
       }
-      if (snapshot.workflowPaths.length > 0) {
+      const workflowCoverageEvidence = relatedCoverage(snapshot.testFiles, ["workflow", "dispatch", "issue"], [
+        ".github/workflows"
+      ]);
+      if (snapshot.workflowPaths.length > 0 && !workflowCoverageEvidence) {
         components.push({
           id: "workflow",
           title: "Regression coverage for GitHub workflow shell orchestration",
           issueTitle: "Add regression coverage for workflow shell orchestration",
           kind: "workflow",
           relatedPaths: snapshot.workflowPaths,
-          coverageEvidence: relatedCoverage(snapshot.testFiles, ["workflow", "dispatch", "issue"], [".github/workflows"]),
+          coverageEvidence: workflowCoverageEvidence,
           rationale: "Workflow YAML is easy to change accidentally and hard to exercise manually. Targeted regression checks reduce the risk of shipping broken automation paths.",
           repoFit: "This repo relies on hand-written shell steps for issue preparation, backlog generation, and PR creation, so lightweight workflow assertions have real operational value.",
           implementationPlan: [
@@ -18962,11 +19053,12 @@ ${managedSection}`;
       const explicitRanks = {
         "initial-test-harness": 110,
         "ci-test-execution": 105,
-        cli: 92,
-        core: 88,
+        "prs-test-backlog-cli": 94,
+        "prs-issue-cli": 92,
+        "core-test-backlog-analysis": 88,
+        "test-backlog-contract": 84,
         actions: 80,
         workflow: 76,
-        contracts: 72,
         providers: 68
       };
       return explicitRanks[finding.id] ?? 50;
