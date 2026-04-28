@@ -1,5 +1,5 @@
 export type PrCommandOptions = {
-  action: "fix-comments" | "fix-tests" | "prepare-review";
+  action: "fix-comments" | "fix-failing-tests" | "fix-tests" | "prepare-review";
   prNumber: number;
 };
 
@@ -7,6 +7,7 @@ export const PR_USAGE = [
   "Usage:",
   "  prs pr prepare-review <pr-number>",
   "  prs pr fix-comments <pr-number>",
+  "  prs pr fix-failing-tests <pr-number>",
   "  prs pr fix-tests <pr-number>",
 ].join("\n");
 
@@ -19,6 +20,7 @@ export function parsePrCommandArgs(
 
   if (
     subcommand !== "fix-comments" &&
+    subcommand !== "fix-failing-tests" &&
     subcommand !== "fix-tests" &&
     subcommand !== "prepare-review"
   ) {

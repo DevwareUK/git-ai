@@ -2520,6 +2520,19 @@ describe("CLI integration", () => {
     });
   });
 
+  it("parses pr fix-failing-tests as a dedicated pr subcommand", async () => {
+    process.env.GIT_AI_DISABLE_AUTO_RUN = "1";
+    const { parsePrCommandArgs } = await loadCli();
+
+    expect(parsePrCommandArgs(["pr", "fix-failing-tests", "91"])).toEqual({
+      action: "fix-failing-tests",
+      prNumber: 91,
+    });
+    expect(() =>
+      parsePrCommandArgs(["pr", "fix-failing-tests", "91", "--extra"])
+    ).toThrow('Unknown pr option "--extra"');
+  });
+
   it("parses pr prepare-review as a dedicated pr subcommand", async () => {
     process.env.GIT_AI_DISABLE_AUTO_RUN = "1";
     const { parsePrCommandArgs } = await loadCli();
@@ -6988,6 +7001,366 @@ describe("CLI integration", () => {
       ["push", "origin", "HEAD:feat/pr-fix-tests"],
       expect.any(Object)
     );
+  });
+
+  it("runs pr fix-failing-tests, captures failing output, verifies the fix, and commits the result", async () => {
+    const beforeRuns = listRunDirectories();
+    let buildCallCount = 0;
+    let gitStatusCallCount = 0;
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          number: 95,
+          title: "Repair failing PR verification",
+          body: "Closes #42\n\nThe local verification command is currently failing.",
+          html_url: "https://github.com/DevwareUK/prs/pull/95",
+          base: { ref: "main" },
+          head: { ref: "feat/pr-failing-tests" },
+        })
+      )
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          title: "Fix failing CLI verification",
+          body: "The PR should pass the configured local build before merge.",
+          html_url: "https://github.com/DevwareUK/prs/issues/42",
+        })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { run, spawnSync } = await loadCli({
+      readlineAnswers: ["y"],
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "status") {
+          gitStatusCallCount += 1;
+          return gitStatusCallCount === 1 ? "" : " M packages/cli/src/index.ts\n";
+        }
+
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/prs.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+      spawnSyncImpl: (command, args) => {
+        if (command === "gh" && args[0] === "--version") {
+          return { status: 1, error: new Error("gh is unavailable") };
+        }
+
+        if (command === "codex" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "codex") {
+          return { status: 0 };
+        }
+
+        if (command === "pnpm" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "pnpm" && args[0] === "build") {
+          buildCallCount += 1;
+          return buildCallCount === 1
+            ? {
+                status: 1,
+                stdout: "FAIL packages/cli/src/index.test.ts\n",
+                stderr: "expected true to be false\n",
+              }
+            : { status: 0, stdout: "built\n", stderr: "" };
+        }
+
+        if (command === "git" && args[0] === "add") {
+          return { status: 0 };
+        }
+
+        if (command === "git" && args[0] === "commit") {
+          return { status: 0 };
+        }
+
+        if (
+          command === "git" &&
+          args[0] === "fetch" &&
+          args[1] === "origin" &&
+          args[2] === "feat/pr-failing-tests"
+        ) {
+          return { status: 0, stdout: "", stderr: "" };
+        }
+
+        if (
+          command === "git" &&
+          args[0] === "rev-parse" &&
+          args[1] === "origin/feat/pr-failing-tests"
+        ) {
+          return { status: 0, stdout: "head-tip-95\n", stderr: "" };
+        }
+
+        if (
+          command === "git" &&
+          args[0] === "rev-list" &&
+          args[1] === "--left-right" &&
+          args[2] === "--count" &&
+          args[3] === "origin/feat/pr-failing-tests...HEAD"
+        ) {
+          return { status: 0, stdout: "0 1\n", stderr: "" };
+        }
+
+        if (
+          command === "git" &&
+          args[0] === "push" &&
+          args[1] === "origin" &&
+          args[2] === "HEAD:feat/pr-failing-tests"
+        ) {
+          return { status: 0, stdout: "pushed\n", stderr: "" };
+        }
+
+        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.argv = ["node", "prs", "pr", "fix-failing-tests", "95"];
+
+    await run();
+
+    const createdRun = listRunDirectories().find((entry) => !beforeRuns.includes(entry));
+    expect(createdRun).toBeDefined();
+
+    const runDirPath = resolve(REPO_ROOT, ".prs", "runs", createdRun as string);
+    const snapshotFilePath = resolve(runDirPath, "failing-tests.md");
+    const promptFilePath = resolve(runDirPath, "prompt.md");
+    const metadataFilePath = resolve(runDirPath, "metadata.json");
+    const outputLogPath = resolve(runDirPath, "output.log");
+    cleanupTargets.add(runDirPath);
+
+    expect(readFileSync(snapshotFilePath, "utf8")).toContain(
+      "# Pull Request Failing Tests Snapshot"
+    );
+    expect(readFileSync(snapshotFilePath, "utf8")).toContain("pnpm build");
+    expect(readFileSync(snapshotFilePath, "utf8")).toContain(
+      "FAIL packages/cli/src/index.test.ts"
+    );
+    expect(readFileSync(snapshotFilePath, "utf8")).toContain(
+      "Issue #42: Fix failing CLI verification"
+    );
+    expect(readFileSync(promptFilePath, "utf8")).toContain(
+      "Read the pull request failing tests snapshot"
+    );
+    expect(readFileSync(promptFilePath, "utf8")).toContain(
+      "keep code changes focused on fixing the captured failing tests"
+    );
+    expect(readFileSync(promptFilePath, "utf8")).toContain("✅ Implementation complete");
+    expect(readFileSync(outputLogPath, "utf8")).toContain(
+      "# prs pr fix-failing-tests run log"
+    );
+    expect(readFileSync(outputLogPath, "utf8")).toContain("$ pnpm build");
+    expect(readFileSync(outputLogPath, "utf8")).toContain(
+      "FAIL packages/cli/src/index.test.ts"
+    );
+    expect(readFileSync(outputLogPath, "utf8")).toContain("built");
+    expect(JSON.parse(readFileSync(metadataFilePath, "utf8"))).toMatchObject({
+      prNumber: 95,
+      prTitle: "Repair failing PR verification",
+      prUrl: "https://github.com/DevwareUK/prs/pull/95",
+      baseRefName: "main",
+      headRefName: "feat/pr-failing-tests",
+      linkedIssues: [
+        {
+          number: 42,
+          title: "Fix failing CLI verification",
+          url: "https://github.com/DevwareUK/prs/issues/42",
+        },
+      ],
+      verificationCommand: ["pnpm", "build"],
+      initialVerification: {
+        status: 1,
+        error: null,
+        stdout: "FAIL packages/cli/src/index.test.ts\n",
+        stderr: "expected true to be false\n",
+      },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(buildCallCount).toBe(2);
+    expect(spawnSync).toHaveBeenCalledWith(
+      "git",
+      ["commit", "-F", expect.stringContaining("commit-message.txt")],
+      expect.any(Object)
+    );
+    expect(spawnSync).toHaveBeenCalledWith(
+      "git",
+      ["push", "origin", "HEAD:feat/pr-failing-tests"],
+      expect.any(Object)
+    );
+  });
+
+  it("fails pr fix-failing-tests clearly when repository forge support is disabled", async () => {
+    await withRepositoryConfig(
+      JSON.stringify(
+        {
+          forge: {
+            type: "none",
+          },
+        },
+        null,
+        2
+      ),
+      async () => {
+        const { run } = await loadCli();
+
+        process.argv = ["node", "prs", "pr", "fix-failing-tests", "98"];
+
+        await expect(run()).rejects.toThrow(
+          "Repository forge support is disabled by .prs/config.json. Configure `forge.type` to enable pull request workflows."
+        );
+      }
+    );
+  });
+
+  it("exits pr fix-failing-tests without runtime work when verification already passes", async () => {
+    const beforeRuns = listRunDirectories();
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      createFetchResponse({
+        number: 96,
+        title: "Already passing PR verification",
+        body: "",
+        html_url: "https://github.com/DevwareUK/prs/pull/96",
+        base: { ref: "main" },
+        head: { ref: "feat/already-passing" },
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { run, spawnSync } = await loadCli({
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "status") {
+          return "";
+        }
+
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/prs.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+      spawnSyncImpl: (command, args) => {
+        if (command === "gh" && args[0] === "--version") {
+          return { status: 1, error: new Error("gh is unavailable") };
+        }
+
+        if (command === "pnpm" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "pnpm" && args[0] === "build") {
+          return { status: 0, stdout: "built\n", stderr: "" };
+        }
+
+        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.argv = ["node", "prs", "pr", "fix-failing-tests", "96"];
+    const messages: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((message?: unknown) => {
+      messages.push(String(message ?? ""));
+    });
+
+    await run();
+
+    expect(listRunDirectories()).toEqual(beforeRuns);
+    expect(messages.join("\n")).toContain(
+      "Configured verification command passed. No failing test output was captured."
+    );
+    expect(spawnSync).not.toHaveBeenCalledWith(
+      "codex",
+      expect.any(Array),
+      expect.any(Object)
+    );
+    expect(
+      spawnSync.mock.calls.some(
+        ([command, args]) =>
+          command === "git" &&
+          Array.isArray(args) &&
+          (args[0] === "commit" || args[0] === "push")
+      )
+    ).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops pr fix-failing-tests before commit when final verification still fails", async () => {
+    const beforeRuns = listRunDirectories();
+    let buildCallCount = 0;
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      createFetchResponse({
+        number: 97,
+        title: "Still failing PR verification",
+        body: "",
+        html_url: "https://github.com/DevwareUK/prs/pull/97",
+        base: { ref: "main" },
+        head: { ref: "feat/still-failing" },
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { run, spawnSync } = await loadCli({
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "status") {
+          return "";
+        }
+
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/prs.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+      spawnSyncImpl: (command, args) => {
+        if (command === "gh" && args[0] === "--version") {
+          return { status: 1, error: new Error("gh is unavailable") };
+        }
+
+        if (command === "codex" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "codex") {
+          return { status: 0 };
+        }
+
+        if (command === "pnpm" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "pnpm" && args[0] === "build") {
+          buildCallCount += 1;
+          return buildCallCount === 1
+            ? { status: 1, stdout: "FAIL before runtime\n", stderr: "before\n" }
+            : { status: 1, stdout: "FAIL after runtime\n", stderr: "after\n" };
+        }
+
+        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.argv = ["node", "prs", "pr", "fix-failing-tests", "97"];
+
+    await expect(run()).rejects.toThrow("Build failed. Changes were not committed.");
+
+    const createdRun = listRunDirectories().find((entry) => !beforeRuns.includes(entry));
+    expect(createdRun).toBeDefined();
+    const runDirPath = resolve(REPO_ROOT, ".prs", "runs", createdRun as string);
+    cleanupTargets.add(runDirPath);
+    expect(readFileSync(resolve(runDirPath, "output.log"), "utf8")).toContain(
+      "FAIL after runtime"
+    );
+    expect(buildCallCount).toBe(2);
+    expect(
+      spawnSync.mock.calls.some(
+        ([command, args]) =>
+          command === "git" &&
+          Array.isArray(args) &&
+          (args[0] === "commit" || args[0] === "push")
+      )
+    ).toBe(false);
   });
 
   it("exits pr fix-tests cleanly when no test suggestions are selected", async () => {

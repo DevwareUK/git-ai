@@ -107,6 +107,8 @@ import {
   preflightRemoteBranch,
 } from "./workflow-preflights";
 import { runPrFixCommentsCommand } from "./workflows/pr-fix-comments/run";
+import { runPrFixFailingTestsCommand } from "./workflows/pr-fix-failing-tests/run";
+import type { VerificationFailure } from "./workflows/pr-fix-failing-tests/types";
 import { runPrPrepareReviewCommand } from "./workflows/pr-prepare-review/run";
 import { runPrFixTestsCommand } from "./workflows/pr-fix-tests/run";
 
@@ -390,6 +392,7 @@ const TOP_LEVEL_HELP = [
   "Start here:",
   "  prs review",
   "  prs pr fix-comments <pr-number>",
+  "  prs pr fix-failing-tests <pr-number>",
   "  prs pr fix-tests <pr-number>",
   "  prs test-backlog [--top <count>]",
   "",
@@ -3075,6 +3078,40 @@ function verifyBuild(repoRoot: string, buildCommand: string[], outputLogPath: st
   );
 }
 
+function captureVerificationFailure(
+  repoRoot: string,
+  buildCommand: string[]
+): VerificationFailure | undefined {
+  const result = spawnSync(buildCommand[0], buildCommand.slice(1), {
+    cwd: repoRoot,
+    encoding: "utf8",
+    maxBuffer: 10 * 1024 * 1024,
+    stdio: ["inherit", "pipe", "pipe"],
+  });
+  const stdout = result.stdout ?? "";
+  const stderr = result.stderr ?? "";
+
+  if (stdout) {
+    process.stdout.write(stdout);
+  }
+
+  if (stderr) {
+    process.stderr.write(stderr);
+  }
+
+  if (!result.error && result.status === 0) {
+    return undefined;
+  }
+
+  return {
+    command: buildCommand,
+    status: result.status ?? null,
+    stdout,
+    stderr,
+    error: result.error?.message,
+  };
+}
+
 function commitGeneratedChanges(
   repoRoot: string,
   commitMessage: ReviewedGeneratedText
@@ -3885,6 +3922,38 @@ async function runPrCommand(): Promise<void> {
       },
       forge: getRepositoryForge(repoRoot),
       ensureCleanWorkingTree,
+      promptForLine,
+      verifyBuild,
+      hasChanges,
+      commitGeneratedChanges,
+    });
+    return;
+  }
+
+  if (prCommand.action === "fix-failing-tests") {
+    await runPrFixFailingTestsCommand({
+      prNumber: prCommand.prNumber,
+      repoRoot,
+      buildCommand: repositoryConfig.buildCommand,
+      ensureVerificationCommandAvailable,
+      runtime: {
+        resolve: () => {
+          const runtime = selectInteractiveRuntime(repositoryConfig.ai.runtime, {
+            onFallback: (message) => {
+              console.log(message);
+            },
+          });
+          return {
+            displayName: runtime.displayName,
+            launch: (runtimeRepoRoot, workspace) => {
+              runtime.launch(runtimeRepoRoot, workspace);
+            },
+          };
+        },
+      },
+      forge: getRepositoryForge(repoRoot),
+      ensureCleanWorkingTree,
+      captureVerificationFailure,
       promptForLine,
       verifyBuild,
       hasChanges,
