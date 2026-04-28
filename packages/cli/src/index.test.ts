@@ -548,6 +548,19 @@ function isUnexpectedSpawnSyncCall(error: unknown): error is Error {
   return error instanceof Error && error.message.startsWith("Unexpected spawnSync call:");
 }
 
+function isUnexpectedExecFileSyncCall(error: unknown): error is Error {
+  return error instanceof Error && error.message.startsWith("Unexpected execFileSync call:");
+}
+
+function isGitListUntrackedFilesCommand(command: string, args: string[]): boolean {
+  return (
+    command === "git" &&
+    args[0] === "ls-files" &&
+    args[1] === "--others" &&
+    args[2] === "--exclude-standard"
+  );
+}
+
 function syntheticGitRefTip(ref: string): string {
   return `${ref.replace(/[^a-z0-9]+/gi, "-")}-tip`;
 }
@@ -1007,10 +1020,47 @@ async function loadCli(options: {
     }
 
     if (options.execFileSyncImpl) {
+      const normalizedArgs =
+        command === "git" && args[0] === "-C" ? args.slice(2) : args;
       if (command === "git" && args[0] === "-C") {
-        return options.execFileSyncImpl(command, args.slice(2));
+        try {
+          return options.execFileSyncImpl(command, normalizedArgs);
+        } catch (error: unknown) {
+          if (
+            isGitListUntrackedFilesCommand(command, normalizedArgs) &&
+            isUnexpectedExecFileSyncCall(error)
+          ) {
+            return "";
+          }
+
+          throw error;
+        }
       }
-      return options.execFileSyncImpl(command, args);
+
+      try {
+        return options.execFileSyncImpl(command, normalizedArgs);
+      } catch (error: unknown) {
+        if (
+          isGitListUntrackedFilesCommand(command, normalizedArgs) &&
+          isUnexpectedExecFileSyncCall(error)
+        ) {
+          return "";
+        }
+
+        throw error;
+      }
+    }
+
+    if (
+      command === "git" &&
+      args[0] === "-C" &&
+      isGitListUntrackedFilesCommand(command, args.slice(2))
+    ) {
+      return "";
+    }
+
+    if (isGitListUntrackedFilesCommand(command, args)) {
+      return "";
     }
 
     throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
