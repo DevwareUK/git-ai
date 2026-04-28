@@ -548,6 +548,19 @@ function isUnexpectedSpawnSyncCall(error: unknown): error is Error {
   return error instanceof Error && error.message.startsWith("Unexpected spawnSync call:");
 }
 
+function isUnexpectedExecFileSyncCall(error: unknown): error is Error {
+  return error instanceof Error && error.message.startsWith("Unexpected execFileSync call:");
+}
+
+function isGitListUntrackedFilesCommand(command: string, args: string[]): boolean {
+  return (
+    command === "git" &&
+    args[0] === "ls-files" &&
+    args[1] === "--others" &&
+    args[2] === "--exclude-standard"
+  );
+}
+
 function syntheticGitRefTip(ref: string): string {
   return `${ref.replace(/[^a-z0-9]+/gi, "-")}-tip`;
 }
@@ -1007,10 +1020,47 @@ async function loadCli(options: {
     }
 
     if (options.execFileSyncImpl) {
+      const normalizedArgs =
+        command === "git" && args[0] === "-C" ? args.slice(2) : args;
       if (command === "git" && args[0] === "-C") {
-        return options.execFileSyncImpl(command, args.slice(2));
+        try {
+          return options.execFileSyncImpl(command, normalizedArgs);
+        } catch (error: unknown) {
+          if (
+            isGitListUntrackedFilesCommand(command, normalizedArgs) &&
+            isUnexpectedExecFileSyncCall(error)
+          ) {
+            return "";
+          }
+
+          throw error;
+        }
       }
-      return options.execFileSyncImpl(command, args);
+
+      try {
+        return options.execFileSyncImpl(command, normalizedArgs);
+      } catch (error: unknown) {
+        if (
+          isGitListUntrackedFilesCommand(command, normalizedArgs) &&
+          isUnexpectedExecFileSyncCall(error)
+        ) {
+          return "";
+        }
+
+        throw error;
+      }
+    }
+
+    if (
+      command === "git" &&
+      args[0] === "-C" &&
+      isGitListUntrackedFilesCommand(command, args.slice(2))
+    ) {
+      return "";
+    }
+
+    if (isGitListUntrackedFilesCommand(command, args)) {
+      return "";
     }
 
     throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
@@ -10760,6 +10810,15 @@ describe("CLI integration", () => {
           ].join("\n");
         }
 
+        if (
+          command === "git" &&
+          args[0] === "ls-files" &&
+          args[1] === "--others" &&
+          args[2] === "--exclude-standard"
+        ) {
+          return "";
+        }
+
         if (command === "git" && args[0] === "remote") {
           return "git@github.com:DevwareUK/prs.git\n";
         }
@@ -10893,6 +10952,230 @@ describe("CLI integration", () => {
     ]);
     expect(codexIssues).toEqual([123, 124, 124]);
     expect(fetchMock).toHaveBeenCalled();
+  });
+
+  it("records no-change issue batch entries as completed skipped outcomes and continues", async () => {
+    const beforeRuns = listRunDirectories();
+    createMockCodexHome();
+    const issueNumbers = [96, 98, 99];
+    const issueTitles = new Map([
+      [96, "Batch tracked first issue"],
+      [98, "Batch no-change middle issue"],
+      [99, "Batch tracked final issue"],
+    ]);
+    const batchStatePath = resolve(
+      REPO_ROOT,
+      ".prs",
+      "batches",
+      `issues-${issueNumbers.join("-")}.json`
+    );
+
+    for (const target of [
+      resolve(REPO_ROOT, ".prs", "issues", "96"),
+      resolve(REPO_ROOT, ".prs", "issues", "98"),
+      resolve(REPO_ROOT, ".prs", "issues", "99"),
+      resolve(REPO_ROOT, ".prs", "issues", "96-batch-tracked-first-issue"),
+      resolve(REPO_ROOT, ".prs", "issues", "98-batch-no-change-middle-issue"),
+      resolve(REPO_ROOT, ".prs", "issues", "99-batch-tracked-final-issue"),
+      batchStatePath,
+    ]) {
+      rmSync(target, { recursive: true, force: true });
+      cleanupTargets.add(target);
+    }
+
+    const statusResponses = [
+      "",
+      " M packages/cli/src/index.ts\n",
+      "",
+      "",
+      " M packages/cli/src/index.ts\n",
+    ];
+    const branches = new Set<string>();
+    const codexIssues: number[] = [];
+    let activeIssueNumber: number | undefined;
+
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = String(input);
+      const issueMatch = url.match(/\/issues\/(\d+)$/);
+      if (issueMatch) {
+        const issueNumber = Number.parseInt(issueMatch[1] ?? "", 10);
+        return createFetchResponse({
+          title: issueTitles.get(issueNumber),
+          body: `Implement issue ${issueNumber} through unattended batch orchestration.`,
+          html_url: `https://github.com/DevwareUK/prs/issues/${issueNumber}`,
+        });
+      }
+
+      if (url.includes("/comments?")) {
+        return createFetchResponse([]);
+      }
+
+      const planCommentMatch = url.match(/\/issues\/(\d+)\/comments$/);
+      if (planCommentMatch && init?.method === "POST") {
+        const issueNumber = Number.parseInt(planCommentMatch[1] ?? "", 10);
+        return createFetchResponse({
+          id: 9000 + issueNumber,
+          body: JSON.parse(String(init.body)).body,
+          html_url:
+            `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-${9000 + issueNumber}`,
+          updated_at: "2026-04-26T13:00:00Z",
+        });
+      }
+
+      if (url.endsWith("/pulls?state=open&per_page=100")) {
+        return createFetchResponse([]);
+      }
+
+      throw new Error(`Unexpected fetch call: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { run } = await loadCli({
+      issueResolutionPlanResult: createIssueResolutionPlanResult(),
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "status") {
+          return statusResponses.shift() ?? "";
+        }
+
+        if (command === "git" && args[0] === "diff" && args[1] === "--name-only") {
+          return activeIssueNumber === 98 ? "" : "packages/cli/src/index.ts\n";
+        }
+
+        if (
+          command === "git" &&
+          args[0] === "diff" &&
+          args[1] === "HEAD" &&
+          args[2] === "--" &&
+          args[3] === "packages/cli/src/index.ts"
+        ) {
+          return [
+            "diff --git a/packages/cli/src/index.ts b/packages/cli/src/index.ts",
+            "--- a/packages/cli/src/index.ts",
+            "+++ b/packages/cli/src/index.ts",
+            "@@ -1,1 +1,1 @@",
+            `-const issue = "${activeIssueNumber}-before";`,
+            `+const issue = "${activeIssueNumber}-after";`,
+          ].join("\n");
+        }
+
+        if (
+          command === "git" &&
+          args[0] === "ls-files" &&
+          args[1] === "--others" &&
+          args[2] === "--exclude-standard"
+        ) {
+          return "";
+        }
+
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/prs.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+      spawnSyncImpl: (command, args) => {
+        if (command === "gh" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "gh" && args[0] === "auth" && args[1] === "status") {
+          return { status: 0 };
+        }
+
+        if (command === "git" && args[0] === "rev-parse") {
+          return { status: branches.has(args[2] as string) ? 0 : 1 };
+        }
+
+        if (command === "git" && args[0] === "checkout" && args[1] === "main") {
+          activeIssueNumber = undefined;
+          return { status: 0 };
+        }
+
+        if (command === "git" && args[0] === "pull") {
+          return { status: 0 };
+        }
+
+        if (command === "git" && args[0] === "checkout" && args[1] === "-b") {
+          const branchName = args[2] as string;
+          branches.add(branchName);
+          activeIssueNumber = Number.parseInt(branchName.match(/issue-(\d+)/)?.[1] ?? "", 10);
+          return { status: 0 };
+        }
+
+        if (command === "codex" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "codex" && args[0] === "exec") {
+          const prompt = String(args.at(-1) ?? "");
+          const issueNumber = Number.parseInt(prompt.match(/issue-(\d+)/)?.[1] ?? "", 10);
+          codexIssues.push(issueNumber);
+          activeIssueNumber = issueNumber;
+          return { status: 0 };
+        }
+
+        if (command === "pnpm" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "pnpm" && args[0] === "build") {
+          return { status: 0, stdout: "built\n", stderr: "" };
+        }
+
+        if (command === "git" && (args[0] === "add" || args[0] === "commit" || args[0] === "push")) {
+          return { status: 0, stdout: "", stderr: "" };
+        }
+
+        if (command === "gh" && args[0] === "pr" && args[1] === "create") {
+          return {
+            status: 0,
+            stdout: `https://github.com/DevwareUK/prs/pull/${activeIssueNumber === 96 ? 906 : 909}\n`,
+            stderr: "",
+          };
+        }
+
+        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.GITHUB_TOKEN = "test-token";
+    process.argv = ["node", "prs", "issue", "batch", "96", "98", "99"];
+
+    await run();
+
+    const completedBatchState = readIssueBatchState(issueNumbers);
+    cleanupTargets.add(batchStatePath);
+    cleanupTargets.add(resolve(REPO_ROOT, completedBatchState.latestRunDir));
+    for (const runDir of listRunDirectories().filter((entry) => !beforeRuns.includes(entry))) {
+      cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", runDir));
+    }
+
+    expect(codexIssues).toEqual([96, 98, 99]);
+    expect(completedBatchState.stoppedIssueNumber).toBeUndefined();
+    expect(completedBatchState.issues).toMatchObject([
+      {
+        issueNumber: 96,
+        status: "completed",
+        pullRequest: { status: "created" },
+      },
+      {
+        issueNumber: 98,
+        status: "completed",
+        pullRequest: { status: "skipped", reason: "no-changes" },
+      },
+      {
+        issueNumber: 99,
+        status: "completed",
+        pullRequest: { status: "created" },
+      },
+    ]);
+    expect(
+      readFileSync(resolve(REPO_ROOT, completedBatchState.latestRunDir, "summary.md"), "utf8")
+    ).toContain("#98 | completed | branch feat/issue-98-batch-no-change-middle-issue");
+    expect(
+      readFileSync(resolve(REPO_ROOT, completedBatchState.latestRunDir, "summary.md"), "utf8")
+    ).toContain("PR skipped (no-changes)");
   });
 
   it("lets a batch-started unattended issue continue independently through the single-issue command", async () => {
@@ -12231,6 +12514,15 @@ describe("CLI integration", () => {
           return "";
         }
 
+        if (
+          command === "git" &&
+          args[0] === "ls-files" &&
+          args[1] === "--others" &&
+          args[2] === "--exclude-standard"
+        ) {
+          return "";
+        }
+
         if (command === "git" && args[0] === "remote") {
           return "git@github.com:DevwareUK/prs.git\n";
         }
@@ -12304,6 +12596,377 @@ describe("CLI integration", () => {
     );
     const createdRunDir = listRunDirectories().find(
       (entry) => !beforeRuns.includes(entry) && /-issue-1512$/.test(entry)
+    );
+    expect(createdRunDir).toBeDefined();
+    cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string));
+    const metadata = JSON.parse(
+      readFileSync(
+        resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string, "metadata.json"),
+        "utf8"
+      )
+    ) as Record<string, unknown>;
+    expect(metadata.outcome).toMatchObject({
+      issueNumber,
+      branchName,
+      committed: false,
+      pullRequest: {
+        status: "skipped",
+        reason: "no-changes",
+      },
+    });
+  });
+
+  it("commits and opens a pull request when an unattended issue run creates only untracked files", async () => {
+    const beforeRuns = listRunDirectories();
+    const issueNumber = 1513;
+    const branchName = "feat/issue-1513-add-sales-event-manager-test";
+    const untrackedPath =
+      "web/modules/custom/bos_sales_event/tests/src/Unit/Service/SalesEventManagerTest.php";
+    const sessionStateDir = resolve(REPO_ROOT, ".prs", "issues", String(issueNumber));
+    const issueWorkspaceDir = resolve(
+      REPO_ROOT,
+      ".prs",
+      "issues",
+      "1513-add-sales-event-manager-test"
+    );
+    rmSync(sessionStateDir, { recursive: true, force: true });
+    rmSync(issueWorkspaceDir, { recursive: true, force: true });
+    cleanupTargets.add(sessionStateDir);
+    cleanupTargets.add(issueWorkspaceDir);
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          title: "Add sales event manager test",
+          body: "The runtime should commit the generated untracked test file.",
+          html_url: `https://github.com/DevwareUK/prs/issues/${issueNumber}`,
+        })
+      )
+      .mockResolvedValueOnce(createFetchResponse([]))
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          id: 1513,
+          body: "<!-- prs:issue-plan -->\nGenerated plan.",
+          html_url:
+            `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-1513`,
+          updated_at: "2026-04-26T12:20:00Z",
+        })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.GITHUB_TOKEN = "test-token";
+    const messages: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((message?: unknown) => {
+      messages.push(message === undefined ? "" : String(message));
+    });
+    let gitStatusCallCount = 0;
+
+    const { run, generateCommitMessage, spawnSync } = await loadCli({
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "status") {
+          gitStatusCallCount += 1;
+          return gitStatusCallCount === 1 ? "" : `?? ${untrackedPath}\n`;
+        }
+
+        if (command === "git" && args[0] === "diff" && args[1] === "--name-only") {
+          return "";
+        }
+
+        if (
+          command === "git" &&
+          args[0] === "ls-files" &&
+          args[1] === "--others" &&
+          args[2] === "--exclude-standard"
+        ) {
+          return `${untrackedPath}\n`;
+        }
+
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/prs.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+      spawnSyncImpl: (command, args) => {
+        if (command === "gh" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "gh" && args[0] === "auth" && args[1] === "status") {
+          return { status: 0 };
+        }
+
+        if (command === "gh" && args[0] === "issue" && args[1] === "view") {
+          return {
+            status: 1,
+            error: new Error("force API fallback"),
+          };
+        }
+
+        if (command === "git" && args[0] === "rev-parse") {
+          return { status: 1 };
+        }
+
+        if (command === "git" && args[0] === "checkout" && args[1] === "main") {
+          return { status: 0 };
+        }
+
+        if (command === "git" && args[0] === "pull") {
+          return { status: 0 };
+        }
+
+        if (command === "git" && args[0] === "checkout" && args[1] === "-b") {
+          return { status: 0 };
+        }
+
+        if (command === "codex" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "codex") {
+          return { status: 0 };
+        }
+
+        if (command === "pnpm" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "pnpm" && args[0] === "build") {
+          return { status: 0, stdout: "built\n", stderr: "" };
+        }
+
+        if (
+          command === "git" &&
+          args[0] === "diff" &&
+          args[1] === "--no-index" &&
+          args.includes(untrackedPath)
+        ) {
+          return {
+            status: 1,
+            stdout: [
+              `diff --git a/${untrackedPath} b/${untrackedPath}`,
+              "new file mode 100644",
+              "index 0000000..1111111",
+              "--- /dev/null",
+              `+++ b/${untrackedPath}`,
+              "@@ -0,0 +1,1 @@",
+              "+<?php",
+            ].join("\n"),
+            stderr: "",
+          };
+        }
+
+        if (command === "git" && args[0] === "add") {
+          return { status: 0 };
+        }
+
+        if (command === "git" && args[0] === "commit") {
+          return { status: 0 };
+        }
+
+        if (command === "git" && args[0] === "push") {
+          return { status: 0, stdout: "", stderr: "" };
+        }
+
+        if (command === "gh" && args[0] === "pr" && args[1] === "create") {
+          return {
+            status: 0,
+            stdout: "https://github.com/DevwareUK/prs/pull/1513\n",
+            stderr: "",
+          };
+        }
+
+        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.argv = ["node", "prs", "issue", String(issueNumber), "--mode", "unattended"];
+    await run();
+
+    expect(generateCommitMessage).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.stringContaining("SalesEventManagerTest.php")
+    );
+    expect(
+      spawnSync.mock.calls.some(
+        ([command, args]) =>
+          command === "git" && Array.isArray(args) && args[0] === "commit"
+      )
+    ).toBe(true);
+    expect(
+      spawnSync.mock.calls.some(
+        ([command, args]) =>
+          command === "gh" &&
+          Array.isArray(args) &&
+          args[0] === "pr" &&
+          args[1] === "create"
+      )
+    ).toBe(true);
+    const createdRunDir = listRunDirectories().find(
+      (entry) => !beforeRuns.includes(entry) && /-issue-1513$/.test(entry)
+    );
+    expect(createdRunDir).toBeDefined();
+    cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string));
+    const metadata = JSON.parse(
+      readFileSync(
+        resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string, "metadata.json"),
+        "utf8"
+      )
+    ) as Record<string, unknown>;
+    expect(metadata.outcome).toMatchObject({
+      committed: true,
+      pullRequest: {
+        status: "created",
+      },
+    });
+    expect(messages.join("\n")).toContain("Pull request: https://github.com/DevwareUK/prs/pull/1513");
+  });
+
+  it("records a skipped no-changes outcome when an unattended issue run produces no changes", async () => {
+    const beforeRuns = listRunDirectories();
+    const issueNumber = 1514;
+    const branchName = "feat/issue-1514-no-unattended-generated-changes";
+    const sessionStateDir = resolve(REPO_ROOT, ".prs", "issues", String(issueNumber));
+    const issueWorkspaceDir = resolve(
+      REPO_ROOT,
+      ".prs",
+      "issues",
+      "1514-no-unattended-generated-changes"
+    );
+    rmSync(sessionStateDir, { recursive: true, force: true });
+    rmSync(issueWorkspaceDir, { recursive: true, force: true });
+    cleanupTargets.add(sessionStateDir);
+    cleanupTargets.add(issueWorkspaceDir);
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          title: "No unattended generated changes",
+          body: "The unattended workflow should complete as skipped when no files changed.",
+          html_url: `https://github.com/DevwareUK/prs/issues/${issueNumber}`,
+        })
+      )
+      .mockResolvedValueOnce(createFetchResponse([]))
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          id: 1514,
+          body: "<!-- prs:issue-plan -->\nGenerated plan.",
+          html_url:
+            `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-1514`,
+          updated_at: "2026-04-26T12:25:00Z",
+        })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.GITHUB_TOKEN = "test-token";
+    const messages: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((message?: unknown) => {
+      messages.push(message === undefined ? "" : String(message));
+    });
+
+    const { run, generateCommitMessage, spawnSync } = await loadCli({
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "status") {
+          return "";
+        }
+
+        if (command === "git" && args[0] === "diff") {
+          return "";
+        }
+
+        if (
+          command === "git" &&
+          args[0] === "ls-files" &&
+          args[1] === "--others" &&
+          args[2] === "--exclude-standard"
+        ) {
+          return "";
+        }
+
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/prs.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+      spawnSyncImpl: (command, args) => {
+        if (command === "gh" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "gh" && args[0] === "auth" && args[1] === "status") {
+          return { status: 0 };
+        }
+
+        if (command === "gh" && args[0] === "issue" && args[1] === "view") {
+          return {
+            status: 1,
+            error: new Error("force API fallback"),
+          };
+        }
+
+        if (command === "git" && args[0] === "rev-parse") {
+          return { status: 1 };
+        }
+
+        if (command === "git" && args[0] === "checkout" && args[1] === "main") {
+          return { status: 0 };
+        }
+
+        if (command === "git" && args[0] === "pull") {
+          return { status: 0 };
+        }
+
+        if (command === "git" && args[0] === "checkout" && args[1] === "-b") {
+          return { status: 0 };
+        }
+
+        if (command === "codex" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "codex") {
+          return { status: 0 };
+        }
+
+        if (command === "pnpm" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "pnpm" && args[0] === "build") {
+          return { status: 0, stdout: "built\n", stderr: "" };
+        }
+
+        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.argv = ["node", "prs", "issue", String(issueNumber), "--mode", "unattended"];
+    await run();
+
+    const output = messages.join("\n");
+    expect(output).toContain("The interactive runtime completed without producing any file changes to commit.");
+    expect(output).toContain("Pull request: skipped (no-changes)");
+    expect(generateCommitMessage).not.toHaveBeenCalled();
+    expect(
+      spawnSync.mock.calls.some(
+        ([command, args]) =>
+          command === "git" && Array.isArray(args) && args[0] === "commit"
+      )
+    ).toBe(false);
+    expect(
+      spawnSync.mock.calls.some(
+        ([command, args]) =>
+          command === "gh" &&
+          Array.isArray(args) &&
+          args[0] === "pr" &&
+          args[1] === "create"
+      )
+    ).toBe(false);
+    const createdRunDir = listRunDirectories().find(
+      (entry) => !beforeRuns.includes(entry) && /-issue-1514$/.test(entry)
     );
     expect(createdRunDir).toBeDefined();
     cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string));

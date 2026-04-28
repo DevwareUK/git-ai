@@ -312,6 +312,7 @@ type IssueBatchAttempt = {
   runDir?: string;
   branchName?: string;
   prUrl?: string;
+  pullRequest?: IssuePullRequestOutcome;
   error?: string;
 };
 
@@ -321,6 +322,7 @@ type IssueBatchIssueState = {
   runDir?: string;
   branchName?: string;
   prUrl?: string;
+  pullRequest?: IssuePullRequestOutcome;
   error?: string;
   attempts: IssueBatchAttempt[];
 };
@@ -345,7 +347,8 @@ type IssueBatchWorkspace = {
 type UnattendedIssueRunResult = {
   branchName: string;
   runDir: string;
-  prUrl?: string;
+  committed: boolean;
+  pullRequest: IssuePullRequestOutcome;
 };
 
 const ISSUE_USAGE = [
@@ -565,17 +568,75 @@ function readHeadDiff(): string {
   );
 }
 
+function readIncludedUntrackedFiles(repoRoot: string, excludePaths: string[]): string[] {
+  const output = runCommand(
+    "git",
+    ["-C", repoRoot, "ls-files", "--others", "--exclude-standard"],
+    "Failed to inspect untracked files."
+  );
+  const paths = output
+    .split(/\r?\n/)
+    .map((filePath) => filePath.trim())
+    .filter(Boolean);
+
+  return filterRepositoryPaths(paths, excludePaths);
+}
+
+function readUntrackedFileDiff(repoRoot: string, filePath: string): string {
+  const args = ["-C", repoRoot, "diff", "--no-index", "--", "/dev/null", filePath];
+  const result = spawnSync("git", args, {
+    encoding: "utf8",
+    maxBuffer: 10 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const stdout = result.stdout ?? "";
+  const stderr = result.stderr ?? "";
+
+  if (result.error) {
+    throw new Error(
+      `Failed to read untracked file diff for ${filePath}. ${result.error.message}`
+    );
+  }
+
+  if (result.status !== 0 && result.status !== 1) {
+    const detail = stderr.trim() ? ` ${stderr.trim()}` : "";
+    throw new Error(`Failed to read untracked file diff for ${filePath}.${detail}`);
+  }
+
+  return stdout;
+}
+
+function readUntrackedFileDiffs(repoRoot: string, paths: string[]): string {
+  return paths
+    .map((filePath) => readUntrackedFileDiff(repoRoot, filePath))
+    .filter((diff) => diff.trim().length > 0)
+    .join("\n");
+}
+
 function readIssueWorkflowDiff(repoRoot: string): string {
-  return readGitDiff(
+  const excludePaths = getRepositoryConfig(repoRoot).aiContext.excludePaths;
+  const trackedDiff = readGitDiff(
     ["diff", "HEAD"],
     ISSUE_RUN_NO_CHANGES_MESSAGE,
     "HEAD",
     "git diff HEAD requires at least one commit. Create an initial commit before finalizing issue work.",
     {
-      excludePaths: getRepositoryConfig(repoRoot).aiContext.excludePaths,
+      allowEmpty: true,
+      excludePaths,
       repoRoot,
     }
   );
+  const untrackedPaths = readIncludedUntrackedFiles(repoRoot, excludePaths);
+  const untrackedDiff = readUntrackedFileDiffs(repoRoot, untrackedPaths);
+  const combinedDiff = [trackedDiff, untrackedDiff]
+    .filter((diff) => diff.trim().length > 0)
+    .join("\n");
+
+  if (!combinedDiff.trim()) {
+    throw new Error(ISSUE_RUN_NO_CHANGES_MESSAGE);
+  }
+
+  return combinedDiff;
 }
 
 export function readReviewDiff(base?: string, head?: string): string {
@@ -2363,12 +2424,20 @@ function formatIssueBatchSummary(
   lines.push("", "## Issue status", "");
 
   for (const issueState of state.issues) {
+    const pullRequestSummary =
+      issueState.pullRequest?.status === "created" && issueState.pullRequest.url
+        ? `PR ${issueState.pullRequest.url}`
+        : issueState.pullRequest?.status === "skipped"
+          ? `PR skipped (${issueState.pullRequest.reason})`
+          : issueState.prUrl
+            ? `PR ${issueState.prUrl}`
+            : undefined;
     const details = [
       `#${issueState.issueNumber}`,
       issueState.status,
       issueState.branchName ? `branch ${issueState.branchName}` : undefined,
       issueState.runDir ? `run ${issueState.runDir}` : undefined,
-      issueState.prUrl ? `PR ${issueState.prUrl}` : undefined,
+      pullRequestSummary,
     ]
       .filter(Boolean)
       .join(" | ");
@@ -5410,12 +5479,31 @@ async function runUnattendedIssueCommand(
   verifyBuild(repoRoot, repositoryConfig.buildCommand, context.workspace.outputLogPath);
 
   const { provider, providerType } = await createProvider(repoRoot);
-  const finalized = await finalizeIssueRunUnattended(
-    repoRoot,
-    context.issueNumber,
-    provider,
-    context.workspace.runDir
-  );
+  let finalized: Awaited<ReturnType<typeof finalizeIssueRunUnattended>>;
+  try {
+    finalized = await finalizeIssueRunUnattended(
+      repoRoot,
+      context.issueNumber,
+      provider,
+      context.workspace.runDir
+    );
+  } catch (error: unknown) {
+    if (!(error instanceof Error) || error.message !== ISSUE_RUN_NO_CHANGES_MESSAGE) {
+      throw error;
+    }
+
+    const outcome = createIssueNoChangesOutcome(context, runDir);
+    recordIssueRunOutcome(context.workspace, outcome);
+    console.log(ISSUE_RUN_NO_CHANGES_MESSAGE);
+    printIssueRunOutcomeSummary(outcome);
+
+    return {
+      branchName: context.branchName,
+      runDir,
+      committed: false,
+      pullRequest: outcome.pullRequest,
+    };
+  }
   const pullRequest = await generateIssuePullRequest(provider, {
     repoRoot,
     issueNumber: context.issueNumber,
@@ -5465,7 +5553,25 @@ async function runUnattendedIssueCommand(
   return {
     branchName: context.branchName,
     runDir,
-    prUrl: createdPullRequest.url,
+    committed: true,
+    pullRequest: outcome.pullRequest,
+  };
+}
+
+function createIssueNoChangesOutcome(
+  context: IssueRunContext,
+  runDir: string
+): IssueRunOutcomeSummary {
+  return {
+    issueNumber: context.issueNumber,
+    branchName: context.branchName,
+    baseBranch: context.baseBranch,
+    runDir,
+    committed: false,
+    pullRequest: {
+      status: "skipped",
+      reason: "no-changes",
+    },
   };
 }
 
@@ -5536,9 +5642,14 @@ async function runIssueBatchCommand(issueNumbers: number[]): Promise<void> {
         },
       });
 
-      const successMessage = result.prUrl
-        ? `[${index + 1}/${issueNumbers.length}] Completed issue #${issueNumber}: ${result.prUrl}`
-        : `[${index + 1}/${issueNumbers.length}] Completed issue #${issueNumber}.`;
+      const resultPrUrl =
+        result.pullRequest.status === "created" ? result.pullRequest.url : undefined;
+      const successMessage =
+        result.pullRequest.status === "created" && result.pullRequest.url
+          ? `[${index + 1}/${issueNumbers.length}] Completed issue #${issueNumber}: ${result.pullRequest.url}`
+          : result.pullRequest.status === "skipped"
+            ? `[${index + 1}/${issueNumbers.length}] Completed issue #${issueNumber}: skipped (${result.pullRequest.reason})`
+            : `[${index + 1}/${issueNumbers.length}] Completed issue #${issueNumber}.`;
       console.log(successMessage);
       appendIssueBatchLog(workspace, successMessage);
       state = updateIssueBatchState(
@@ -5557,7 +5668,8 @@ async function runIssueBatchCommand(issueNumbers: number[]): Promise<void> {
                   status: "completed",
                   branchName: result.branchName,
                   runDir: result.runDir,
-                  prUrl: result.prUrl,
+                  prUrl: resultPrUrl,
+                  pullRequest: result.pullRequest,
                   error: undefined,
                   attempts:
                     entry.attempts.length === 0
@@ -5568,7 +5680,8 @@ async function runIssueBatchCommand(issueNumbers: number[]): Promise<void> {
                             status: "completed",
                             branchName: result.branchName,
                             runDir: result.runDir,
-                            prUrl: result.prUrl,
+                            prUrl: resultPrUrl,
+                            pullRequest: result.pullRequest,
                           },
                         ]
                       : entry.attempts.map((attempt, attemptIndex) =>
@@ -5579,7 +5692,8 @@ async function runIssueBatchCommand(issueNumbers: number[]): Promise<void> {
                                 status: "completed",
                                 branchName: result.branchName,
                                 runDir: result.runDir,
-                                prUrl: result.prUrl,
+                                prUrl: resultPrUrl,
+                                pullRequest: result.pullRequest,
                                 error: undefined,
                               }
                             : attempt
