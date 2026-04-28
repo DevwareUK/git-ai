@@ -520,8 +520,8 @@ Flags:
 | `--format json` | Prints a JSON payload suitable for scripting. |
 | `--top <count>` | Limits how many findings are returned. Default: `5`. |
 | `--repo-root <path>` | Analyzes a different repository root relative to the current working directory. The default is the current Git repository root. |
-| `--create-issues` | Creates or reuses issues for the highest-priority findings through the configured forge. |
-| `--max-issues <count>` | Limits how many issues are created when `--create-issues` is enabled. Default: `3`, capped to `--top`. |
+| `--create-issues` | Creates or reuses issues for the highest-priority findings through the configured forge without the interactive prompt. |
+| `--max-issues <count>` | Limits how many issues are offered or created. Default: `3`, capped to `--top`. |
 | `--label <name>` | Adds a single GitHub label to created issues. Repeatable. |
 | `--labels <a,b>` | Adds a comma-separated list of GitHub labels to created issues. |
 
@@ -542,6 +542,7 @@ Important behavior:
 - CI assessment distinguishes missing, partial, and established test integration so local-only or manual-only test commands do not look fully enforced
 - mature or unsupported repository shapes can return an empty findings list instead of forcing a placeholder issue
 - Drupal repositories with custom themes or custom modules receive focused findings for repository-owned behavior even when broad theme or module tests already exist elsewhere
+- in interactive Markdown mode, after printing findings, `prs` asks whether to create GitHub issues and which numbered findings to create
 - when `--create-issues` is enabled, generated issue bodies include implementation steps, first tests to add, target paths, and acceptance criteria for focused backlog items
 - when `--create-issues` is enabled, `prs` checks for matching open issue titles first so it can reuse existing backlog items instead of creating duplicates
 - if `forge.type` is `none`, backlog issue creation is disabled for that repository

@@ -3419,6 +3419,22 @@ async function promptForYesNoDefaultNo(prompt: string): Promise<boolean> {
   }
 }
 
+async function promptForYesNoDefaultYes(prompt: string): Promise<boolean> {
+  while (true) {
+    const answer = (await promptForLine(prompt)).trim().toLowerCase();
+
+    if (!answer || answer === "y" || answer === "yes") {
+      return true;
+    }
+
+    if (answer === "n" || answer === "no") {
+      return false;
+    }
+
+    console.log("Choose yes or no.");
+  }
+}
+
 function createStandaloneIssueFinalizeRunDir(repoRoot: string, issueNumber: number): string {
   const runDir = resolve(
     repoRoot,
@@ -3920,16 +3936,7 @@ function formatTestBacklogMarkdown(
     }
   }
 
-  if (createdIssues.length > 0) {
-    lines.push("## Issue results");
-    lines.push(
-      ...createdIssues.map(
-        (issue) =>
-          `- ${issue.status === "created" ? "Created" : "Reused"} #${issue.number}: ${issue.title} (${issue.url})`
-      )
-    );
-    lines.push("");
-  }
+  lines.push(...formatCreatedIssueResultLines(createdIssues));
 
   while (lines[lines.length - 1] === "") {
     lines.pop();
@@ -4039,6 +4046,30 @@ function parseNumberedSelection(
   return [...selected].sort((left, right) => left - right);
 }
 
+function formatCreatedIssueResultLines(createdIssues: CreatedIssueRecord[]): string[] {
+  if (createdIssues.length === 0) {
+    return [];
+  }
+
+  return [
+    "## Issue results",
+    ...createdIssues.map(
+      (issue) =>
+        `- ${issue.status === "created" ? "Created" : "Reused"} #${issue.number}: ${issue.title} (${issue.url})`
+    ),
+    "",
+  ];
+}
+
+function parseTestBacklogIssueSelection(response: string, maxIndex: number): number[] {
+  const normalized = response.trim().toLowerCase();
+  if (!normalized || normalized === "all") {
+    return Array.from({ length: maxIndex }, (_, index) => index);
+  }
+
+  return parseNumberedSelection(response, maxIndex, "finding");
+}
+
 function appendAdditionalDescription(body: string, additionalDescription: string): string {
   const trimmed = additionalDescription.trim();
   if (!trimmed) {
@@ -4050,7 +4081,10 @@ function appendAdditionalDescription(body: string, additionalDescription: string
 
 async function maybeCreateTestBacklogIssues(
   options: TestBacklogCommandOptions,
-  analysis: Awaited<ReturnType<typeof analyzeTestBacklog>>
+  analysis: Awaited<ReturnType<typeof analyzeTestBacklog>>,
+  selectedIndexes = analysis.findings
+    .slice(0, options.maxIssues)
+    .map((_, index) => index)
 ): Promise<CreatedIssueRecord[]> {
   if (!options.createIssues) {
     return [];
@@ -4059,7 +4093,12 @@ async function maybeCreateTestBacklogIssues(
   const forge = getRepositoryForge(options.repoRoot);
   const createdIssues: CreatedIssueRecord[] = [];
 
-  for (const finding of analysis.findings.slice(0, options.maxIssues)) {
+  for (const findingIndex of selectedIndexes) {
+    const finding = analysis.findings[findingIndex];
+    if (!finding) {
+      continue;
+    }
+
     createdIssues.push(
       await forge.createOrReuseIssue(
         finding.issueTitle,
@@ -4070,6 +4109,48 @@ async function maybeCreateTestBacklogIssues(
   }
 
   return createdIssues;
+}
+
+async function maybePromptForTestBacklogIssueCreation(
+  options: TestBacklogCommandOptions,
+  analysis: Awaited<ReturnType<typeof analyzeTestBacklog>>
+): Promise<CreatedIssueRecord[]> {
+  if (
+    options.createIssues ||
+    options.format !== "markdown" ||
+    analysis.findings.length === 0 ||
+    !process.stdin.isTTY
+  ) {
+    return [];
+  }
+
+  const shouldCreateIssues = await promptForYesNoDefaultYes(
+    "Do you want to create GitHub issues now? (Y/n): "
+  );
+  if (!shouldCreateIssues) {
+    return [];
+  }
+
+  const candidateFindings = analysis.findings.slice(0, options.maxIssues);
+  const issueNumbers = candidateFindings
+    .map((_, index) => String(index + 1))
+    .join(",");
+  const rawSelection = await promptForLine(
+    `Which issues would you like to create? (ALL/${issueNumbers}): `
+  );
+  const selectedIndexes = parseTestBacklogIssueSelection(
+    rawSelection,
+    candidateFindings.length
+  );
+
+  return maybeCreateTestBacklogIssues(
+    {
+      ...options,
+      createIssues: true,
+    },
+    analysis,
+    selectedIndexes
+  );
 }
 
 async function maybeCreateFeatureBacklogIssues(
@@ -4149,6 +4230,16 @@ async function runTestBacklogCommand(): Promise<void> {
   }
 
   process.stdout.write(`${formatTestBacklogMarkdown(analysis, createdIssues)}\n`);
+
+  const interactivelyCreatedIssues = await maybePromptForTestBacklogIssueCreation(
+    options,
+    analysis
+  );
+  if (interactivelyCreatedIssues.length > 0) {
+    process.stdout.write(
+      `\n${formatCreatedIssueResultLines(interactivelyCreatedIssues).join("\n")}`
+    );
+  }
 }
 
 async function runFeatureBacklogCommand(): Promise<void> {

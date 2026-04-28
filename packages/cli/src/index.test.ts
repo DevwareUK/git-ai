@@ -4505,6 +4505,76 @@ describe("CLI integration", () => {
     });
   });
 
+  it("prompts to create selected test-backlog issues after interactive markdown output", async () => {
+    const analysis = createTestBacklogAnalysis();
+    const originalIsTTY = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, "isTTY", {
+      value: true,
+      configurable: true,
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(createFetchResponse([]))
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          number: 42,
+          title: analysis.findings[0].issueTitle,
+          html_url: "https://github.com/DevwareUK/prs/issues/42",
+        })
+      )
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          number: 43,
+          title: analysis.findings[2].issueTitle,
+          html_url: "https://github.com/DevwareUK/prs/issues/43",
+        })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const { run, createInterface } = await loadCli({
+        analysisResult: analysis,
+        readlineAnswers: ["", "1,3"],
+        execFileSyncImpl: (command, args) => {
+          if (command === "git" && args[0] === "remote") {
+            return "git@github.com:DevwareUK/prs.git\n";
+          }
+
+          throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+        },
+      });
+
+      await withoutRepositoryConfig(async () => {
+        process.env.GITHUB_TOKEN = "test-token";
+        process.argv = ["node", "prs", "test-backlog", "--top", "3"];
+
+        const stdout = captureStdout();
+        await run();
+
+        expect(stdout.output()).toContain("# AI Test Backlog");
+        expect(stdout.output()).toContain("## Issue results");
+        expect(stdout.output()).toContain(
+          "Created #42: Add CLI integration coverage for prs issue prepare"
+        );
+        expect(stdout.output()).toContain(
+          "Created #43: Add failure coverage for prs issue finalize"
+        );
+        expect(createInterface.mock.results[0]?.value.question).toHaveBeenCalledWith(
+          "Do you want to create GitHub issues now? (Y/n): "
+        );
+        expect(createInterface.mock.results[1]?.value.question).toHaveBeenCalledWith(
+          "Which issues would you like to create? (ALL/1,2,3): "
+        );
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+      });
+    } finally {
+      Object.defineProperty(process.stdin, "isTTY", {
+        value: originalIsTTY,
+        configurable: true,
+      });
+    }
+  });
+
   it("renders test-backlog markdown output when no findings are detected", async () => {
     const analysis = {
       ...createTestBacklogAnalysis(),
