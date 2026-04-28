@@ -20,11 +20,27 @@ function setOutput(name: string, value: string): void {
   const payload = `${name}<<${delimiter}\n${value}\n${delimiter}\n`;
   appendFileSync(outputPath, payload);
 }
+
+function parseOptionalJsonInput(name: string): unknown {
+  const rawValue = getOptionalInput(name);
+  if (!rawValue) {
+    return undefined;
+  }
+
+  try {
+    return JSON.parse(rawValue) as unknown;
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid JSON for ${name}: ${message}`);
+  }
+}
+
 async function run(): Promise<void> {
   const input = TestSuggestionsInput.parse({
     diff: getRequiredInlineOrFileInput("diff", "diff_file"),
     prTitle: getOptionalInput("pr_title"),
     prBody: getOptionalInput("pr_body"),
+    resolvedSuggestions: parseOptionalJsonInput("resolved_suggestions"),
   });
 
   const provider = new OpenAIProvider({

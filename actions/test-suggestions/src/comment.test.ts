@@ -46,4 +46,15 @@ describe("buildCommentBody", () => {
     expect(body).toContain("### Edge cases");
     expect(body).toContain("### Likely places to add tests");
   });
+
+  it("renders an explicit no-new-unresolved state when there are no suggestions", () => {
+    const body = buildCommentBody({
+      summary: "No new unresolved AI test suggestions were found for the current PR diff.",
+      suggestedTests: [],
+    } satisfies TestSuggestionsOutputType);
+
+    expect(body).toContain("## AI Test Suggestions");
+    expect(body).toContain("No new unresolved AI test suggestions were found");
+    expect(body).not.toContain("### Suggested test areas");
+  });
 });

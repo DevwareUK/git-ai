@@ -130,6 +130,32 @@ function parseIssuePlanCommentPayload(
   };
 }
 
+function parseRepositoryCommentPayload(
+  payload: {
+    id?: number;
+    body?: string | null;
+    html_url?: string;
+    created_at?: string;
+    updated_at?: string;
+    user?: { login?: string; type?: string };
+  },
+  errorMessage: string
+): RepositoryComment {
+  if (!payload.id || !payload.body || !payload.html_url || !payload.updated_at) {
+    throw new Error(errorMessage);
+  }
+
+  return {
+    id: payload.id,
+    body: payload.body,
+    url: payload.html_url,
+    createdAt: payload.created_at ?? payload.updated_at,
+    updatedAt: payload.updated_at,
+    author: payload.user?.login ?? "unknown",
+    isBot: payload.user?.type === "Bot",
+  };
+}
+
 function parseCreatedIssueRecordPayload(
   payload: {
     number?: number;
@@ -811,6 +837,44 @@ class GitHubRepositoryForge implements RepositoryForge {
     return parseIssuePlanCommentPayload(
       payload,
       `GitHub issue plan comment refresh for comment ${commentId} returned an incomplete payload.`
+    );
+  }
+
+  async updateIssueComment(commentId: number, body: string): Promise<RepositoryComment> {
+    const { owner, repo } = parseGitHubRepoFromRemote(this.repoRoot);
+    const token = getGitHubApiToken(
+      "Updating issue comments requires GH_TOKEN or GITHUB_TOKEN to be set, or gh to be installed and authenticated."
+    );
+    const response = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/issues/comments/${commentId}`,
+      {
+        method: "PATCH",
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "User-Agent": "prs-cli",
+        },
+        body: JSON.stringify({ body }),
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Failed to update issue comment ${commentId} (${response.status} ${response.statusText}).`
+      );
+    }
+
+    return parseRepositoryCommentPayload(
+      (await response.json()) as {
+        id?: number;
+        body?: string | null;
+        html_url?: string;
+        created_at?: string;
+        updated_at?: string;
+        user?: { login?: string; type?: string };
+      },
+      `GitHub issue comment update for comment ${commentId} returned an incomplete payload.`
     );
   }
 

@@ -280,6 +280,32 @@ describe("pr-fix-tests selection helpers", () => {
     );
   });
 
+  it("ignores hidden resolved suggestion ledger blocks while parsing visible suggestions", () => {
+    const comment = createComment(
+      [
+        "<!-- prs:test-suggestions -->",
+        "## AI Test Suggestions",
+        "",
+        "<!-- prs:test-suggestions:resolved-start -->",
+        "### Hidden resolved heading",
+        "- Hidden ledger content must not become a visible markdown section.",
+        "<!-- prs:test-suggestions:resolved-end -->",
+        "",
+        "### Suggested test areas",
+        "",
+        ...buildSuggestionBlock({
+          title: "Visible suggestion",
+          priority: "High",
+          value: "The visible suggestion should still be selectable.",
+        }),
+      ].join("\n")
+    );
+
+    expect(parseManagedTestSuggestionsComment(comment).suggestions).toEqual([
+      expect.objectContaining({ area: "Visible suggestion" }),
+    ]);
+  });
+
   it("parses interactive suggestion selection and rejects invalid entries", () => {
     expect(parsePullRequestTestSuggestionSelection("", 3)).toEqual([0, 1, 2]);
     expect(parsePullRequestTestSuggestionSelection("   ", 3)).toEqual([0, 1, 2]);

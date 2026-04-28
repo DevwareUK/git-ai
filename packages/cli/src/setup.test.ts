@@ -208,6 +208,24 @@ describe("setup command", () => {
         "utf8"
       )
     ).toContain("DevwareUK/prs/actions/test-suggestions@main");
+    expect(
+      readFileSync(
+        resolve(repoRoot, ".github", "workflows", "prs-test-suggestions.yml"),
+        "utf8"
+      )
+    ).toContain("Collect resolved test suggestions");
+    expect(
+      readFileSync(
+        resolve(repoRoot, ".github", "workflows", "prs-test-suggestions.yml"),
+        "utf8"
+      )
+    ).toContain("resolved_suggestions: ${{ steps.resolved_suggestions.outputs.resolved_json }}");
+    expect(
+      readFileSync(
+        resolve(repoRoot, ".github", "workflows", "prs-test-suggestions.yml"),
+        "utf8"
+      )
+    ).toContain("resolvedBlock");
     expect(messages.join("\n")).toContain(
       "Recommended launch path: GitHub forge, OpenAI provider, and Codex runtime."
     );

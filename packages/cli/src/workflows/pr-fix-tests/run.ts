@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import type { PullRequestDetails, RepositoryForge } from "../../forge";
 import type { ReviewedGeneratedText } from "../../generated-text-review";
 import { finalizeRuntimeChanges } from "../../runtime-change-review";
@@ -9,6 +10,11 @@ import {
   parsePullRequestTestSuggestionSelection,
   printPullRequestTestSuggestions,
 } from "./selection";
+import {
+  mergeResolvedTestSuggestions,
+  parseResolvedTestSuggestionsFromCommentBody,
+  upsertResolvedTestSuggestionsBlock,
+} from "./resolved";
 import { fetchLinkedIssuesForPullRequest } from "./snapshot";
 import {
   createPullRequestFixTestsWorkspace,
@@ -44,6 +50,30 @@ type RunPrFixTestsCommandOptions = {
   hasChanges(repoRoot: string): boolean;
   commitGeneratedChanges(repoRoot: string, commitMessage: ReviewedGeneratedText): void;
 };
+
+function resolveHeadCommitSha(repoRoot: string): string {
+  const result = spawnSync("git", ["rev-parse", "HEAD"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  if (result.error) {
+    throw new Error(`Failed to resolve HEAD commit SHA. ${result.error.message}`);
+  }
+
+  if (result.status !== 0) {
+    const stderr = result.stderr?.trim();
+    throw new Error(`Failed to resolve HEAD commit SHA.${stderr ? ` ${stderr}` : ""}`);
+  }
+
+  const sha = result.stdout.trim();
+  if (!sha) {
+    throw new Error("Failed to resolve HEAD commit SHA.");
+  }
+
+  return sha;
+}
 
 async function selectPullRequestTestSuggestions(
   pullRequest: PullRequestDetails,
@@ -166,6 +196,29 @@ export async function runPrFixTestsCommand(
 
   if (!finalizeResult.committed) {
     return;
+  }
+
+  const commitSha = resolveHeadCommitSha(options.repoRoot);
+  const resolvedRecords = mergeResolvedTestSuggestions(
+    parseResolvedTestSuggestionsFromCommentBody(comment.body),
+    selectedSuggestions,
+    {
+      commitSha,
+      resolvedAt: new Date().toISOString(),
+    }
+  );
+  const updatedCommentBody = upsertResolvedTestSuggestionsBlock(
+    comment.body,
+    resolvedRecords
+  );
+
+  try {
+    await options.forge.updateIssueComment(comment.id, updatedCommentBody);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Local commit ${commitSha} was kept, but the branch was not pushed because addressed AI test suggestion state could not be recorded. ${message}`
+    );
   }
 
   pushReviewedPullRequestUpdates(

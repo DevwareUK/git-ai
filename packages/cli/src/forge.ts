@@ -91,6 +91,7 @@ export interface RepositoryForge {
   fetchPullRequestReviewComments(prNumber: number): Promise<PullRequestReviewComment[]>;
   createIssuePlanComment(issueNumber: number, body: string): Promise<IssuePlanComment>;
   updateIssuePlanComment(commentId: number, body: string): Promise<IssuePlanComment>;
+  updateIssueComment(commentId: number, body: string): Promise<RepositoryComment>;
   createDraftIssue(title: string, body: string): Promise<string>;
   updateIssue(issueNumber: number, title: string, body: string): Promise<CreatedIssueRecord>;
   createOrReuseIssue(
@@ -157,6 +158,12 @@ class NoopRepositoryForge implements RepositoryForge {
   }
 
   async updateIssuePlanComment(): Promise<IssuePlanComment> {
+    throw new Error(
+      "Repository forge support is disabled by .prs/config.json. Configure `forge.type` to enable issue workflows."
+    );
+  }
+
+  async updateIssueComment(): Promise<RepositoryComment> {
     throw new Error(
       "Repository forge support is disabled by .prs/config.json. Configure `forge.type` to enable issue workflows."
     );

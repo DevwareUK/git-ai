@@ -28,6 +28,19 @@ function buildPrompt(input: TestSuggestionsInputType): string {
   if (input.prBody) {
     contextLines.push(`PR Body: ${input.prBody}`);
   }
+  const resolvedLines = (input.resolvedSuggestions ?? []).flatMap((suggestion, index) => [
+    `${index + 1}. ${suggestion.area}`,
+    `   Test type: ${suggestion.testType}`,
+    `   Behavior: ${suggestion.behavior}`,
+    `   Resolved commit: ${suggestion.commitSha}`,
+    `   Resolved at: ${suggestion.resolvedAt}`,
+    ...(suggestion.protectedPaths?.length
+      ? [`   Protected paths: ${suggestion.protectedPaths.join(", ")}`]
+      : []),
+    ...(suggestion.likelyLocations?.length
+      ? [`   Likely locations: ${suggestion.likelyLocations.join(", ")}`]
+      : []),
+  ]);
 
   return [
     "Generate pull request test suggestions from the provided diff.",
@@ -38,7 +51,7 @@ function buildPrompt(input: TestSuggestionsInputType): string {
     "Only include likely test locations when the diff supports a plausible place to add or extend tests.",
     "Only include protected paths or changed code paths when the diff supports a concrete mapping.",
     "Attach edge cases directly to the relevant suggestion whenever possible; reserve the top-level edgeCases list for shared or cross-cutting cases.",
-    "If the diff is small or low risk, still suggest the most valuable test coverage gap you can support from the change.",
+    "If the diff is small or low risk and no unresolved coverage gap remains, return an empty suggestedTests array with a clear summary.",
     "Return strictly valid JSON in this exact shape:",
     "{",
     '  "summary": string,',
@@ -60,7 +73,7 @@ function buildPrompt(input: TestSuggestionsInputType): string {
     "}",
     "",
     'The "summary" should be a short paragraph describing the main testing opportunities created by the change.',
-    '"suggestedTests" should contain 1 to 5 concrete, implementation-focused test areas grounded in the diff.',
+    '"suggestedTests" should contain 0 to 5 concrete, implementation-focused test areas grounded in the diff.',
     'Use "priority" to communicate relative value, where "high" means the test would meaningfully reduce risk.',
     '"testType" should be a short label such as unit, integration, component, end-to-end, workflow, or regression.',
     '"behavior" should describe the user flow or behavior under test.',
@@ -74,9 +87,75 @@ function buildPrompt(input: TestSuggestionsInputType): string {
     ...(contextLines.length > 0
       ? ["Supporting context (optional, may be incomplete):", ...contextLines, ""]
       : []),
+    ...(resolvedLines.length > 0
+      ? [
+          "Previously addressed test suggestions:",
+          "Do not repeat already addressed test work unless the current diff introduces materially new behavior that justifies a new suggestion.",
+          ...resolvedLines,
+          "",
+        ]
+      : []),
     "Diff:",
     input.diff,
   ].join("\n");
+}
+
+function normalizeKeyPart(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function normalizePathList(paths: readonly string[] | undefined): string[] {
+  return [...new Set((paths ?? []).map((path) => normalizeKeyPart(path)).filter(Boolean))]
+    .sort();
+}
+
+function buildResolvedSuggestionKey(
+  suggestion: Pick<
+    NonNullable<TestSuggestionsInputType["resolvedSuggestions"]>[number],
+    "area" | "testType" | "behavior" | "protectedPaths" | "likelyLocations"
+  >
+): string {
+  return JSON.stringify({
+    area: normalizeKeyPart(suggestion.area),
+    testType: normalizeKeyPart(suggestion.testType),
+    behavior: normalizeKeyPart(suggestion.behavior),
+    protectedPaths: normalizePathList(suggestion.protectedPaths),
+    likelyLocations: normalizePathList(suggestion.likelyLocations),
+  });
+}
+
+function filterResolvedDuplicates(
+  output: TestSuggestionsOutputType,
+  input: TestSuggestionsInputType
+): TestSuggestionsOutputType {
+  const resolvedKeys = new Set(
+    (input.resolvedSuggestions ?? []).map((suggestion) =>
+      buildResolvedSuggestionKey(suggestion)
+    )
+  );
+  if (resolvedKeys.size === 0) {
+    return output;
+  }
+
+  const suggestedTests = output.suggestedTests.filter(
+    (suggestion) => !resolvedKeys.has(buildResolvedSuggestionKey(suggestion))
+  );
+  if (suggestedTests.length === output.suggestedTests.length) {
+    return output;
+  }
+
+  if (suggestedTests.length === 0) {
+    return {
+      summary:
+        "No new unresolved AI test suggestions were found for the current PR diff.",
+      suggestedTests,
+    };
+  }
+
+  return {
+    ...output,
+    suggestedTests,
+  };
 }
 
 function normalizeModelOutput(value: unknown): unknown {
@@ -102,7 +181,7 @@ export async function generateTestSuggestions(
   const parsedInput = TestSuggestionsInput.parse(input);
   const prompt = buildPrompt(parsedInput);
 
-  return generateStructuredOutput({
+  const output = await generateStructuredOutput({
     provider,
     systemPrompt: TEST_SUGGESTIONS_SYSTEM_PROMPT,
     prompt,
@@ -111,4 +190,6 @@ export async function generateTestSuggestions(
       "Model output failed test suggestions schema validation",
     normalizeParsedJson: normalizeModelOutput,
   });
+
+  return filterResolvedDuplicates(output, parsedInput);
 }

@@ -8,6 +8,7 @@ import type {
   PullRequestTestSuggestionPriority,
   PullRequestTestSuggestionsComment,
 } from "./types";
+import { stripResolvedTestSuggestionsBlocks } from "./resolved";
 
 function toTitleCase(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1);
@@ -276,7 +277,7 @@ export function findManagedTestSuggestionsComment(
 export function parseManagedTestSuggestionsComment(
   comment: RepositoryComment
 ): PullRequestTestSuggestionsComment {
-  const bodyWithoutMarker = comment.body
+  const bodyWithoutMarker = stripResolvedTestSuggestionsBlocks(comment.body)
     .split(/\r?\n/)
     .filter(
       (line) => !ALL_TEST_SUGGESTIONS_COMMENT_MARKERS.includes(line.trim() as never)

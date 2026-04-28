@@ -16664,14 +16664,28 @@ var require_dist = __commonJS({
         "implementationNote must be non-empty"
       )
     });
+    var ResolvedTestSuggestionItem = import_zod12.z.object({
+      area: TestSuggestionString.min(1, "area must be non-empty"),
+      testType: TestSuggestionString.min(1, "testType must be non-empty"),
+      behavior: TestSuggestionString.min(1, "behavior must be non-empty"),
+      regressionRisk: TestSuggestionString.optional(),
+      value: TestSuggestionString.optional(),
+      protectedPaths: import_zod12.z.array(TestSuggestionString).optional(),
+      likelyLocations: import_zod12.z.array(TestSuggestionString).optional(),
+      edgeCases: import_zod12.z.array(TestSuggestionString).optional(),
+      implementationNote: TestSuggestionString.optional(),
+      resolvedAt: TestSuggestionString.min(1, "resolvedAt must be non-empty"),
+      commitSha: TestSuggestionString.min(1, "commitSha must be non-empty")
+    });
     var TestSuggestionsInput = import_zod12.z.object({
       diff: import_zod12.z.string().trim().min(1),
       prTitle: import_zod12.z.string().trim().min(1).optional(),
-      prBody: import_zod12.z.string().trim().min(1).optional()
+      prBody: import_zod12.z.string().trim().min(1).optional(),
+      resolvedSuggestions: import_zod12.z.array(ResolvedTestSuggestionItem).optional()
     });
     var TestSuggestionsOutput = import_zod12.z.object({
       summary: TestSuggestionString.min(1, "summary must be non-empty"),
-      suggestedTests: import_zod12.z.array(TestSuggestionItem).min(1, "suggestedTests must contain at least one item"),
+      suggestedTests: import_zod12.z.array(TestSuggestionItem),
       edgeCases: import_zod12.z.array(TestSuggestionString).optional()
     });
   }
@@ -19333,6 +19347,15 @@ ${managedSection}`;
       if (input.prBody) {
         contextLines.push(`PR Body: ${input.prBody}`);
       }
+      const resolvedLines = (input.resolvedSuggestions ?? []).flatMap((suggestion, index) => [
+        `${index + 1}. ${suggestion.area}`,
+        `   Test type: ${suggestion.testType}`,
+        `   Behavior: ${suggestion.behavior}`,
+        `   Resolved commit: ${suggestion.commitSha}`,
+        `   Resolved at: ${suggestion.resolvedAt}`,
+        ...suggestion.protectedPaths?.length ? [`   Protected paths: ${suggestion.protectedPaths.join(", ")}`] : [],
+        ...suggestion.likelyLocations?.length ? [`   Likely locations: ${suggestion.likelyLocations.join(", ")}`] : []
+      ]);
       return [
         "Generate pull request test suggestions from the provided diff.",
         "Focus on high-value automated tests that would improve confidence in the changed behavior.",
@@ -19342,7 +19365,7 @@ ${managedSection}`;
         "Only include likely test locations when the diff supports a plausible place to add or extend tests.",
         "Only include protected paths or changed code paths when the diff supports a concrete mapping.",
         "Attach edge cases directly to the relevant suggestion whenever possible; reserve the top-level edgeCases list for shared or cross-cutting cases.",
-        "If the diff is small or low risk, still suggest the most valuable test coverage gap you can support from the change.",
+        "If the diff is small or low risk and no unresolved coverage gap remains, return an empty suggestedTests array with a clear summary.",
         "Return strictly valid JSON in this exact shape:",
         "{",
         '  "summary": string,',
@@ -19364,7 +19387,7 @@ ${managedSection}`;
         "}",
         "",
         'The "summary" should be a short paragraph describing the main testing opportunities created by the change.',
-        '"suggestedTests" should contain 1 to 5 concrete, implementation-focused test areas grounded in the diff.',
+        '"suggestedTests" should contain 0 to 5 concrete, implementation-focused test areas grounded in the diff.',
         'Use "priority" to communicate relative value, where "high" means the test would meaningfully reduce risk.',
         '"testType" should be a short label such as unit, integration, component, end-to-end, workflow, or regression.',
         '"behavior" should describe the user flow or behavior under test.',
@@ -19376,9 +19399,56 @@ ${managedSection}`;
         "Do not wrap JSON in markdown fences.",
         "",
         ...contextLines.length > 0 ? ["Supporting context (optional, may be incomplete):", ...contextLines, ""] : [],
+        ...resolvedLines.length > 0 ? [
+          "Previously addressed test suggestions:",
+          "Do not repeat already addressed test work unless the current diff introduces materially new behavior that justifies a new suggestion.",
+          ...resolvedLines,
+          ""
+        ] : [],
         "Diff:",
         input.diff
       ].join("\n");
+    }
+    function normalizeKeyPart(value) {
+      return value.trim().toLowerCase().replace(/\s+/g, " ");
+    }
+    function normalizePathList(paths) {
+      return [...new Set((paths ?? []).map((path) => normalizeKeyPart(path)).filter(Boolean))].sort();
+    }
+    function buildResolvedSuggestionKey(suggestion) {
+      return JSON.stringify({
+        area: normalizeKeyPart(suggestion.area),
+        testType: normalizeKeyPart(suggestion.testType),
+        behavior: normalizeKeyPart(suggestion.behavior),
+        protectedPaths: normalizePathList(suggestion.protectedPaths),
+        likelyLocations: normalizePathList(suggestion.likelyLocations)
+      });
+    }
+    function filterResolvedDuplicates(output, input) {
+      const resolvedKeys = new Set(
+        (input.resolvedSuggestions ?? []).map(
+          (suggestion) => buildResolvedSuggestionKey(suggestion)
+        )
+      );
+      if (resolvedKeys.size === 0) {
+        return output;
+      }
+      const suggestedTests = output.suggestedTests.filter(
+        (suggestion) => !resolvedKeys.has(buildResolvedSuggestionKey(suggestion))
+      );
+      if (suggestedTests.length === output.suggestedTests.length) {
+        return output;
+      }
+      if (suggestedTests.length === 0) {
+        return {
+          summary: "No new unresolved AI test suggestions were found for the current PR diff.",
+          suggestedTests
+        };
+      }
+      return {
+        ...output,
+        suggestedTests
+      };
     }
     function normalizeModelOutput2(value) {
       const normalizedRoot = normalizeNullableFields(value, ["edgeCases"]);
@@ -19396,7 +19466,7 @@ ${managedSection}`;
     async function generateTestSuggestions(provider, input) {
       const parsedInput = import_contracts15.TestSuggestionsInput.parse(input);
       const prompt = buildPrompt9(parsedInput);
-      return generateStructuredOutput({
+      const output = await generateStructuredOutput({
         provider,
         systemPrompt: TEST_SUGGESTIONS_SYSTEM_PROMPT,
         prompt,
@@ -19404,6 +19474,7 @@ ${managedSection}`;
         validationErrorPrefix: "Model output failed test suggestions schema validation",
         normalizeParsedJson: normalizeModelOutput2
       });
+      return filterResolvedDuplicates(output, parsedInput);
     }
   }
 });
