@@ -110,9 +110,19 @@ function createForge(
   forge: RepositoryForge;
   fetchPullRequestDetails: ReturnType<typeof vi.fn>;
   fetchPullRequestIssueComments: ReturnType<typeof vi.fn>;
+  updateIssueComment: ReturnType<typeof vi.fn>;
 } {
   const fetchPullRequestDetails = vi.fn().mockResolvedValue(createPullRequest());
   const fetchPullRequestIssueComments = vi.fn().mockResolvedValue(comments);
+  const updateIssueComment = vi.fn().mockResolvedValue({
+    id: 801,
+    body: "updated",
+    url: "https://github.com/DevwareUK/prs/pull/71#issuecomment-801",
+    createdAt: "2026-03-20T11:00:00Z",
+    updatedAt: "2026-03-20T11:40:00Z",
+    author: "github-actions[bot]",
+    isBot: true,
+  });
 
   return {
     forge: {
@@ -128,9 +138,11 @@ function createForge(
       createDraftIssue: vi.fn(),
       createOrReuseIssue: vi.fn(),
       createPullRequest: vi.fn(),
-    },
+      updateIssueComment,
+    } as RepositoryForge,
     fetchPullRequestDetails,
     fetchPullRequestIssueComments,
+    updateIssueComment,
   };
 }
 
@@ -160,6 +172,15 @@ describe("runPrFixTestsCommand", () => {
     vi.clearAllMocks();
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     vi.mocked(spawnSync).mockImplementation((command, args) => {
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "rev-parse" &&
+        args[1] === "HEAD"
+      ) {
+        return { status: 0, stdout: "accepted-head-sha\n", stderr: "" } as never;
+      }
+
       if (
         command === "git" &&
         Array.isArray(args) &&
@@ -233,9 +254,12 @@ describe("runPrFixTestsCommand", () => {
         }),
       ].join("\n")
     );
-    const { forge, fetchPullRequestDetails, fetchPullRequestIssueComments } = createForge([
-      comment,
-    ]);
+    const {
+      forge,
+      fetchPullRequestDetails,
+      fetchPullRequestIssueComments,
+      updateIssueComment,
+    } = createForge([comment]);
     const promptForLine = vi.fn().mockResolvedValueOnce("1,2").mockResolvedValueOnce("y");
     const ensureCleanWorkingTree = vi.fn();
     const launch = vi.fn();
@@ -305,6 +329,28 @@ describe("runPrFixTestsCommand", () => {
         content: "test: address AI test suggestions for PR #71\n",
         filePath: resolve(workspace.runDir, "commit-message.txt"),
       })
+    );
+    expect(updateIssueComment).toHaveBeenCalledWith(
+      801,
+      expect.stringContaining("<!-- prs:test-suggestions:resolved-start -->")
+    );
+    expect(updateIssueComment.mock.calls[0]?.[1]).toContain(
+      "Verify command execution for 'prs pr fix-tests'"
+    );
+    expect(updateIssueComment.mock.calls[0]?.[1]).toContain("accepted-head-sha");
+    expect(commitGeneratedChanges.mock.invocationCallOrder[0]).toBeLessThan(
+      updateIssueComment.mock.invocationCallOrder[0] ?? 0
+    );
+    const pushCallIndex = vi.mocked(spawnSync).mock.calls.findIndex(
+      ([command, args]) =>
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "push" &&
+        args[2] === "HEAD:feat/pr-fix-tests"
+    );
+    expect(pushCallIndex).toBeGreaterThanOrEqual(0);
+    expect(updateIssueComment.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(spawnSync).mock.invocationCallOrder[pushCallIndex] ?? 0
     );
     expect(spawnSync).toHaveBeenCalledWith(
       "git",
@@ -408,7 +454,7 @@ describe("runPrFixTestsCommand", () => {
   });
 
   it("exits without launching the runtime or writing workspace files when no test suggestions are selected", async () => {
-    const { forge } = createForge([
+    const { forge, updateIssueComment } = createForge([
       createManagedComment(
         [
           "<!-- prs:test-suggestions -->",
@@ -455,11 +501,12 @@ describe("runPrFixTestsCommand", () => {
     expect(verifyBuild).not.toHaveBeenCalled();
     expect(hasChanges).not.toHaveBeenCalled();
     expect(commitGeneratedChanges).not.toHaveBeenCalled();
+    expect(updateIssueComment).not.toHaveBeenCalled();
     expect(promptForLine).toHaveBeenCalledTimes(1);
   });
 
   it("leaves generated changes uncommitted when the user declines the commit prompt", async () => {
-    const { forge } = createForge([
+    const { forge, updateIssueComment } = createForge([
       createManagedComment(
         [
           "<!-- prs:test-suggestions -->",
@@ -504,6 +551,7 @@ describe("runPrFixTestsCommand", () => {
     expect(verifyBuild).toHaveBeenCalledWith(repoRoot, ["pnpm", "build"], workspace.outputLogPath);
     expect(hasChanges).toHaveBeenCalledWith(repoRoot);
     expect(commitGeneratedChanges).not.toHaveBeenCalled();
+    expect(updateIssueComment).not.toHaveBeenCalled();
     expect(
       vi.mocked(spawnSync).mock.calls.some(
         ([command, args]) =>
@@ -519,7 +567,7 @@ describe("runPrFixTestsCommand", () => {
   });
 
   it("lets the user modify the reviewed commit message before committing", async () => {
-    const { forge } = createForge([
+    const { forge, updateIssueComment } = createForge([
       createManagedComment(
         [
           "<!-- prs:test-suggestions -->",
@@ -543,6 +591,14 @@ describe("runPrFixTestsCommand", () => {
 
     vi.mocked(spawnSync).mockImplementation((command, args) => {
       if (command === "git") {
+        if (
+          Array.isArray(args) &&
+          args[0] === "rev-parse" &&
+          args[1] === "HEAD"
+        ) {
+          return { status: 0, stdout: "edited-head-sha\n", stderr: "" } as never;
+        }
+
         if (
           Array.isArray(args) &&
           args[0] === "rev-parse" &&
@@ -609,7 +665,7 @@ describe("runPrFixTestsCommand", () => {
   });
 
   it("keeps the reviewed local commit when the PR head branch diverged on origin", async () => {
-    const { forge } = createForge([
+    const { forge, updateIssueComment } = createForge([
       createManagedComment(
         [
           "<!-- prs:test-suggestions -->",
@@ -632,6 +688,15 @@ describe("runPrFixTestsCommand", () => {
     const commitGeneratedChanges = vi.fn();
 
     vi.mocked(spawnSync).mockImplementation((command, args) => {
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "rev-parse" &&
+        args[1] === "HEAD"
+      ) {
+        return { status: 0, stdout: "diverged-head-sha\n", stderr: "" } as never;
+      }
+
       if (
         command === "git" &&
         Array.isArray(args) &&
@@ -681,7 +746,7 @@ describe("runPrFixTestsCommand", () => {
   });
 
   it("fails clearly when the selected runtime completes without producing any file changes", async () => {
-    const { forge } = createForge([
+    const { forge, updateIssueComment } = createForge([
       createManagedComment(
         [
           "<!-- prs:test-suggestions -->",
@@ -727,6 +792,7 @@ describe("runPrFixTestsCommand", () => {
     expect(launch).toHaveBeenCalledWith(repoRoot, workspace);
     expect(verifyBuild).toHaveBeenCalledWith(repoRoot, ["pnpm", "build"], workspace.outputLogPath);
     expect(commitGeneratedChanges).not.toHaveBeenCalled();
+    expect(updateIssueComment).not.toHaveBeenCalled();
     expect(promptForLine).toHaveBeenCalledTimes(1);
   });
 

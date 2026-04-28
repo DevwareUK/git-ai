@@ -14,6 +14,9 @@ inputs:
   pr_body:
     description: "Optional pull request body"
     required: false
+  resolved_suggestions:
+    description: "Optional JSON array of previously addressed AI test suggestions for this pull request"
+    required: false
   openai_api_key:
     description: "OpenAI API key"
     required: true

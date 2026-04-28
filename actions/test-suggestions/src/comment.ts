@@ -28,29 +28,32 @@ export function buildCommentBody(suggestions: TestSuggestionsOutputType): string
     "### Overview",
     suggestions.summary,
     "",
-    "### Suggested test areas",
-    "",
   ];
 
-  for (const suggestion of suggestions.suggestedTests) {
-    lines.push(`#### ${suggestion.area}`);
-    lines.push(`- Priority: ${toTitleCase(suggestion.priority)}`);
-    lines.push(`- Test type: ${suggestion.testType}`);
-    lines.push(`- Behavior covered: ${suggestion.behavior}`);
-    lines.push(`- Regression risk: ${suggestion.regressionRisk}`);
-    lines.push(`- Why it matters: ${suggestion.value}`);
-    if (suggestion.protectedPaths?.length) {
-      lines.push(`- Protected paths: ${formatPaths(suggestion.protectedPaths)}`);
-    }
-    if (suggestion.likelyLocations?.length) {
-      lines.push(`- Likely locations: ${formatPaths(suggestion.likelyLocations)}`);
-    }
-    if (suggestion.edgeCases?.length) {
-      lines.push("- Edge cases:");
-      lines.push(...suggestion.edgeCases.map((edgeCase) => `  - ${edgeCase}`));
-    }
-    lines.push(`- Implementation note: ${suggestion.implementationNote}`);
+  if (suggestions.suggestedTests.length > 0) {
+    lines.push("### Suggested test areas");
     lines.push("");
+
+    for (const suggestion of suggestions.suggestedTests) {
+      lines.push(`#### ${suggestion.area}`);
+      lines.push(`- Priority: ${toTitleCase(suggestion.priority)}`);
+      lines.push(`- Test type: ${suggestion.testType}`);
+      lines.push(`- Behavior covered: ${suggestion.behavior}`);
+      lines.push(`- Regression risk: ${suggestion.regressionRisk}`);
+      lines.push(`- Why it matters: ${suggestion.value}`);
+      if (suggestion.protectedPaths?.length) {
+        lines.push(`- Protected paths: ${formatPaths(suggestion.protectedPaths)}`);
+      }
+      if (suggestion.likelyLocations?.length) {
+        lines.push(`- Likely locations: ${formatPaths(suggestion.likelyLocations)}`);
+      }
+      if (suggestion.edgeCases?.length) {
+        lines.push("- Edge cases:");
+        lines.push(...suggestion.edgeCases.map((edgeCase) => `  - ${edgeCase}`));
+      }
+      lines.push(`- Implementation note: ${suggestion.implementationNote}`);
+      lines.push("");
+    }
   }
 
   if (suggestions.edgeCases?.length) {

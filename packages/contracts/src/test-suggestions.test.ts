@@ -1,5 +1,35 @@
 import { describe, expect, it } from "vitest";
-import { TestSuggestionsOutput } from "./test-suggestions";
+import { TestSuggestionsInput, TestSuggestionsOutput } from "./test-suggestions";
+
+describe("TestSuggestionsInput", () => {
+  it("accepts optional resolved suggestion context", () => {
+    expect(
+      TestSuggestionsInput.parse({
+        diff: "diff --git a/file.ts b/file.ts",
+        resolvedSuggestions: [
+          {
+            area: "Template Rendering",
+            testType: "integration",
+            behavior: "Verify that the order detail template renders expected fields.",
+            protectedPaths: [
+              "web/themes/custom/bos/templates/commerce-order--user.html.twig",
+            ],
+            likelyLocations: ["web/themes/custom/bos/src/userOrderDetailPage.test.ts"],
+            resolvedAt: "2026-04-28T14:20:00.000Z",
+            commitSha: "abc123",
+          },
+        ],
+      })
+    ).toMatchObject({
+      resolvedSuggestions: [
+        expect.objectContaining({
+          area: "Template Rendering",
+          commitSha: "abc123",
+        }),
+      ],
+    });
+  });
+});
 
 describe("TestSuggestionsOutput", () => {
   it("accepts implementation-ready structured test suggestions", () => {
@@ -64,5 +94,14 @@ describe("TestSuggestionsOutput", () => {
         ],
       })
     ).toThrow(/implementationNote/i);
+  });
+
+  it("accepts zero suggestions when no new unresolved gaps remain", () => {
+    expect(
+      TestSuggestionsOutput.parse({
+        summary: "No new unresolved AI test suggestions were found for the current PR diff.",
+        suggestedTests: [],
+      })
+    ).toMatchObject({ suggestedTests: [] });
   });
 });

@@ -434,7 +434,7 @@ Available subcommands:
 | --- | --- |
 | `prs pr prepare-review <pr-number>` | Fetches pull request metadata and linked issues, requires a clean working tree, preflights the configured verification command plus the live PR base branch on `origin`, checks out the best available local review branch for the PR, fetches the latest `origin/<base-branch>` tip, skips merging when the checked-out branch already contains that tip, otherwise merges the base branch into the review branch before brief generation, routes merge conflicts through an interactive Codex conflict-resolution session when needed, writes `.prs/` run artifacts, generates `review-brief.md`, prints the saved brief path plus a terminal preview, and then leaves you in an interactive Codex session on that branch for follow-up review questions or requested fixes. After that session exits, `prs` exits cleanly if there are no new reviewed commits to sync, or else runs the configured build command when there are follow-up file changes, offers the same reviewed commit-message flow used by the other local fix workflows, and pushes any new reviewed commits back to `origin/<pr-head-branch>`. |
 | `prs pr fix-comments <pr-number>` | Requires a clean working tree, preflights the configured verification command, fetches pull request metadata and review comments from the configured forge, filters out obviously non-actionable comments, groups nearby threads into selectable review tasks, preserves non-trivial replies as thread context, writes richer `.prs/` run artifacts, opens the configured interactive runtime, runs the configured build command, previews a proposed commit message that you can edit, accept, or skip, and then pushes the reviewed commit back to `origin/<pr-head-branch>` when `HEAD` is ahead and not behind after fetching the latest remote head. |
-| `prs pr fix-tests <pr-number>` | Requires a clean working tree, preflights the configured verification command, fetches pull request metadata and PR issue comments from the configured forge, finds the managed AI Test Suggestions comment, parses structured suggestion tasks including behavior, regression risk, protected paths, likely locations, edge cases, and implementation notes, writes focused `.prs/` run artifacts, opens the configured interactive runtime, runs the configured build command, previews a proposed commit message that you can edit, accept, or skip, and then pushes the reviewed commit back to `origin/<pr-head-branch>` when `HEAD` is ahead and not behind after fetching the latest remote head. |
+| `prs pr fix-tests <pr-number>` | Requires a clean working tree, preflights the configured verification command, fetches pull request metadata and PR issue comments from the configured forge, finds the managed AI Test Suggestions comment, parses structured suggestion tasks including behavior, regression risk, protected paths, likely locations, edge cases, and implementation notes, writes focused `.prs/` run artifacts, opens the configured interactive runtime, runs the configured build command, previews a proposed commit message that you can edit, accept, or skip, records accepted selected suggestions as addressed in the managed PR comment, and then pushes the reviewed commit back to `origin/<pr-head-branch>` when `HEAD` is ahead and not behind after fetching the latest remote head. |
 
 Important behavior:
 
@@ -457,7 +457,9 @@ Important behavior:
 - local PR comment-fix runs require the configured runtime CLI on `PATH`
 - local PR test-fix runs require the configured runtime CLI on `PATH`
 - PR comment-fix and test-fix runs execute the configured `buildCommand`, defaulting to `pnpm build`
+- after an accepted reviewed commit, `prs pr fix-tests <pr-number>` writes a hidden addressed-suggestion ledger into the managed AI Test Suggestions PR comment using the new local `HEAD` commit SHA before it pushes
 - after an accepted reviewed commit, `prs pr fix-comments <pr-number>` and `prs pr fix-tests <pr-number>` fetch `origin/<pr-head-branch>` and only push when `HEAD` is ahead and not behind; if the branch diverged or the remote head cannot be resolved, the command fails clearly and keeps the local commit
+- if `prs pr fix-tests <pr-number>` creates the local commit but cannot update the managed PR comment with addressed-suggestion state, it fails before pushing and keeps the local commit
 - if you decline the reviewed commit message, `prs pr fix-comments <pr-number>` and `prs pr fix-tests <pr-number>` leave the changes uncommitted and do not attempt a push
 - local interactive runtime prompts end with an explicit done-state summary, a short note about how to see the result or what was verified, and plain-language next steps
 - the command expects the relevant PR branch to already be checked out locally before the runtime starts editing
@@ -731,6 +733,7 @@ Inputs:
 - `INPUT_COMMIT_MESSAGES_FILE` optional file path for commit messages
 - `INPUT_PR_TITLE` optional
 - `INPUT_PR_BODY` optional
+- `INPUT_RESOLVED_SUGGESTIONS` optional JSON array of previously addressed AI test suggestions, normally supplied by the generated workflow from the managed PR comment
 - `INPUT_OPENAI_API_KEY` required
 - `INPUT_OPENAI_MODEL` optional, defaults to `gpt-4o-mini`
 - `INPUT_OPENAI_BASE_URL` optional
@@ -781,6 +784,8 @@ Outputs:
 - `body`
 
 When `GITHUB_OUTPUT` is not set, outputs are printed to stdout.
+
+The generated workflow reads the hidden addressed-suggestion ledger from the existing managed PR comment, keeps only records whose commit SHA is still present on the PR, and passes that active context to `actions/test-suggestions`. The action asks the model not to repeat addressed test work and also filters exact normalized duplicates after parsing. When no new unresolved suggestions remain, the managed comment says that no new unresolved AI test suggestions were found for the current PR diff.
 
 The generated managed comment keeps each suggestion compact but task-ready by including the behavior covered, likely regression risk, suggested test type, protected paths, likely implementation locations, suggestion-specific edge cases when useful, and a short implementation note.
 
