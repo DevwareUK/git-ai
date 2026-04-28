@@ -125,6 +125,14 @@ function createTestBacklogAnalysis() {
       evidence: ["Vitest dependency in package.json"],
       testDirectories: ["packages/core/src", "packages/cli/src"],
       notes: ["CLI entrypoint coverage is still missing."],
+      frameworkRecommendation: {
+        recommended: "Vitest",
+        rationale: "Vitest fits package-level TypeScript and CLI integration tests.",
+        alternatives: [
+          "Jest is mature but more configuration-heavy for this workspace.",
+          "node:test is minimal but less ergonomic for CLI coverage.",
+        ],
+      },
       ciIntegration: {
         status: "partial" as const,
         hasGitHubActions: true,
@@ -4484,9 +4492,109 @@ describe("CLI integration", () => {
       });
       expect(stdout.output()).toContain("# AI Test Backlog");
       expect(stdout.output()).toContain("## Summary");
+      expect(stdout.output()).toContain("- Status: Partial");
+      expect(stdout.output()).toContain("- CI integration: Partial");
+      expect(stdout.output()).toContain("- Recommended framework: Vitest");
+      expect(stdout.output()).toContain(
+        "- Recommendation rationale: Vitest fits package-level TypeScript and CLI integration tests."
+      );
       expect(stdout.output()).toContain("### Missing CLI integration coverage for issue prepare");
       expect(stdout.output()).toContain(
         "- Draft issue title: Add CLI integration coverage for prs issue prepare"
+      );
+    });
+  });
+
+  it("prompts to create selected test-backlog issues after interactive markdown output", async () => {
+    const analysis = createTestBacklogAnalysis();
+    const originalIsTTY = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, "isTTY", {
+      value: true,
+      configurable: true,
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(createFetchResponse([]))
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          number: 42,
+          title: analysis.findings[0].issueTitle,
+          html_url: "https://github.com/DevwareUK/prs/issues/42",
+        })
+      )
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          number: 43,
+          title: analysis.findings[2].issueTitle,
+          html_url: "https://github.com/DevwareUK/prs/issues/43",
+        })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const { run, createInterface } = await loadCli({
+        analysisResult: analysis,
+        readlineAnswers: ["", "1,3"],
+        execFileSyncImpl: (command, args) => {
+          if (command === "git" && args[0] === "remote") {
+            return "git@github.com:DevwareUK/prs.git\n";
+          }
+
+          throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+        },
+      });
+
+      await withoutRepositoryConfig(async () => {
+        process.env.GITHUB_TOKEN = "test-token";
+        process.argv = ["node", "prs", "test-backlog", "--top", "3"];
+
+        const stdout = captureStdout();
+        await run();
+
+        expect(stdout.output()).toContain("# AI Test Backlog");
+        expect(stdout.output()).toContain("## Issue results");
+        expect(stdout.output()).toContain(
+          "Created #42: Add CLI integration coverage for prs issue prepare"
+        );
+        expect(stdout.output()).toContain(
+          "Created #43: Add failure coverage for prs issue finalize"
+        );
+        expect(createInterface.mock.results[0]?.value.question).toHaveBeenCalledWith(
+          "Do you want to create GitHub issues now? (Y/n): "
+        );
+        expect(createInterface.mock.results[1]?.value.question).toHaveBeenCalledWith(
+          "Which issues would you like to create? (ALL/1,2,3): "
+        );
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+      });
+    } finally {
+      Object.defineProperty(process.stdin, "isTTY", {
+        value: originalIsTTY,
+        configurable: true,
+      });
+    }
+  });
+
+  it("renders test-backlog markdown output when no findings are detected", async () => {
+    const analysis = {
+      ...createTestBacklogAnalysis(),
+      summary: "No prioritized testing backlog gaps were detected.",
+      notableCoverageGaps: [],
+      findings: [],
+    };
+    const { run } = await loadCli({
+      analysisResult: analysis,
+    });
+
+    await withoutRepositoryConfig(async () => {
+      process.argv = ["node", "prs", "test-backlog"];
+
+      const stdout = captureStdout();
+      await run();
+
+      expect(stdout.output()).toContain("## Prioritized findings");
+      expect(stdout.output()).toContain(
+        "No prioritized testing backlog findings were detected for this repository."
       );
     });
   });

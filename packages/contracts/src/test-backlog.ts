@@ -72,7 +72,7 @@ export const TestBacklogOutput = z.object({
   summary: z.string().trim().min(1, "summary must be non-empty"),
   currentTestingSetup: CurrentTestingSetup,
   notableCoverageGaps: z.array(z.string().trim().min(1)),
-  findings: z.array(TestBacklogFinding).min(1),
+  findings: z.array(TestBacklogFinding),
 });
 
 export type TestBacklogOutputType = z.infer<typeof TestBacklogOutput>;
