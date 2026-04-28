@@ -108,6 +108,7 @@ import {
 } from "./workflow-preflights";
 import { runPrFixCommentsCommand } from "./workflows/pr-fix-comments/run";
 import { runPrPrepareReviewCommand } from "./workflows/pr-prepare-review/run";
+import { runPrResolveConflictsCommand } from "./workflows/pr-resolve-conflicts/run";
 import { runPrFixTestsCommand } from "./workflows/pr-fix-tests/run";
 
 export { parseSetupCommandArgs };
@@ -404,6 +405,7 @@ const TOP_LEVEL_HELP = [
   "Beta:",
   "  prs issue batch <number> <number> [...number] [--mode unattended]",
   "  prs pr prepare-review <pr-number>",
+  "  prs pr resolve-conflicts <pr-number>",
   "  prs feature-backlog [repo-path]",
   "",
   "Supporting commands:",
@@ -1358,7 +1360,13 @@ function resolveLaunchStageNoticeId(args: string[]): LaunchStageNoticeId | undef
 
   if (command === "pr") {
     const prCommand = parsePrCommandArgs(args);
-    return prCommand.action === "prepare-review" ? "pr-prepare-review" : undefined;
+    if (prCommand.action === "prepare-review") {
+      return "pr-prepare-review";
+    }
+    if (prCommand.action === "resolve-conflicts") {
+      return "pr-resolve-conflicts";
+    }
+    return undefined;
   }
 
   return undefined;
@@ -3858,6 +3866,20 @@ async function runPrCommand(): Promise<void> {
       commitGeneratedChanges,
       readDiff: readIssueWorkflowDiff,
       createProvider: async (providerRepoRoot) => createProvider(providerRepoRoot),
+    });
+    return;
+  }
+
+  if (prCommand.action === "resolve-conflicts") {
+    await runPrResolveConflictsCommand({
+      prNumber: prCommand.prNumber,
+      repoRoot,
+      buildCommand: repositoryConfig.buildCommand,
+      ensureVerificationCommandAvailable,
+      preflightBaseBranch: preflightRemoteBranch,
+      forge: getRepositoryForge(repoRoot),
+      ensureCleanWorkingTree,
+      verifyBuild,
     });
     return;
   }

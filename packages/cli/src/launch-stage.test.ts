@@ -28,4 +28,13 @@ describe("formatLaunchStageNotice", () => {
     expect(runNotice).toContain("a usable text provider");
     expect(runNotice).toContain("authenticated GitHub access");
   });
+
+  it("describes resolve-conflicts as a Codex-specific beta PR workflow", () => {
+    const notice = formatLaunchStageNotice("pr-resolve-conflicts");
+
+    expect(notice).toContain("BETA WORKFLOW NOTICE");
+    expect(notice).toContain("`prs pr resolve-conflicts <pr-number>`");
+    expect(notice).toContain("merge conflicts need guided local resolution");
+    expect(notice).toContain("`codex` on PATH");
+  });
 });
