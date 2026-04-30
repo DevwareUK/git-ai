@@ -24,6 +24,7 @@ function createComment(
 function buildSuggestionBlock(options: {
   title: string;
   priority: "High" | "Medium" | "Low";
+  addressed?: boolean;
   testType?: string;
   behavior?: string;
   regressionRisk?: string;
@@ -35,6 +36,9 @@ function buildSuggestionBlock(options: {
 }): string[] {
   const lines = [
     `#### ${options.title}`,
+    ...(options.addressed === undefined
+      ? []
+      : [`- [${options.addressed ? "x" : " "}] Addressed`]),
     `- Priority: ${options.priority}`,
     `- Test type: ${options.testType ?? "integration"}`,
     `- Behavior covered: ${options.behavior ?? `${options.title} should stay covered.`}`,
@@ -147,6 +151,7 @@ describe("pr-fix-tests selection helpers", () => {
         {
           suggestionId: "suggestion-1",
           area: "Verify command execution for 'prs pr fix-tests'",
+          addressed: false,
           priority: "high",
           testType: "integration",
           behavior:
@@ -170,6 +175,7 @@ describe("pr-fix-tests selection helpers", () => {
         {
           suggestionId: "suggestion-2",
           area: "Test parsing of managed AI test suggestions comments",
+          addressed: false,
           priority: "medium",
           testType: "integration",
           behavior:
@@ -278,6 +284,61 @@ describe("pr-fix-tests selection helpers", () => {
     expect(parseManagedTestSuggestionsComment(comment).suggestions[0]?.area).toContain(
       "prs pr fix-tests"
     );
+  });
+
+  it("parses optional addressed checklist lines", () => {
+    const comment = createComment(
+      [
+        "<!-- prs:test-suggestions -->",
+        "## AI Test Suggestions",
+        "",
+        "### Suggested test areas",
+        "",
+        ...buildSuggestionBlock({
+          title: "Verify checkout flow",
+          priority: "High",
+          addressed: true,
+          value: "It protects revenue.",
+          behavior: "Checkout completes.",
+          regressionRisk: "Checkout can fail silently.",
+          implementationNote: "Add a checkout workflow test.",
+        }),
+      ].join("\n")
+    );
+
+    expect(parseManagedTestSuggestionsComment(comment).suggestions).toEqual([
+      expect.objectContaining({
+        suggestionId: "suggestion-1",
+        area: "Verify checkout flow",
+        addressed: true,
+      }),
+    ]);
+  });
+
+  it("ignores hidden resolved suggestion ledger blocks while parsing visible suggestions", () => {
+    const comment = createComment(
+      [
+        "<!-- prs:test-suggestions -->",
+        "## AI Test Suggestions",
+        "",
+        "<!-- prs:test-suggestions:resolved-start -->",
+        "### Hidden resolved heading",
+        "- Hidden ledger content must not become a visible markdown section.",
+        "<!-- prs:test-suggestions:resolved-end -->",
+        "",
+        "### Suggested test areas",
+        "",
+        ...buildSuggestionBlock({
+          title: "Visible suggestion",
+          priority: "High",
+          value: "The visible suggestion should still be selectable.",
+        }),
+      ].join("\n")
+    );
+
+    expect(parseManagedTestSuggestionsComment(comment).suggestions).toEqual([
+      expect.objectContaining({ area: "Visible suggestion" }),
+    ]);
   });
 
   it("parses interactive suggestion selection and rejects invalid entries", () => {

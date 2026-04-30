@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { TestSuggestionsOutputType } from "@prs/contracts";
-import { buildCommentBody } from "./comment";
+import {
+  applyAddressedSuggestionUpdates,
+  buildCommentBody,
+  parseChecklistCommentBody,
+} from "./comment";
 
 describe("buildCommentBody", () => {
   it("renders compact but task-ready suggestion details", () => {
@@ -35,6 +39,8 @@ describe("buildCommentBody", () => {
     } satisfies TestSuggestionsOutputType);
 
     expect(body).toContain("## AI Test Suggestions");
+    expect(body).toContain("#### Verify pr fix-tests snapshot keeps task context");
+    expect(body).toContain("- [ ] Addressed");
     expect(body).toContain("- Test type: integration");
     expect(body).toContain("- Behavior covered: Selecting a suggestion should preserve behavior");
     expect(body).toContain("- Regression risk: The selected task can lose critical context");
@@ -45,5 +51,91 @@ describe("buildCommentBody", () => {
     expect(body).toContain("- Implementation note: Add a workspace test");
     expect(body).toContain("### Edge cases");
     expect(body).toContain("### Likely places to add tests");
+  });
+
+  it("renders an explicit no-new-unresolved state when there are no suggestions", () => {
+    const body = buildCommentBody({
+      summary: "No new unresolved AI test suggestions were found for the current PR diff.",
+      suggestedTests: [],
+    } satisfies TestSuggestionsOutputType);
+
+    expect(body).toContain("## AI Test Suggestions");
+    expect(body).toContain("No new unresolved AI test suggestions were found");
+    expect(body).not.toContain("### Suggested test areas");
+  });
+});
+
+describe("parseChecklistCommentBody", () => {
+  const existingBody = [
+    "<!-- prs:test-suggestions -->",
+    "## AI Test Suggestions",
+    "",
+    "### Overview",
+    "Tests are needed.",
+    "",
+    "### Suggested test areas",
+    "",
+    "#### Verify checkout flow",
+    "- [ ] Addressed",
+    "- Priority: High",
+    "- Test type: integration",
+    "- Behavior covered: Checkout completes.",
+    "- Regression risk: Checkout can fail silently.",
+    "- Why it matters: It protects revenue.",
+    "- Implementation note: Add a checkout workflow test.",
+    "",
+    "#### Verify summary copy",
+    "- [x] Addressed",
+    "- Priority: Medium",
+    "- Test type: unit",
+    "- Behavior covered: Summary copy renders.",
+    "- Regression risk: Copy can regress.",
+    "- Why it matters: It protects support workflows.",
+    "- Implementation note: Add a rendering test.",
+  ].join("\n");
+
+  it("parses checked and unchecked checklist suggestions", () => {
+    expect(parseChecklistCommentBody(existingBody)).toEqual({
+      overview: "Tests are needed.",
+      suggestions: [
+        {
+          suggestionId: "suggestion-1",
+          area: "Verify checkout flow",
+          addressed: false,
+          priority: "high",
+          testType: "integration",
+          behavior: "Checkout completes.",
+          regressionRisk: "Checkout can fail silently.",
+          value: "It protects revenue.",
+          protectedPaths: [],
+          likelyLocations: [],
+          edgeCases: [],
+          implementationNote: "Add a checkout workflow test.",
+        },
+        {
+          suggestionId: "suggestion-2",
+          area: "Verify summary copy",
+          addressed: true,
+          priority: "medium",
+          testType: "unit",
+          behavior: "Summary copy renders.",
+          regressionRisk: "Copy can regress.",
+          value: "It protects support workflows.",
+          protectedPaths: [],
+          likelyLocations: [],
+          edgeCases: [],
+          implementationNote: "Add a rendering test.",
+        },
+      ],
+    });
+  });
+
+  it("checks addressed suggestions while preserving existing checked items and text", () => {
+    const updatedBody = applyAddressedSuggestionUpdates(existingBody, ["suggestion-1"]);
+
+    expect(updatedBody).toContain("#### Verify checkout flow\n- [x] Addressed");
+    expect(updatedBody).toContain("#### Verify summary copy\n- [x] Addressed");
+    expect(updatedBody).toContain("- Implementation note: Add a checkout workflow test.");
+    expect(updatedBody).toContain("- Implementation note: Add a rendering test.");
   });
 });

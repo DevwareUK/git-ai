@@ -17,6 +17,7 @@ export type PullRequestTestSuggestionPriority = "high" | "medium" | "low";
 export type PullRequestTestSuggestion = {
   suggestionId: string;
   area: string;
+  addressed: boolean;
   priority: PullRequestTestSuggestionPriority;
   testType: string;
   behavior: string;
@@ -26,6 +27,15 @@ export type PullRequestTestSuggestion = {
   likelyLocations: string[];
   edgeCases: string[];
   implementationNote: string;
+};
+
+export type PullRequestResolvedTestSuggestion = Omit<
+  PullRequestTestSuggestion,
+  "suggestionId" | "priority"
+> & {
+  key: string;
+  resolvedAt: string;
+  commitSha: string;
 };
 
 export type PullRequestTestSuggestionsComment = {
