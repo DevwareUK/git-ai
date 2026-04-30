@@ -2530,6 +2530,16 @@ describe("CLI integration", () => {
     });
   });
 
+  it("parses pr resolve-conflicts as a dedicated pr subcommand", async () => {
+    process.env.GIT_AI_DISABLE_AUTO_RUN = "1";
+    const { parsePrCommandArgs } = await loadCli();
+
+    expect(parsePrCommandArgs(["pr", "resolve-conflicts", "76"])).toEqual({
+      action: "resolve-conflicts",
+      prNumber: 76,
+    });
+  });
+
   it("parses repo-level test-backlog flags for the CLI", async () => {
     process.env.GIT_AI_DISABLE_AUTO_RUN = "1";
     const { parseTestBacklogCommandArgs } = await import("./index");
@@ -2623,6 +2633,7 @@ describe("CLI integration", () => {
     expect(stdout.output()).toContain("prs issue draft");
     expect(stdout.output()).toContain("prs issue refine <number>");
     expect(stdout.output()).toContain("prs pr prepare-review <pr-number>");
+    expect(stdout.output()).toContain("prs pr resolve-conflicts <pr-number>");
   });
 
   it("prints a deprecation notice when invoked through the legacy git-ai alias", async () => {
@@ -2683,6 +2694,34 @@ describe("CLI integration", () => {
         const output = stdout.output();
         expect(output).toContain("ADVANCED WORKFLOW NOTICE");
         expect(output).toContain("`prs issue plan <number> [--refresh]`");
+      }
+    );
+  });
+
+  it("prints a beta workflow notice before pr resolve-conflicts execution starts", async () => {
+    const { run } = await loadCli();
+
+    await withRepositoryConfig(
+      JSON.stringify(
+        {
+          forge: {
+            type: "none",
+          },
+        },
+        null,
+        2
+      ),
+      async () => {
+        process.argv = ["node", "prs", "pr", "resolve-conflicts", "76"];
+
+        const stdout = captureStdout();
+        await expect(run()).rejects.toThrow(
+          "Repository forge support is disabled by .prs/config.json. Configure `forge.type` to enable pull request workflows."
+        );
+
+        const output = stdout.output();
+        expect(output).toContain("BETA WORKFLOW NOTICE");
+        expect(output).toContain("`prs pr resolve-conflicts <pr-number>`");
       }
     );
   });

@@ -41,10 +41,18 @@ import {
 import { pushReviewedPullRequestUpdates } from "../pull-request-reviewed-updates";
 import {
   runTrackedCommand as runTrackedCommandBase,
-  runTrackedCommandAndCapture as runTrackedCommandAndCaptureBase,
   type TrackedCommandOptions,
   type TrackedCommandResult,
 } from "../tracked-command";
+import {
+  branchContainsCommit,
+  buildIncompleteBaseSyncRecoveryMessage,
+  getBaseSyncTip,
+  isMergeInProgress,
+  listUnmergedPaths,
+  resolveBaseSyncRemoteRef,
+  runBaseSyncTrackedCommandAndCapture,
+} from "../pr-base-sync";
 import {
   ensureVerificationCommandAvailable,
   preflightRemoteBranch,
@@ -93,13 +101,7 @@ function runTrackedCommandAndCapture(
   args: string[],
   options: TrackedCommandOptions = {}
 ): TrackedCommandResult {
-  return runTrackedCommandAndCaptureBase(
-    repoRoot,
-    workspace.outputLogPath,
-    command,
-    args,
-    options
-  );
+  return runBaseSyncTrackedCommandAndCapture(repoRoot, workspace, command, args, options);
 }
 
 function runTrackedCommand(
@@ -118,115 +120,6 @@ function runTrackedCommand(
     errorMessage,
     options
   );
-}
-
-function resolveBaseSyncRemoteRef(baseRefName: string): string {
-  return `origin/${baseRefName}`;
-}
-
-function getBaseSyncTip(
-  repoRoot: string,
-  workspace: PullRequestPrepareReviewWorkspace,
-  remoteRef: string
-): string {
-  const baseTip = runTrackedCommand(
-    repoRoot,
-    workspace,
-    "git",
-    ["rev-parse", remoteRef],
-    `Failed to determine the fetched tip for "${remoteRef}".`,
-    { echoOutput: false }
-  ).trim();
-
-  if (!baseTip) {
-    throw new Error(`Failed to determine the fetched tip for "${remoteRef}".`);
-  }
-
-  return baseTip;
-}
-
-function branchContainsCommit(
-  repoRoot: string,
-  workspace: PullRequestPrepareReviewWorkspace,
-  commitish: string,
-  branchish: string
-): boolean {
-  const result = runTrackedCommandAndCapture(
-    repoRoot,
-    workspace,
-    "git",
-    ["merge-base", "--is-ancestor", commitish, branchish],
-    { echoOutput: false }
-  );
-
-  if (result.error) {
-    throw new Error(
-      `Failed to determine whether ${branchish} already contains ${commitish}. ${result.error.message}`
-    );
-  }
-
-  if (result.status === 0) {
-    return true;
-  }
-
-  if (result.status === 1) {
-    return false;
-  }
-
-  throw new Error(`Failed to determine whether ${branchish} already contains ${commitish}.`);
-}
-
-function isMergeInProgress(
-  repoRoot: string,
-  workspace: PullRequestPrepareReviewWorkspace
-): boolean {
-  const result = runTrackedCommandAndCapture(
-    repoRoot,
-    workspace,
-    "git",
-    ["rev-parse", "-q", "--verify", "MERGE_HEAD"],
-    { echoOutput: false }
-  );
-
-  if (result.error) {
-    throw new Error(`Failed to inspect merge state. ${result.error.message}`);
-  }
-
-  if (result.status === 0) {
-    return true;
-  }
-
-  if (result.status === 1) {
-    return false;
-  }
-
-  throw new Error("Failed to inspect merge state.");
-}
-
-function listUnmergedPaths(
-  repoRoot: string,
-  workspace: PullRequestPrepareReviewWorkspace
-): string[] {
-  const result = runTrackedCommandAndCapture(
-    repoRoot,
-    workspace,
-    "git",
-    ["diff", "--name-only", "--diff-filter=U"],
-    { echoOutput: false }
-  );
-
-  if (result.error) {
-    throw new Error(`Failed to inspect unresolved merge conflicts. ${result.error.message}`);
-  }
-
-  if (result.status !== 0) {
-    throw new Error("Failed to inspect unresolved merge conflicts.");
-  }
-
-  return result.stdout
-    .split(/\r?\n/)
-    .map((value) => value.trim())
-    .filter((value) => value.length > 0);
 }
 
 function synchronizePullRequestBaseBranch(
@@ -324,26 +217,16 @@ function synchronizePullRequestBaseBranch(
   const remainingUnmergedPaths = listUnmergedPaths(repoRoot, workspace);
   const nowContainsBaseTip = branchContainsCommit(repoRoot, workspace, baseTip, "HEAD");
   if (mergeStillInProgress || remainingUnmergedPaths.length > 0 || !nowContainsBaseTip) {
-    const recoveryParts: string[] = [];
-    if (remainingUnmergedPaths.length > 0) {
-      recoveryParts.push(
-        `Remaining conflicted files: ${remainingUnmergedPaths.join(", ")}.`
-      );
-    }
-    if (mergeStillInProgress) {
-      recoveryParts.push(`Finish the in-progress merge on "${branchName}".`);
-    }
-    if (!nowContainsBaseTip) {
-      recoveryParts.push(
-        `Make sure "${branchName}" contains ${remoteRef} tip ${baseTip}.`
-      );
-    }
-
-    const recoveryMessage = [
-      `Base-branch sync is still incomplete for "${branchName}".`,
-      ...recoveryParts,
-      `After fixing the branch state, rerun \`prs pr prepare-review ${pullRequest.number}\`.`,
-    ].join(" ");
+    const recoveryMessage = buildIncompleteBaseSyncRecoveryMessage({
+      branchName,
+      pullRequest,
+      remoteRef,
+      baseTip,
+      mergeStillInProgress,
+      remainingUnmergedPaths,
+      nowContainsBaseTip,
+      rerunCommand: `prs pr prepare-review ${pullRequest.number}`,
+    });
 
     appendPullRequestPrepareReviewWarning(workspace, recoveryMessage);
     throw new PullRequestPrepareReviewBaseSyncError(recoveryMessage, {
