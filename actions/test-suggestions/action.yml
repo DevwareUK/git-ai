@@ -14,6 +14,15 @@ inputs:
   pr_body:
     description: "Optional pull request body"
     required: false
+  resolved_suggestions:
+    description: "Optional JSON array of previously addressed AI test suggestions for this pull request"
+    required: false
+  existing_comment:
+    description: "Existing managed AI test suggestions comment body. When provided, the action updates addressed checkboxes instead of generating new suggestions."
+    required: false
+  existing_comment_file:
+    description: "Path to a UTF-8 file containing the existing managed AI test suggestions comment body."
+    required: false
   openai_api_key:
     description: "OpenAI API key"
     required: true

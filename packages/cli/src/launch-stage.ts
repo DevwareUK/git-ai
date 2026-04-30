@@ -6,7 +6,8 @@ export type LaunchStageNoticeId =
   | "issue-plan"
   | "issue-prepare"
   | "issue-run"
-  | "pr-prepare-review";
+  | "pr-prepare-review"
+  | "pr-resolve-conflicts";
 
 type LaunchStageNoticeDefinition = {
   tier: "advanced" | "beta";
@@ -100,6 +101,16 @@ const LAUNCH_STAGE_NOTICE_DEFINITIONS: Record<
       "`prs review` for the lower-risk review path, then `prs pr fix-comments <pr-number>` or `prs pr fix-tests <pr-number>` when you want guided local changes.",
     constraints:
       "Requires a clean working tree, pull-request access through the configured forge, and `codex` on PATH; it may check out a review branch and merge the latest base branch before generating the brief.",
+  },
+  "pr-resolve-conflicts": {
+    tier: "beta",
+    command: "`prs pr resolve-conflicts <pr-number>`",
+    reason:
+      "It syncs a live PR branch with its base branch and opens a focused Codex session when merge conflicts need guided local resolution.",
+    recommendedFirst:
+      "`prs pr fix-comments <pr-number>` or `prs pr fix-tests <pr-number>` when the PR is mergeable and you want guided local changes.",
+    constraints:
+      "Requires a clean working tree, pull-request access through the configured forge, `codex` on PATH, a fetchable origin base branch, and a PR head branch that can be pushed back to origin.",
   },
 };
 

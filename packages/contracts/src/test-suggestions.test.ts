@@ -1,5 +1,40 @@
 import { describe, expect, it } from "vitest";
-import { TestSuggestionsOutput } from "./test-suggestions";
+import {
+  TestSuggestionAddressedAssessmentInput,
+  TestSuggestionAddressedAssessmentOutput,
+  TestSuggestionsInput,
+  TestSuggestionsOutput,
+} from "./test-suggestions";
+
+describe("TestSuggestionsInput", () => {
+  it("accepts optional resolved suggestion context", () => {
+    expect(
+      TestSuggestionsInput.parse({
+        diff: "diff --git a/file.ts b/file.ts",
+        resolvedSuggestions: [
+          {
+            area: "Template Rendering",
+            testType: "integration",
+            behavior: "Verify that the order detail template renders expected fields.",
+            protectedPaths: [
+              "web/themes/custom/bos/templates/commerce-order--user.html.twig",
+            ],
+            likelyLocations: ["web/themes/custom/bos/src/userOrderDetailPage.test.ts"],
+            resolvedAt: "2026-04-28T14:20:00.000Z",
+            commitSha: "abc123",
+          },
+        ],
+      })
+    ).toMatchObject({
+      resolvedSuggestions: [
+        expect.objectContaining({
+          area: "Template Rendering",
+          commitSha: "abc123",
+        }),
+      ],
+    });
+  });
+});
 
 describe("TestSuggestionsOutput", () => {
   it("accepts implementation-ready structured test suggestions", () => {
@@ -64,5 +99,95 @@ describe("TestSuggestionsOutput", () => {
         ],
       })
     ).toThrow(/implementationNote/i);
+  });
+
+  it("accepts zero suggestions when no new unresolved gaps remain", () => {
+    expect(
+      TestSuggestionsOutput.parse({
+        summary: "No new unresolved AI test suggestions were found for the current PR diff.",
+        suggestedTests: [],
+      })
+    ).toMatchObject({ suggestedTests: [] });
+  });
+});
+
+describe("TestSuggestionAddressedAssessmentInput", () => {
+  it("accepts existing checklist suggestions for addressed assessment", () => {
+    expect(
+      TestSuggestionAddressedAssessmentInput.parse({
+        diff: "diff --git a/tests/checkout.test.ts b/tests/checkout.test.ts\n+it('checks out')",
+        prTitle: "Add checkout regression test",
+        suggestions: [
+          {
+            suggestionId: "suggestion-1",
+            area: "Verify checkout flow",
+            addressed: false,
+            priority: "high",
+            testType: "integration",
+            behavior: "Checkout completes successfully.",
+            regressionRisk: "Checkout regressions could go unnoticed.",
+            value: "It protects the primary purchase path.",
+            implementationNote: "Add an integration test for checkout completion.",
+          },
+        ],
+      })
+    ).toMatchObject({
+      suggestions: [
+        {
+          suggestionId: "suggestion-1",
+          addressed: false,
+        },
+      ],
+    });
+  });
+});
+
+describe("TestSuggestionAddressedAssessmentOutput", () => {
+  it("accepts addressed suggestion IDs with evidence", () => {
+    expect(
+      TestSuggestionAddressedAssessmentOutput.parse({
+        addressedSuggestions: [
+          {
+            suggestionId: "suggestion-1",
+            addressed: true,
+            evidence: "The diff adds tests/checkout.test.ts covering checkout completion.",
+          },
+        ],
+      })
+    ).toMatchObject({
+      addressedSuggestions: [
+        {
+          suggestionId: "suggestion-1",
+          addressed: true,
+        },
+      ],
+    });
+  });
+
+  it("rejects empty IDs and unexpected output fields", () => {
+    expect(() =>
+      TestSuggestionAddressedAssessmentOutput.parse({
+        addressedSuggestions: [
+          {
+            suggestionId: "",
+            addressed: true,
+            evidence: "Missing usable ID.",
+          },
+        ],
+      })
+    ).toThrow();
+
+    expect(() =>
+      TestSuggestionAddressedAssessmentOutput.parse({
+        addressedSuggestions: [
+          {
+            suggestionId: "suggestion-1",
+            addressed: true,
+            evidence: "The diff adds a focused test.",
+            replacementSuggestion: "Invent new work",
+          },
+        ],
+      })
+    ).toThrow();
   });
 });

@@ -2543,6 +2543,16 @@ describe("CLI integration", () => {
     });
   });
 
+  it("parses pr resolve-conflicts as a dedicated pr subcommand", async () => {
+    process.env.GIT_AI_DISABLE_AUTO_RUN = "1";
+    const { parsePrCommandArgs } = await loadCli();
+
+    expect(parsePrCommandArgs(["pr", "resolve-conflicts", "76"])).toEqual({
+      action: "resolve-conflicts",
+      prNumber: 76,
+    });
+  });
+
   it("parses repo-level test-backlog flags for the CLI", async () => {
     process.env.GIT_AI_DISABLE_AUTO_RUN = "1";
     const { parseTestBacklogCommandArgs } = await import("./index");
@@ -2636,6 +2646,7 @@ describe("CLI integration", () => {
     expect(stdout.output()).toContain("prs issue draft");
     expect(stdout.output()).toContain("prs issue refine <number>");
     expect(stdout.output()).toContain("prs pr prepare-review <pr-number>");
+    expect(stdout.output()).toContain("prs pr resolve-conflicts <pr-number>");
   });
 
   it("prints a deprecation notice when invoked through the legacy git-ai alias", async () => {
@@ -2696,6 +2707,34 @@ describe("CLI integration", () => {
         const output = stdout.output();
         expect(output).toContain("ADVANCED WORKFLOW NOTICE");
         expect(output).toContain("`prs issue plan <number> [--refresh]`");
+      }
+    );
+  });
+
+  it("prints a beta workflow notice before pr resolve-conflicts execution starts", async () => {
+    const { run } = await loadCli();
+
+    await withRepositoryConfig(
+      JSON.stringify(
+        {
+          forge: {
+            type: "none",
+          },
+        },
+        null,
+        2
+      ),
+      async () => {
+        process.argv = ["node", "prs", "pr", "resolve-conflicts", "76"];
+
+        const stdout = captureStdout();
+        await expect(run()).rejects.toThrow(
+          "Repository forge support is disabled by .prs/config.json. Configure `forge.type` to enable pull request workflows."
+        );
+
+        const output = stdout.output();
+        expect(output).toContain("BETA WORKFLOW NOTICE");
+        expect(output).toContain("`prs pr resolve-conflicts <pr-number>`");
       }
     );
   });
@@ -6471,6 +6510,16 @@ describe("CLI integration", () => {
             updated_at: "2026-03-18T08:06:00Z",
           },
         ])
+      )
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          id: 801,
+          body: "updated",
+          html_url: "https://github.com/DevwareUK/prs/issues/91#issuecomment-801",
+          created_at: "2026-03-19T10:00:00Z",
+          updated_at: "2026-03-19T10:10:00Z",
+          user: { login: "github-actions[bot]", type: "Bot" },
+        })
       );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -6683,6 +6732,16 @@ describe("CLI integration", () => {
             updated_at: "2026-03-18T08:10:00Z",
           },
         ])
+      )
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          id: 801,
+          body: "updated",
+          html_url: "https://github.com/DevwareUK/prs/issues/91#issuecomment-801",
+          created_at: "2026-03-19T10:00:00Z",
+          updated_at: "2026-03-19T10:10:00Z",
+          user: { login: "github-actions[bot]", type: "Bot" },
+        })
       );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -6768,6 +6827,8 @@ describe("CLI integration", () => {
   it("runs pr fix-tests, writes run artifacts, verifies the build, and commits the result", async () => {
     const beforeRuns = listRunDirectories();
     let gitStatusCallCount = 0;
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "test-token";
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
@@ -6834,6 +6895,16 @@ describe("CLI integration", () => {
           },
         ])
       );
+    fetchMock.mockResolvedValueOnce(
+      createFetchResponse({
+        id: 801,
+        body: "updated",
+        html_url: "https://github.com/DevwareUK/prs/issues/91#issuecomment-801",
+        created_at: "2026-03-19T10:00:00Z",
+        updated_at: "2026-03-19T10:10:00Z",
+        user: { login: "github-actions[bot]", type: "Bot" },
+      })
+    );
     vi.stubGlobal("fetch", fetchMock);
 
     const { run, spawnSync } = await loadCli({
@@ -6886,6 +6957,14 @@ describe("CLI integration", () => {
           args[2] === "feat/pr-fix-tests"
         ) {
           return { status: 0, stdout: "", stderr: "" };
+        }
+
+        if (
+          command === "git" &&
+          args[0] === "rev-parse" &&
+          args[1] === "HEAD"
+        ) {
+          return { status: 0, stdout: "fixed-tests-head-sha\n", stderr: "" };
         }
 
         if (
@@ -6990,7 +7069,18 @@ describe("CLI integration", () => {
       edgeCases: ["The marker exists but the suggested test areas section is missing."],
       likelyLocations: ["packages/cli/src/index.test.ts"],
     });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "https://api.github.com/repos/DevwareUK/prs/issues/comments/801",
+      expect.objectContaining({
+        method: "PATCH",
+        body: expect.stringContaining("fixed-tests-head-sha"),
+      })
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body)).body).toContain(
+      "<!-- prs:test-suggestions:resolved-start -->"
+    );
     expect(spawnSync).toHaveBeenCalledWith(
       "git",
       ["commit", "-F", expect.stringContaining("commit-message.txt")],

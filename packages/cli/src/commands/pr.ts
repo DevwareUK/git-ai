@@ -1,11 +1,17 @@
 export type PrCommandOptions = {
-  action: "fix-comments" | "fix-failing-tests" | "fix-tests" | "prepare-review";
+  action:
+    | "fix-comments"
+    | "fix-failing-tests"
+    | "fix-tests"
+    | "prepare-review"
+    | "resolve-conflicts";
   prNumber: number;
 };
 
 export const PR_USAGE = [
   "Usage:",
   "  prs pr prepare-review <pr-number>",
+  "  prs pr resolve-conflicts <pr-number>",
   "  prs pr fix-comments <pr-number>",
   "  prs pr fix-failing-tests <pr-number>",
   "  prs pr fix-tests <pr-number>",
@@ -22,7 +28,8 @@ export function parsePrCommandArgs(
     subcommand !== "fix-comments" &&
     subcommand !== "fix-failing-tests" &&
     subcommand !== "fix-tests" &&
-    subcommand !== "prepare-review"
+    subcommand !== "prepare-review" &&
+    subcommand !== "resolve-conflicts"
   ) {
     throw new Error(`Unknown pr subcommand "${subcommand ?? ""}". ${PR_USAGE}`);
   }
