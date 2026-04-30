@@ -21,6 +21,11 @@ const TestSuggestionItem = z.object({
   ),
 });
 
+const AddressedAssessmentSuggestionItem = TestSuggestionItem.extend({
+  suggestionId: TestSuggestionString.min(1, "suggestionId must be non-empty"),
+  addressed: z.boolean(),
+});
+
 const ResolvedTestSuggestionItem = z.object({
   area: TestSuggestionString.min(1, "area must be non-empty"),
   testType: TestSuggestionString.min(1, "testType must be non-empty"),
@@ -51,3 +56,30 @@ export const TestSuggestionsOutput = z.object({
 });
 
 export type TestSuggestionsOutputType = z.infer<typeof TestSuggestionsOutput>;
+
+export const TestSuggestionAddressedAssessmentInput = z.object({
+  diff: z.string().trim().min(1),
+  prTitle: z.string().trim().min(1).optional(),
+  prBody: z.string().trim().min(1).optional(),
+  suggestions: z.array(AddressedAssessmentSuggestionItem).min(1),
+});
+
+export type TestSuggestionAddressedAssessmentInputType = z.infer<
+  typeof TestSuggestionAddressedAssessmentInput
+>;
+
+export const TestSuggestionAddressedAssessmentOutput = z.object({
+  addressedSuggestions: z.array(
+    z
+      .object({
+        suggestionId: TestSuggestionString.min(1, "suggestionId must be non-empty"),
+        addressed: z.literal(true),
+        evidence: TestSuggestionString.min(1, "evidence must be non-empty"),
+      })
+      .strict()
+  ),
+});
+
+export type TestSuggestionAddressedAssessmentOutputType = z.infer<
+  typeof TestSuggestionAddressedAssessmentOutput
+>;

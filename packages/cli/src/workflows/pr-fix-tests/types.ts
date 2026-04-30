@@ -17,6 +17,7 @@ export type PullRequestTestSuggestionPriority = "high" | "medium" | "low";
 export type PullRequestTestSuggestion = {
   suggestionId: string;
   area: string;
+  addressed: boolean;
   priority: PullRequestTestSuggestionPriority;
   testType: string;
   behavior: string;

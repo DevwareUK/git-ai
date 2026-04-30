@@ -46,6 +46,7 @@ function buildSuggestionBlock(options: {
   title: string;
   priority: "High" | "Medium" | "Low";
   value: string;
+  addressed?: boolean;
   testType?: string;
   behavior?: string;
   regressionRisk?: string;
@@ -56,6 +57,9 @@ function buildSuggestionBlock(options: {
 }): string[] {
   const lines = [
     `#### ${options.title}`,
+    ...(options.addressed === undefined
+      ? []
+      : [`- [${options.addressed ? "x" : " "}] Addressed`]),
     `- Priority: ${options.priority}`,
     `- Test type: ${options.testType ?? "integration"}`,
     `- Behavior covered: ${options.behavior ?? `${options.title} should remain covered.`}`,
@@ -503,6 +507,121 @@ describe("runPrFixTestsCommand", () => {
     expect(commitGeneratedChanges).not.toHaveBeenCalled();
     expect(updateIssueComment).not.toHaveBeenCalled();
     expect(promptForLine).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers only unchecked checklist suggestions for selection", async () => {
+    const { forge } = createForge([
+      createManagedComment(
+        [
+          "<!-- prs:test-suggestions -->",
+          "## AI Test Suggestions",
+          "",
+          "### Suggested test areas",
+          "",
+          ...buildSuggestionBlock({
+            title: "Already addressed suggestion",
+            priority: "High",
+            addressed: true,
+            value: "Checked suggestions should not be offered again.",
+          }),
+          "",
+          ...buildSuggestionBlock({
+            title: "Still open suggestion",
+            priority: "Medium",
+            addressed: false,
+            value: "Open suggestions should remain selectable.",
+          }),
+        ].join("\n")
+      ),
+    ]);
+    const promptForLine = vi.fn().mockResolvedValueOnce("all").mockResolvedValueOnce("n");
+    const launch = vi.fn();
+    const verifyBuild = vi.fn();
+    const hasChanges = vi.fn().mockReturnValue(true);
+    const commitGeneratedChanges = vi.fn();
+
+    await runPrFixTestsCommand({
+      prNumber: 71,
+      repoRoot,
+      buildCommand: ["pnpm", "build"],
+      ensureVerificationCommandAvailable: vi.fn(),
+      runtime: {
+        resolve: () => ({
+          displayName: "Codex",
+          launch,
+        }),
+      },
+      forge,
+      ensureCleanWorkingTree: vi.fn(),
+      promptForLine,
+      verifyBuild,
+      hasChanges,
+      commitGeneratedChanges,
+    });
+
+    expect(writePullRequestFixTestsWorkspaceFiles).toHaveBeenCalledWith(
+      repoRoot,
+      expect.objectContaining({ number: 71 }),
+      [
+        expect.objectContaining({
+          area: "Still open suggestion",
+          addressed: false,
+        }),
+      ],
+      expect.any(Object),
+      workspace,
+      ["pnpm", "build"],
+      expect.any(Array)
+    );
+  });
+
+  it("exits clearly when every managed suggestion is already addressed", async () => {
+    const { forge } = createForge([
+      createManagedComment(
+        [
+          "<!-- prs:test-suggestions -->",
+          "## AI Test Suggestions",
+          "",
+          "### Suggested test areas",
+          "",
+          ...buildSuggestionBlock({
+            title: "Already addressed suggestion",
+            priority: "High",
+            addressed: true,
+            value: "Checked suggestions should not be offered again.",
+          }),
+        ].join("\n")
+      ),
+    ]);
+    const promptForLine = vi.fn();
+    const launch = vi.fn();
+
+    await runPrFixTestsCommand({
+      prNumber: 71,
+      repoRoot,
+      buildCommand: ["pnpm", "build"],
+      ensureVerificationCommandAvailable: vi.fn(),
+      runtime: {
+        resolve: () => ({
+          displayName: "Codex",
+          launch,
+        }),
+      },
+      forge,
+      ensureCleanWorkingTree: vi.fn(),
+      promptForLine,
+      verifyBuild: vi.fn(),
+      hasChanges: vi.fn(),
+      commitGeneratedChanges: vi.fn(),
+    });
+
+    expect(console.log).toHaveBeenCalledWith(
+      "All managed AI test suggestions are already addressed."
+    );
+    expect(promptForLine).not.toHaveBeenCalled();
+    expect(createPullRequestFixTestsWorkspace).not.toHaveBeenCalled();
+    expect(writePullRequestFixTestsWorkspaceFiles).not.toHaveBeenCalled();
+    expect(launch).not.toHaveBeenCalled();
   });
 
   it("leaves generated changes uncommitted when the user declines the commit prompt", async () => {

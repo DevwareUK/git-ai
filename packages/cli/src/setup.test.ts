@@ -202,30 +202,27 @@ describe("setup command", () => {
     expect(
       readFileSync(resolve(repoRoot, ".github", "workflows", "prs-pr-assistant.yml"), "utf8")
     ).toContain("DevwareUK/prs/actions/pr-assistant@main");
-    expect(
-      readFileSync(
-        resolve(repoRoot, ".github", "workflows", "prs-test-suggestions.yml"),
-        "utf8"
-      )
-    ).toContain("DevwareUK/prs/actions/test-suggestions@main");
-    expect(
-      readFileSync(
-        resolve(repoRoot, ".github", "workflows", "prs-test-suggestions.yml"),
-        "utf8"
-      )
-    ).toContain("Collect resolved test suggestions");
-    expect(
-      readFileSync(
-        resolve(repoRoot, ".github", "workflows", "prs-test-suggestions.yml"),
-        "utf8"
-      )
-    ).toContain("resolved_suggestions: ${{ steps.resolved_suggestions.outputs.resolved_json }}");
-    expect(
-      readFileSync(
-        resolve(repoRoot, ".github", "workflows", "prs-test-suggestions.yml"),
-        "utf8"
-      )
-    ).toContain("resolvedBlock");
+    const testSuggestionsWorkflow = readFileSync(
+      resolve(repoRoot, ".github", "workflows", "prs-test-suggestions.yml"),
+      "utf8"
+    );
+    expect(testSuggestionsWorkflow).toContain(
+      "DevwareUK/prs/actions/test-suggestions@main"
+    );
+    expect(testSuggestionsWorkflow).toContain("Find existing managed comment");
+    expect(testSuggestionsWorkflow).toContain(
+      'core.setOutput("comment_id", existingComment?.id ? String(existingComment.id) : "")'
+    );
+    expect(testSuggestionsWorkflow).toContain(
+      "existing_comment_file: ${{ steps.existing_comment.outputs.existing_comment_file }}"
+    );
+    expect(testSuggestionsWorkflow).toContain(
+      "comment_id: Number(process.env.EXISTING_COMMENT_ID)"
+    );
+    expect(testSuggestionsWorkflow).toContain(
+      "if (process.env.EXISTING_COMMENT_ID)"
+    );
+    expect(testSuggestionsWorkflow).toContain("github.rest.issues.createComment");
     expect(messages.join("\n")).toContain(
       "Recommended launch path: GitHub forge, OpenAI provider, and Codex runtime."
     );

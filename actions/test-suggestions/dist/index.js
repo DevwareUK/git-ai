@@ -16165,11 +16165,13 @@ var require_dist = __commonJS({
       SETUP_SECTION_END: () => SETUP_SECTION_END,
       SETUP_SECTION_START: () => SETUP_SECTION_START,
       SuggestedTestType: () => SuggestedTestType,
-      TEST_SUGGESTIONS_COMMENT_MARKER: () => TEST_SUGGESTIONS_COMMENT_MARKER,
+      TEST_SUGGESTIONS_COMMENT_MARKER: () => TEST_SUGGESTIONS_COMMENT_MARKER2,
       TestBacklogFinding: () => TestBacklogFinding,
       TestBacklogInput: () => TestBacklogInput,
       TestBacklogOutput: () => TestBacklogOutput,
       TestBacklogPriority: () => TestBacklogPriority,
+      TestSuggestionAddressedAssessmentInput: () => TestSuggestionAddressedAssessmentInput,
+      TestSuggestionAddressedAssessmentOutput: () => TestSuggestionAddressedAssessmentOutput,
       TestSuggestionsInput: () => TestSuggestionsInput2,
       TestSuggestionsOutput: () => TestSuggestionsOutput,
       TestingSetupStatus: () => TestingSetupStatus,
@@ -16209,10 +16211,10 @@ var require_dist = __commonJS({
       PR_REVIEW_COMMENT_MARKER,
       LEGACY_PR_REVIEW_COMMENT_MARKER
     ];
-    var TEST_SUGGESTIONS_COMMENT_MARKER = "<!-- prs:test-suggestions -->";
+    var TEST_SUGGESTIONS_COMMENT_MARKER2 = "<!-- prs:test-suggestions -->";
     var LEGACY_TEST_SUGGESTIONS_COMMENT_MARKER = "<!-- git-ai-test-suggestions -->";
     var ALL_TEST_SUGGESTIONS_COMMENT_MARKERS = [
-      TEST_SUGGESTIONS_COMMENT_MARKER,
+      TEST_SUGGESTIONS_COMMENT_MARKER2,
       LEGACY_TEST_SUGGESTIONS_COMMENT_MARKER
     ];
     var ISSUE_TO_PR_COMMENT_MARKER = "<!-- prs:issue-to-pr -->";
@@ -16664,6 +16666,10 @@ var require_dist = __commonJS({
         "implementationNote must be non-empty"
       )
     });
+    var AddressedAssessmentSuggestionItem = TestSuggestionItem.extend({
+      suggestionId: TestSuggestionString.min(1, "suggestionId must be non-empty"),
+      addressed: import_zod12.z.boolean()
+    });
     var ResolvedTestSuggestionItem = import_zod12.z.object({
       area: TestSuggestionString.min(1, "area must be non-empty"),
       testType: TestSuggestionString.min(1, "testType must be non-empty"),
@@ -16687,6 +16693,21 @@ var require_dist = __commonJS({
       summary: TestSuggestionString.min(1, "summary must be non-empty"),
       suggestedTests: import_zod12.z.array(TestSuggestionItem),
       edgeCases: import_zod12.z.array(TestSuggestionString).optional()
+    });
+    var TestSuggestionAddressedAssessmentInput = import_zod12.z.object({
+      diff: import_zod12.z.string().trim().min(1),
+      prTitle: import_zod12.z.string().trim().min(1).optional(),
+      prBody: import_zod12.z.string().trim().min(1).optional(),
+      suggestions: import_zod12.z.array(AddressedAssessmentSuggestionItem).min(1)
+    });
+    var TestSuggestionAddressedAssessmentOutput = import_zod12.z.object({
+      addressedSuggestions: import_zod12.z.array(
+        import_zod12.z.object({
+          suggestionId: TestSuggestionString.min(1, "suggestionId must be non-empty"),
+          addressed: import_zod12.z.literal(true),
+          evidence: TestSuggestionString.min(1, "evidence must be non-empty")
+        }).strict()
+      )
     });
   }
 });
@@ -16726,6 +16747,7 @@ var require_dist2 = __commonJS({
       StructuredGenerationError: () => StructuredGenerationError,
       analyzeFeatureBacklog: () => analyzeFeatureBacklog,
       analyzeTestBacklog: () => analyzeTestBacklog,
+      assessAddressedTestSuggestions: () => assessAddressedTestSuggestions2,
       buildGitHubPRReviewComments: () => buildGitHubPRReviewComments,
       buildPRAssistantSection: () => buildPRAssistantSection,
       createRepositoryPathMatcher: () => createRepositoryPathMatcher,
@@ -16749,7 +16771,7 @@ var require_dist2 = __commonJS({
       stripManagedPRAssistantSection: () => stripManagedPRAssistantSection
     });
     module2.exports = __toCommonJS2(index_exports);
-    var import_contracts2 = require_dist();
+    var import_contracts3 = require_dist();
     var StructuredGenerationError = class extends Error {
       kind;
       rawResponse;
@@ -16901,19 +16923,19 @@ ${formatValidationIssues(validationIssues)}`,
       ].join("\n");
     }
     function normalizeCommitMessageOutput(value) {
-      return import_contracts2.CommitMessageOutput.parse({
+      return import_contracts3.CommitMessageOutput.parse({
         title: value.title,
         body: value.body ?? void 0
       });
     }
     async function generateCommitMessage(provider, diff) {
-      const parsedInput = import_contracts2.CommitMessageInput.parse({ diff });
+      const parsedInput = import_contracts3.CommitMessageInput.parse({ diff });
       const prompt = buildPrompt(parsedInput);
       const modelOutput = await generateStructuredOutput({
         provider,
         systemPrompt: COMMIT_MESSAGE_SYSTEM_PROMPT,
         prompt,
-        schema: import_contracts2.CommitMessageModelOutput,
+        schema: import_contracts3.CommitMessageModelOutput,
         validationErrorPrefix: "Model output failed commit message schema validation"
       });
       return normalizeCommitMessageOutput(modelOutput);
@@ -17044,7 +17066,7 @@ ${formatValidationIssues(validationIssues)}`,
       const matchesExcludedPath = createRepositoryPathMatcher(excludePaths);
       return filePaths.filter((filePath) => !matchesExcludedPath(filePath));
     }
-    var import_contracts3 = require_dist();
+    var import_contracts32 = require_dist();
     var DEFAULT_REPOSITORY_BASE_BRANCH = "main";
     var DEFAULT_REPOSITORY_BUILD_COMMAND = ["pnpm", "build"];
     var DEFAULT_REPOSITORY_FORGE_TYPE = "github";
@@ -17062,9 +17084,9 @@ ${formatValidationIssues(validationIssues)}`,
       return [...new Set(paths.map((path) => path.trim()).filter(Boolean))];
     }
     function resolveRepositoryConfig(config) {
-      const parsedConfig = import_contracts3.RepositoryConfig.parse(config ?? {});
+      const parsedConfig = import_contracts32.RepositoryConfig.parse(config ?? {});
       const useCodexSuperpowers = parsedConfig.ai?.issue?.useCodexSuperpowers ?? parsedConfig.ai?.issueDraft?.useCodexSuperpowers ?? DEFAULT_REPOSITORY_AI_ISSUE_DRAFT_USE_CODEX_SUPERPOWERS;
-      return import_contracts3.ResolvedRepositoryConfig.parse({
+      return import_contracts32.ResolvedRepositoryConfig.parse({
         ai: {
           issue: {
             useCodexSuperpowers
@@ -19339,6 +19361,12 @@ ${managedSection}`;
       "Only suggest tests, locations, or edge cases supported by the diff or provided PR context.",
       "Do not generate inline review comments or full test code."
     ].join(" ");
+    var TEST_SUGGESTION_ADDRESSED_ASSESSMENT_SYSTEM_PROMPT = [
+      "You are a senior software engineer assessing whether existing PR test suggestions have been addressed.",
+      "Only mark a suggestion addressed when automated tests or test-related changes visible in the diff directly cover the requested behavior.",
+      ...DIFF_GROUNDED_SYSTEM_PROMPT_LINES,
+      "Do not invent replacement suggestions or new test work."
+    ].join(" ");
     function buildPrompt9(input) {
       const contextLines = [];
       if (input.prTitle) {
@@ -19409,6 +19437,57 @@ ${managedSection}`;
         input.diff
       ].join("\n");
     }
+    function buildAddressedAssessmentPrompt(input) {
+      const contextLines = [];
+      if (input.prTitle) {
+        contextLines.push(`PR Title: ${input.prTitle}`);
+      }
+      if (input.prBody) {
+        contextLines.push(`PR Body: ${input.prBody}`);
+      }
+      const uncheckedSuggestions = input.suggestions.filter(
+        (suggestion) => !suggestion.addressed
+      );
+      const suggestionLines = uncheckedSuggestions.flatMap((suggestion, index) => [
+        `${index + 1}. ${suggestion.suggestionId}: ${suggestion.area}`,
+        `   Priority: ${suggestion.priority}`,
+        `   Test type: ${suggestion.testType}`,
+        `   Behavior: ${suggestion.behavior}`,
+        `   Regression risk: ${suggestion.regressionRisk}`,
+        `   Why it matters: ${suggestion.value}`,
+        `   Implementation note: ${suggestion.implementationNote}`,
+        ...suggestion.protectedPaths?.length ? [`   Protected paths: ${suggestion.protectedPaths.join(", ")}`] : [],
+        ...suggestion.likelyLocations?.length ? [`   Likely locations: ${suggestion.likelyLocations.join(", ")}`] : [],
+        ...suggestion.edgeCases?.length ? [`   Edge cases: ${suggestion.edgeCases.join("; ")}`] : []
+      ]);
+      return [
+        "Determine whether existing unchecked AI test suggestions have now been addressed by the current PR diff.",
+        "Assess only the suggestions listed below. Do not generate new suggestions or replacement text.",
+        "Mark a suggestion addressed only when the diff shows automated tests or clearly test-related changes that cover the requested behavior.",
+        "Leave a suggestion out when the evidence is weak, indirect, or unrelated to tests.",
+        "Use the PR title/body only as supporting context and prefer the diff when they conflict.",
+        "Return strictly valid JSON in this exact shape:",
+        "{",
+        '  "addressedSuggestions": [',
+        "    {",
+        '      "suggestionId": string,',
+        '      "addressed": true,',
+        '      "evidence": string',
+        "    }",
+        "  ]",
+        "}",
+        "",
+        'Only include IDs from the unchecked suggestions list. "evidence" should name the relevant test file or changed test behavior from the diff.',
+        "Do not wrap JSON in markdown fences.",
+        "",
+        ...contextLines.length > 0 ? ["Supporting context (optional, may be incomplete):", ...contextLines, ""] : [],
+        "Unchecked suggestions:",
+        ...suggestionLines,
+        "",
+        "Diff:",
+        input.diff
+      ].join("\n");
+    }
     function normalizeKeyPart(value) {
       return value.trim().toLowerCase().replace(/\s+/g, " ");
     }
@@ -19475,6 +19554,27 @@ ${managedSection}`;
         normalizeParsedJson: normalizeModelOutput2
       });
       return filterResolvedDuplicates(output, parsedInput);
+    }
+    async function assessAddressedTestSuggestions2(provider, input) {
+      const parsedInput = import_contracts15.TestSuggestionAddressedAssessmentInput.parse(input);
+      const uncheckedSuggestionIds = new Set(
+        parsedInput.suggestions.filter((suggestion) => !suggestion.addressed).map((suggestion) => suggestion.suggestionId)
+      );
+      if (uncheckedSuggestionIds.size === 0) {
+        return { addressedSuggestions: [] };
+      }
+      const output = await generateStructuredOutput({
+        provider,
+        systemPrompt: TEST_SUGGESTION_ADDRESSED_ASSESSMENT_SYSTEM_PROMPT,
+        prompt: buildAddressedAssessmentPrompt(parsedInput),
+        schema: import_contracts15.TestSuggestionAddressedAssessmentOutput,
+        validationErrorPrefix: "Model output failed test suggestion addressed assessment schema validation"
+      });
+      return {
+        addressedSuggestions: output.addressedSuggestions.filter(
+          (suggestion) => uncheckedSuggestionIds.has(suggestion.suggestionId)
+        )
+      };
     }
   }
 });
@@ -46166,7 +46266,7 @@ var require_dist3 = __commonJS({
 
 // src/index.ts
 var import_node_fs6 = require("fs");
-var import_contracts = __toESM(require_dist());
+var import_contracts2 = __toESM(require_dist());
 var import_core18 = __toESM(require_dist2());
 var import_providers = __toESM(require_dist3());
 
@@ -46205,15 +46305,9 @@ function getOptionalInlineOrFileInput(inputName, fileInputName) {
   }
   return getOptionalInput(inputName);
 }
-function getRequiredInlineOrFileInput(inputName, fileInputName) {
-  const value = getOptionalInlineOrFileInput(inputName, fileInputName);
-  if (!value) {
-    throw new Error(`Missing required input: ${inputName} or ${fileInputName}`);
-  }
-  return value;
-}
 
 // src/comment.ts
+var import_contracts = __toESM(require_dist());
 function toTitleCase(value) {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
@@ -46229,8 +46323,233 @@ function collectLikelyLocations(suggestions) {
   }
   return [...locations];
 }
+function parsePathList(rawValue) {
+  const inlineCodeMatches = [...rawValue.matchAll(/`([^`]+)`/g)].map(
+    (match) => match[1].trim()
+  );
+  if (inlineCodeMatches.length > 0) {
+    return [...new Set(inlineCodeMatches.filter(Boolean))];
+  }
+  return [
+    ...new Set(
+      rawValue.split(",").map((value) => value.trim()).filter(Boolean)
+    )
+  ];
+}
+function normalizePriority(rawValue) {
+  const normalized = rawValue.trim().toLowerCase();
+  if (normalized === "high" || normalized === "medium" || normalized === "low") {
+    return normalized;
+  }
+  throw new Error(`Invalid suggestion priority "${rawValue.trim()}".`);
+}
+function splitCommentSections(lines) {
+  const sections = /* @__PURE__ */ new Map();
+  let currentSection;
+  for (const line of lines) {
+    const sectionMatch = line.trim().match(/^### (.+)$/);
+    if (sectionMatch) {
+      currentSection = sectionMatch[1].trim();
+      sections.set(currentSection, []);
+      continue;
+    }
+    if (!currentSection) {
+      continue;
+    }
+    sections.get(currentSection)?.push(line);
+  }
+  return sections;
+}
+function parseSuggestionBlock(blockTitle, blockLines, suggestionIndex) {
+  let addressed = false;
+  let sawAddressed = false;
+  let priority;
+  let testType;
+  let behavior;
+  let regressionRisk;
+  let value;
+  let protectedPaths = [];
+  let likelyLocations = [];
+  let edgeCases = [];
+  let implementationNote;
+  let collectingEdgeCases = false;
+  for (const rawLine of blockLines) {
+    const trimmed = rawLine.trim();
+    if (!trimmed) {
+      continue;
+    }
+    if (collectingEdgeCases) {
+      const nestedBulletMatch = rawLine.match(/^\s+- (.+)$/);
+      if (nestedBulletMatch) {
+        edgeCases.push(nestedBulletMatch[1].trim());
+        continue;
+      }
+      collectingEdgeCases = false;
+    }
+    const line = trimmed;
+    const addressedMatch = line.match(/^- \[( |x|X)\] Addressed$/);
+    if (addressedMatch) {
+      addressed = addressedMatch[1].toLowerCase() === "x";
+      sawAddressed = true;
+      continue;
+    }
+    const priorityMatch = line.match(/^- Priority:\s*(.+)$/i);
+    if (priorityMatch) {
+      priority = normalizePriority(priorityMatch[1]);
+      continue;
+    }
+    const testTypeMatch = line.match(/^- Test type:\s*(.+)$/i);
+    if (testTypeMatch) {
+      testType = testTypeMatch[1].trim();
+      continue;
+    }
+    const behaviorMatch = line.match(/^- Behavior covered:\s*(.+)$/i);
+    if (behaviorMatch) {
+      behavior = behaviorMatch[1].trim();
+      continue;
+    }
+    const regressionRiskMatch = line.match(/^- Regression risk:\s*(.+)$/i);
+    if (regressionRiskMatch) {
+      regressionRisk = regressionRiskMatch[1].trim();
+      continue;
+    }
+    const whyMatch = line.match(/^- Why it matters:\s*(.+)$/i);
+    if (whyMatch) {
+      value = whyMatch[1].trim();
+      continue;
+    }
+    const protectedPathsMatch = line.match(/^- Protected paths:\s*(.+)$/i);
+    if (protectedPathsMatch) {
+      protectedPaths = parsePathList(protectedPathsMatch[1]);
+      continue;
+    }
+    const locationsMatch = line.match(/^- Likely locations:\s*(.+)$/i);
+    if (locationsMatch) {
+      likelyLocations = parsePathList(locationsMatch[1]);
+      continue;
+    }
+    if (/^- Edge cases:\s*$/i.test(line)) {
+      collectingEdgeCases = true;
+      continue;
+    }
+    const implementationNoteMatch = line.match(/^- Implementation note:\s*(.+)$/i);
+    if (implementationNoteMatch) {
+      implementationNote = implementationNoteMatch[1].trim();
+      continue;
+    }
+    throw new Error(`Unexpected line in suggestion "${blockTitle}": ${line}`);
+  }
+  if (!sawAddressed) {
+    throw new Error(`Suggestion "${blockTitle}" is missing an Addressed checkbox.`);
+  }
+  if (!priority) {
+    throw new Error(`Suggestion "${blockTitle}" is missing a Priority field.`);
+  }
+  if (!testType) {
+    throw new Error(`Suggestion "${blockTitle}" is missing a Test type field.`);
+  }
+  if (!behavior) {
+    throw new Error(`Suggestion "${blockTitle}" is missing a Behavior covered field.`);
+  }
+  if (!regressionRisk) {
+    throw new Error(`Suggestion "${blockTitle}" is missing a Regression risk field.`);
+  }
+  if (!value) {
+    throw new Error(`Suggestion "${blockTitle}" is missing a Why it matters field.`);
+  }
+  if (!implementationNote) {
+    throw new Error(
+      `Suggestion "${blockTitle}" is missing an Implementation note field.`
+    );
+  }
+  return {
+    suggestionId: `suggestion-${suggestionIndex + 1}`,
+    area: blockTitle,
+    addressed,
+    priority,
+    testType,
+    behavior,
+    regressionRisk,
+    value,
+    protectedPaths,
+    likelyLocations,
+    edgeCases,
+    implementationNote
+  };
+}
+function parseSuggestedTestsSection(sectionLines) {
+  const suggestions = [];
+  let currentTitle;
+  let currentLines = [];
+  const flushCurrent = () => {
+    if (!currentTitle) {
+      return;
+    }
+    suggestions.push(parseSuggestionBlock(currentTitle, currentLines, suggestions.length));
+    currentTitle = void 0;
+    currentLines = [];
+  };
+  for (const rawLine of sectionLines) {
+    const line = rawLine.trimEnd();
+    const headingMatch = line.trim().match(/^#### (.+)$/);
+    if (headingMatch) {
+      flushCurrent();
+      currentTitle = headingMatch[1].trim();
+      continue;
+    }
+    if (!currentTitle) {
+      if (!line.trim()) {
+        continue;
+      }
+      throw new Error(`Unexpected content before the first suggested test area: ${line.trim()}`);
+    }
+    currentLines.push(rawLine);
+  }
+  flushCurrent();
+  if (suggestions.length === 0) {
+    throw new Error("The managed comment does not include any suggested test areas.");
+  }
+  return suggestions;
+}
+function parseChecklistCommentBody(body) {
+  const lines = body.split(/\r?\n/).filter((line) => line.trim() !== "<!-- prs:test-suggestions -->");
+  if (!lines.some((line) => line.trim() === "## AI Test Suggestions")) {
+    throw new Error('The managed comment is missing the "## AI Test Suggestions" heading.');
+  }
+  const sections = splitCommentSections(lines);
+  const suggestedTestsSection = sections.get("Suggested test areas");
+  if (!suggestedTestsSection) {
+    throw new Error('The managed comment is missing the "### Suggested test areas" section.');
+  }
+  return {
+    overview: (sections.get("Overview") ?? []).join("\n").trim(),
+    suggestions: parseSuggestedTestsSection(suggestedTestsSection)
+  };
+}
+function applyAddressedSuggestionUpdates(body, addressedIds) {
+  const addressedIdSet = new Set(addressedIds);
+  const lines = body.split(/\r?\n/);
+  let suggestionIndex = -1;
+  return lines.map((line) => {
+    if (line.trim().match(/^#### (.+)$/)) {
+      suggestionIndex += 1;
+      return line;
+    }
+    const addressedMatch = line.trim().match(/^- \[( |x|X)\] Addressed$/);
+    if (!addressedMatch) {
+      return line;
+    }
+    const suggestionId = `suggestion-${suggestionIndex + 1}`;
+    const alreadyChecked = addressedMatch[1].toLowerCase() === "x";
+    if (alreadyChecked || addressedIdSet.has(suggestionId)) {
+      return line.replace(/^- \[( |x|X)\] Addressed$/, "- [x] Addressed");
+    }
+    return line;
+  }).join("\n");
+}
 function buildCommentBody(suggestions) {
   const lines = [
+    import_contracts.TEST_SUGGESTIONS_COMMENT_MARKER,
     "## AI Test Suggestions",
     "",
     "### Overview",
@@ -46242,6 +46561,7 @@ function buildCommentBody(suggestions) {
     lines.push("");
     for (const suggestion of suggestions.suggestedTests) {
       lines.push(`#### ${suggestion.area}`);
+      lines.push("- [ ] Addressed");
       lines.push(`- Priority: ${toTitleCase(suggestion.priority)}`);
       lines.push(`- Test type: ${suggestion.testType}`);
       lines.push(`- Behavior covered: ${suggestion.behavior}`);
@@ -46305,10 +46625,49 @@ function parseOptionalJsonInput(name) {
   }
 }
 async function run() {
-  const input = import_contracts.TestSuggestionsInput.parse({
-    diff: getRequiredInlineOrFileInput("diff", "diff_file"),
-    prTitle: getOptionalInput("pr_title"),
-    prBody: getOptionalInput("pr_body"),
+  const existingComment = getOptionalInlineOrFileInput(
+    "existing_comment",
+    "existing_comment_file"
+  );
+  const diff = getOptionalInlineOrFileInput("diff", "diff_file");
+  const prTitle = getOptionalInput("pr_title");
+  const prBody = getOptionalInput("pr_body");
+  if (existingComment) {
+    const parsedComment = parseChecklistCommentBody(existingComment);
+    const uncheckedSuggestions = parsedComment.suggestions.filter(
+      (suggestion) => !suggestion.addressed
+    );
+    if (uncheckedSuggestions.length === 0) {
+      setOutput(
+        "summary",
+        parsedComment.overview || "All managed AI test suggestions are already addressed."
+      );
+      setOutput("body", existingComment);
+      return;
+    }
+    const input2 = {
+      diff: diff ?? "",
+      prTitle,
+      prBody,
+      suggestions: parsedComment.suggestions
+    };
+    const provider2 = new import_providers.OpenAIProvider({
+      apiKey: getRequiredInput("openai_api_key"),
+      model: getOptionalInput("openai_model"),
+      baseUrl: getOptionalInput("openai_base_url")
+    });
+    const result2 = await (0, import_core18.assessAddressedTestSuggestions)(provider2, input2);
+    const addressedIds = result2.addressedSuggestions.map(
+      (suggestion) => suggestion.suggestionId
+    );
+    setOutput("summary", parsedComment.overview);
+    setOutput("body", applyAddressedSuggestionUpdates(existingComment, addressedIds));
+    return;
+  }
+  const input = import_contracts2.TestSuggestionsInput.parse({
+    diff: diff ?? "",
+    prTitle,
+    prBody,
     resolvedSuggestions: parseOptionalJsonInput("resolved_suggestions")
   });
   const provider = new import_providers.OpenAIProvider({
