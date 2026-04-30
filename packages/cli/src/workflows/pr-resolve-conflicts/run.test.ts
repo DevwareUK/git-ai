@@ -225,6 +225,27 @@ describe("runPrResolveConflictsCommand", () => {
     );
   });
 
+  it("fails clearly when the verification command cannot be preflighted", async () => {
+    const repoRoot = createTempRepoRoot();
+    const { forge, fetchPullRequestDetails } = createForge();
+    const ensureVerificationCommandAvailable = vi.fn(() => {
+      throw new Error("Configured verification command is unavailable.");
+    });
+
+    await expect(
+      runPrResolveConflictsCommand(
+        createOptions(repoRoot, { ensureVerificationCommandAvailable, forge })
+      )
+    ).rejects.toThrow("Configured verification command is unavailable.");
+
+    expect(ensureVerificationCommandAvailable).toHaveBeenCalledWith(
+      repoRoot,
+      ["pnpm", "build"],
+      "prs pr resolve-conflicts"
+    );
+    expect(fetchPullRequestDetails).not.toHaveBeenCalled();
+  });
+
   it("exits without build or push when the checked-out branch already contains the base tip", async () => {
     const repoRoot = createTempRepoRoot();
     const verifyBuild = vi.fn();
@@ -247,6 +268,54 @@ describe("runPrResolveConflictsCommand", () => {
       runtime: {
         type: "codex",
         conflictSessionLaunched: false,
+      },
+    });
+  });
+
+  it("fetches the PR head branch when no local checkout exists and records that checkout source", async () => {
+    const repoRoot = createTempRepoRoot();
+    const verifyBuild = vi.fn();
+    const commands: string[][] = [];
+    mockSpawn((command, args) => {
+      if (command === "git") {
+        commands.push(args);
+      }
+      if (
+        command === "git" &&
+        args[0] === "-C" &&
+        args[2] === "rev-parse" &&
+        args[4] === "feat/conflict-fix"
+      ) {
+        return { status: 1 };
+      }
+      if (command === "git" && args[0] === "rev-parse" && args[1] === "origin/main") {
+        return { status: 0, stdout: "base-tip\n" };
+      }
+      if (command === "git" && args[0] === "merge-base") {
+        return { status: 0 };
+      }
+      return { status: 0 };
+    });
+
+    await runPrResolveConflictsCommand(createOptions(repoRoot, { verifyBuild }));
+
+    expect(commands).toContainEqual([
+      "fetch",
+      "origin",
+      "feat/conflict-fix:feat/conflict-fix",
+    ]);
+    expect(commands).toContainEqual(["checkout", "feat/conflict-fix"]);
+    expect(verifyBuild).not.toHaveBeenCalled();
+
+    const metadata = readLatestMetadata(repoRoot);
+    expect(metadata).toMatchObject({
+      checkout: {
+        source: "fetched-head",
+        branchName: "feat/conflict-fix",
+      },
+      baseSync: {
+        status: "up-to-date",
+        conflictResolution: "not-needed",
       },
     });
   });

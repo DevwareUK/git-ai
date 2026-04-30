@@ -6,6 +6,7 @@ import {
   createPullRequestResolveConflictsWorkspace,
   initializePullRequestResolveConflictsOutputLog,
   writePullRequestResolveConflictsConflictPrompt,
+  writePullRequestResolveConflictsMetadata,
   writePullRequestResolveConflictsPrompt,
 } from "./workspace";
 
@@ -69,5 +70,83 @@ describe("pr-resolve-conflicts workspace", () => {
       "Resolve the merge conflicts created while merging `origin/main`"
     );
     expect(prompt).toContain("prs pr resolve-conflicts 123");
+  });
+
+  it("writes metadata with pull request, artifact, checkout, base-sync, and runtime details", () => {
+    const repoRoot = createTempRepoRoot();
+    const workspace = createPullRequestResolveConflictsWorkspace(repoRoot, 123);
+
+    writePullRequestResolveConflictsMetadata(repoRoot, workspace, {
+      pullRequest: {
+        number: 123,
+        title: "Resolve conflicts",
+        body: "Sync with main.",
+        url: "https://github.com/DevwareUK/prs/pull/123",
+        baseRefName: "main",
+        headRefName: "feat/conflict-fix",
+      },
+      checkout: {
+        source: "fetched-head",
+        branchName: "feat/conflict-fix",
+      },
+      baseSync: {
+        baseRefName: "main",
+        remoteRef: "origin/main",
+        baseTip: "base-tip",
+        status: "blocked",
+        conflictResolution: "unresolved",
+        summary: "Base sync still needs conflict resolution.",
+        warnings: ["Conflict resolution was incomplete."],
+        recoveryMessage:
+          "Remaining conflicted files: packages/cli/src/index.ts. Rerun the command.",
+      },
+      runtime: {
+        type: "codex",
+        conflictSessionLaunched: true,
+      },
+    });
+
+    const metadata = JSON.parse(
+      readFileSync(workspace.metadataFilePath, "utf8")
+    ) as Record<string, unknown>;
+
+    expect(metadata).toMatchObject({
+      flow: "pr-resolve-conflicts",
+      prNumber: 123,
+      prTitle: "Resolve conflicts",
+      prUrl: "https://github.com/DevwareUK/prs/pull/123",
+      baseRefName: "main",
+      headRefName: "feat/conflict-fix",
+      promptFile: expect.stringMatching(
+        /^\.prs\/runs\/.+-pr-123-resolve-conflicts\/prompt\.md$/
+      ),
+      conflictPromptFile: expect.stringMatching(
+        /^\.prs\/runs\/.+-pr-123-resolve-conflicts\/conflict-resolution-prompt\.md$/
+      ),
+      outputLog: expect.stringMatching(
+        /^\.prs\/runs\/.+-pr-123-resolve-conflicts\/output\.log$/
+      ),
+      runDir: expect.stringMatching(
+        /^\.prs\/runs\/.+-pr-123-resolve-conflicts$/
+      ),
+      checkout: {
+        source: "fetched-head",
+        branchName: "feat/conflict-fix",
+      },
+      baseSync: {
+        baseRefName: "main",
+        remoteRef: "origin/main",
+        baseTip: "base-tip",
+        status: "blocked",
+        conflictResolution: "unresolved",
+        recoveryMessage:
+          "Remaining conflicted files: packages/cli/src/index.ts. Rerun the command.",
+      },
+      runtime: {
+        type: "codex",
+        conflictSessionLaunched: true,
+      },
+    });
+    expect(typeof metadata.createdAt).toBe("string");
   });
 });
