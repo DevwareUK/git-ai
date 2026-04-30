@@ -39,6 +39,7 @@ Start here if you are evaluating `prs` for a team:
 | `actions/test-suggestions` | Posts practical, task-ready test suggestions for the current pull request diff in GitHub. |
 | `prs review` | Runs a local top-risk diff pre-review that surfaces the strongest reviewer-ready concerns before or during a pull request. |
 | `prs pr fix-comments <pr-number>` | Pulls selected GitHub review comments into a focused local fix flow. |
+| `prs pr fix-failing-tests <pr-number>` | Captures currently failing local verification output on a PR branch and hands it to the configured runtime for a focused fix. |
 | `prs pr fix-tests <pr-number>` | Pulls selected managed AI test suggestions into a focused local implementation flow with preserved task context. |
 | `prs test-backlog` | Finds the highest-value automated testing gaps in the repository. |
 
@@ -51,7 +52,7 @@ Use [docs/launch-demo.md](docs/launch-demo.md) when you need a buyer-facing walk
 These are the fastest paths to a useful first result:
 
 1. Review a pull request better: use `actions/pr-review` in GitHub or run `prs review --base origin/main` locally.
-2. Respond to live PR feedback: run `prs pr fix-comments <pr-number>` or `prs pr fix-tests <pr-number>` when the PR branch is checked out locally.
+2. Respond to live PR feedback: run `prs pr fix-comments <pr-number>`, `prs pr fix-failing-tests <pr-number>`, or `prs pr fix-tests <pr-number>` when the PR branch is checked out locally.
 3. Raise test confidence: use `actions/test-suggestions` on pull requests and `prs test-backlog --top 5` for repository-wide gaps.
 
 Add `actions/pr-assistant` when you also want managed PR-body updates that preserve human-written context.
@@ -138,6 +139,7 @@ If you already have a live GitHub pull request branch checked out locally, the n
 
 ```bash
 prs pr fix-comments 88
+prs pr fix-failing-tests 88
 prs pr fix-tests 88
 ```
 
@@ -145,7 +147,7 @@ The matching GitHub automation surfaces are `actions/pr-review`, `actions/pr-ass
 
 You only need extra tooling for advanced or deeper local workflows:
 
-- an available interactive runtime CLI on `PATH` for `prs issue draft`, `prs issue refine <number>`, local interactive `prs issue <number>` runs, `prs pr fix-comments <pr-number>`, and `prs pr fix-tests <pr-number>`
+- an available interactive runtime CLI on `PATH` for `prs issue draft`, `prs issue refine <number>`, local interactive `prs issue <number>` runs, `prs pr fix-comments <pr-number>`, `prs pr fix-failing-tests <pr-number>`, and `prs pr fix-tests <pr-number>`
   default: `codex`
   `ai.runtime.type: "claude-code"`: `claude`
   if the configured non-default runtime is unavailable, `prs` falls back to `codex` when it is installed
@@ -164,7 +166,7 @@ The launch path is not presented as full runtime or provider parity:
 - `prs pr prepare-review <pr-number>` always requires `codex` on `PATH` and keeps its merge-conflict and review-brief flow Codex-specific.
 - `prs pr resolve-conflicts <pr-number>` always requires `codex` on `PATH` for guided merge-conflict resolution, even though it only opens Codex when the base merge conflicts.
 - `prs issue <number> --mode unattended` and `prs issue batch ...` require `ai.runtime.type` to be `codex`.
-- Interactive local workflows such as `prs issue draft`, `prs issue refine <number>`, `prs issue <number>`, `prs pr fix-comments <pr-number>`, and `prs pr fix-tests <pr-number>` use the configured runtime, with fallback to Codex when a configured non-default runtime is unavailable.
+- Interactive local workflows such as `prs issue draft`, `prs issue refine <number>`, `prs issue <number>`, `prs pr fix-comments <pr-number>`, `prs pr fix-failing-tests <pr-number>`, and `prs pr fix-tests <pr-number>` use the configured runtime, with fallback to Codex when a configured non-default runtime is unavailable.
 - Structured-text workflows such as `prs commit`, `prs diff`, `prs review`, and issue-plan / PR-text generation use the configured provider, defaulting to OpenAI and allowing `bedrock-claude` as an advanced option.
 
 ## Command tiers
@@ -175,6 +177,7 @@ Primary offer commands:
 
 - `prs review`: review the current diff or a branch comparison
 - `prs pr fix-comments <pr-number>`: fix selected PR review comments with the configured interactive runtime
+- `prs pr fix-failing-tests <pr-number>`: capture failing local verification output, open the configured interactive runtime with that context, then rerun verification before commit review and safe push
 - `prs pr fix-tests <pr-number>`: implement selected AI PR test suggestions with the configured interactive runtime and their preserved task details
 - `prs test-backlog`: find high-value automated testing gaps
 
@@ -252,7 +255,7 @@ Recommended first configuration: leave `ai.provider.type` unset so it defaults t
 
 Supported fields:
 
-- `ai.runtime.type`: interactive runtime used by `prs issue draft`, `prs issue refine <number>`, local `prs issue <number>`, `prs pr fix-comments <pr-number>`, and `prs pr fix-tests <pr-number>`. Supported values: `"codex"` and `"claude-code"`. Default: `"codex"`.
+- `ai.runtime.type`: interactive runtime used by `prs issue draft`, `prs issue refine <number>`, local `prs issue <number>`, `prs pr fix-comments <pr-number>`, `prs pr fix-failing-tests <pr-number>`, and `prs pr fix-tests <pr-number>`. Supported values: `"codex"` and `"claude-code"`. Default: `"codex"`.
 - `ai.issue.useCodexSuperpowers`: repository default for Superpowers-backed issue draft, refine, and plan workflows. When `true`, `prs issue draft`, `prs issue refine <number>`, and `prs issue plan <number>` use Codex Superpowers-specific instructions if the launched or selected runtime is Codex and Superpowers is available in the current Codex installation. Final single issue drafts still use the normal `.prs/issues/` or refine-run draft paths, optional multi-issue draft sets use run-local draft files plus `issue-set.json`, and intermediate Superpowers spec and plan artifacts stay inside the current `.prs/runs/<timestamp>-issue-draft/`, `.prs/runs/<timestamp>-issue-refine-<number>/`, or `.prs/runs/<timestamp>-issue-plan-<number>/` directory. `prs setup` detects local Codex Superpowers availability and writes this preferred flag automatically. Default: `false`.
 - `ai.issueDraft.useCodexSuperpowers`: backward-compatible legacy input for repositories that already configured Superpowers-backed issue drafting. `ai.issue.useCodexSuperpowers` takes precedence when both settings are present.
 - `ai.provider.type`: structured text provider used by `prs commit`, `prs diff`, `prs review`, `prs issue plan <number> [--refresh]`, and commit/PR generation inside `prs issue <number>` and `prs issue finalize <number>`. Supported values: `"openai"` and `"bedrock-claude"`. Default: `"openai"`.
@@ -261,7 +264,7 @@ Supported fields:
 - `ai.provider.region`: optional explicit AWS region for `"bedrock-claude"`. Falls back to `AWS_REGION` or `AWS_DEFAULT_REGION`.
 - `aiContext.excludePaths`: repository-relative glob patterns excluded from AI diff and repository context. These exclusions apply across `prs commit`, `prs diff`, `prs review`, issue-to-PR flows, and repository backlog scans. Bare filename globs like `*.map` match by basename anywhere in the repository. Defaults: `["**/node_modules/**", "**/vendor/**", "**/dist/**", "**/build/**", "*.map"]`.
 - `baseBranch`: base branch used by `prs issue <number>` and `prs issue prepare <number>` when switching, syncing from `origin`, and opening pull requests. If unset, the resolved default is `main`, but `prs setup` first tries the remote default branch and then prints an explicit fallback warning when it has to guess.
-- `buildCommand`: command run after the interactive runtime exits during full local `prs issue <number>`, `prs pr fix-comments <pr-number>`, and `prs pr fix-tests <pr-number>` flows, and after a clean or Codex-resolved merge during `prs pr resolve-conflicts <pr-number>`. If unset, the resolved default is `["pnpm", "build"]`, but `prs setup` first tries repository-local `verify`, `build`, or `test` commands from `package.json`, `composer.json`, or PHPUnit signals and warns before falling back.
+- `buildCommand`: command run after the interactive runtime exits during full local `prs issue <number>`, `prs pr fix-comments <pr-number>`, and `prs pr fix-tests <pr-number>` flows, and after a clean or Codex-resolved merge during `prs pr resolve-conflicts <pr-number>`. `prs pr fix-failing-tests <pr-number>` runs it once before launching the runtime and exits without a run directory if it already passes, then reruns it after the runtime when a failure was captured. If unset, the resolved default is `["pnpm", "build"]`, but `prs setup` first tries repository-local `verify`, `build`, or `test` commands from `package.json`, `composer.json`, or PHPUnit signals and warns before falling back.
 - `forge.type`: forge integration. Use `"github"` for GitHub-backed issue and PR flows or `"none"` to disable forge-backed issue and PR features for the repository.
 
 Runtime and provider fallback behavior:
@@ -430,6 +433,7 @@ Usage:
 prs pr prepare-review <pr-number>
 prs pr resolve-conflicts <pr-number>
 prs pr fix-comments <pr-number>
+prs pr fix-failing-tests <pr-number>
 prs pr fix-tests <pr-number>
 ```
 
@@ -440,6 +444,7 @@ Available subcommands:
 | `prs pr prepare-review <pr-number>` | Fetches pull request metadata and linked issues, requires a clean working tree, preflights the configured verification command plus the live PR base branch on `origin`, checks out the best available local review branch for the PR, fetches the latest `origin/<base-branch>` tip, skips merging when the checked-out branch already contains that tip, otherwise merges the base branch into the review branch before brief generation, routes merge conflicts through an interactive Codex conflict-resolution session when needed, writes `.prs/` run artifacts, generates `review-brief.md`, prints the saved brief path plus a terminal preview, and then leaves you in an interactive Codex session on that branch for follow-up review questions or requested fixes. After that session exits, `prs` exits cleanly if there are no new reviewed commits to sync, or else runs the configured build command when there are follow-up file changes, offers the same reviewed commit-message flow used by the other local fix workflows, and pushes any new reviewed commits back to `origin/<pr-head-branch>`. |
 | `prs pr resolve-conflicts <pr-number>` | Requires a clean working tree, requires `codex` on `PATH`, preflights the configured verification command plus the live PR base branch on `origin`, checks out the PR head branch, fetches the latest `origin/<base-branch>` tip, exits without build or push when the checked-out branch already contains that tip, otherwise merges the base branch into the PR head branch, opens a focused Codex conflict-resolution session when the merge conflicts, verifies that the final branch has no in-progress merge or unmerged paths and contains the fetched base tip, runs the configured build command after a completed merge, writes `prompt.md`, `conflict-resolution-prompt.md`, `metadata.json`, and `output.log` under `.prs/runs/<timestamp>-pr-<number>-resolve-conflicts/`, and pushes the resolved branch back to `origin/<pr-head-branch>` only when `HEAD` is ahead and not behind. |
 | `prs pr fix-comments <pr-number>` | Requires a clean working tree, preflights the configured verification command, fetches pull request metadata and review comments from the configured forge, filters out obviously non-actionable comments, groups nearby threads into selectable review tasks, preserves non-trivial replies as thread context, writes richer `.prs/` run artifacts, opens the configured interactive runtime, runs the configured build command, previews a proposed commit message that you can edit, accept, or skip, and then pushes the reviewed commit back to `origin/<pr-head-branch>` when `HEAD` is ahead and not behind after fetching the latest remote head. |
+| `prs pr fix-failing-tests <pr-number>` | Requires a clean working tree, preflights the configured verification command, fetches pull request metadata and linked issues from the configured forge, runs the configured verification command before launching the runtime, exits with `Configured verification command passed. No failing test output was captured.` when it already passes, otherwise writes `.prs/runs/<timestamp>-pr-<number>-fix-failing-tests` artifacts with captured stdout and stderr, opens the configured interactive runtime with that focused context, reruns verification afterward, previews a proposed commit message that you can edit, accept, or skip, and then pushes the reviewed commit back to `origin/<pr-head-branch>` when `HEAD` is ahead and not behind after fetching the latest remote head. |
 | `prs pr fix-tests <pr-number>` | Requires a clean working tree, preflights the configured verification command, fetches pull request metadata and PR issue comments from the configured forge, finds the managed AI Test Suggestions comment, parses unchecked structured suggestion tasks including behavior, regression risk, protected paths, likely locations, edge cases, and implementation notes, writes focused `.prs/` run artifacts, opens the configured interactive runtime, runs the configured build command, previews a proposed commit message that you can edit, accept, or skip, records accepted selected suggestions as addressed in the managed PR comment, and then pushes the reviewed commit back to `origin/<pr-head-branch>` when `HEAD` is ahead and not behind after fetching the latest remote head. |
 
 Important behavior:
@@ -449,8 +454,9 @@ Important behavior:
 - `prs pr prepare-review <pr-number>` requires a clean working tree before it starts
 - `prs pr resolve-conflicts <pr-number>` requires a clean working tree before it starts
 - `prs pr fix-comments <pr-number>` requires a clean working tree before it starts
+- `prs pr fix-failing-tests <pr-number>` requires a clean working tree before it starts
 - `prs pr fix-tests <pr-number>` requires a clean working tree before it starts
-- `prs pr prepare-review <pr-number>`, `prs pr resolve-conflicts <pr-number>`, `prs pr fix-comments <pr-number>`, and `prs pr fix-tests <pr-number>` fail early when the configured verification command cannot run from the repository root
+- `prs pr prepare-review <pr-number>`, `prs pr resolve-conflicts <pr-number>`, `prs pr fix-comments <pr-number>`, `prs pr fix-failing-tests <pr-number>`, and `prs pr fix-tests <pr-number>` fail early when the configured verification command cannot run from the repository root
 - `prs pr prepare-review <pr-number>` requires `codex` on `PATH`
 - `prs pr resolve-conflicts <pr-number>` requires `codex` on `PATH` for the guided conflict-resolution session
 - `prs pr prepare-review <pr-number>` validates that the live PR base branch still exists on `origin` before it checks out or fetches a review branch
@@ -471,13 +477,15 @@ Important behavior:
 - after a completed resolve-conflicts merge, `prs pr resolve-conflicts <pr-number>` fetches `origin/<pr-head-branch>` and only pushes when `HEAD` is ahead and not behind; if the branch diverged or the remote head cannot be resolved, the command fails clearly and keeps the local branch state
 - when a linked issue has a live saved Codex session, `prs pr prepare-review <pr-number>` reuses it for brief generation and the follow-up interactive session; stale sessions are warned about and fall back to a fresh run
 - local PR comment-fix runs require the configured runtime CLI on `PATH`
+- local PR failing-test-fix runs require the configured runtime CLI on `PATH` only when the initial verification command fails
 - local PR test-fix runs require the configured runtime CLI on `PATH`
-- PR comment-fix and test-fix runs execute the configured `buildCommand`, defaulting to `pnpm build`
+- PR comment-fix and test-fix runs execute the configured `buildCommand`, defaulting to `pnpm build`; failing-test-fix runs execute it before and after the runtime when the initial run fails
+- `prs pr fix-failing-tests <pr-number>` writes `failing-tests.md`, `prompt.md`, `metadata.json`, and `output.log` under `.prs/runs/<timestamp>-pr-<number>-fix-failing-tests` after an initial verification failure; passing initial verification does not create a no-op run directory
 - `prs pr fix-tests <pr-number>` offers only unchecked AI Test Suggestions checklist items; if every managed suggestion is already checked, it exits with `All managed AI test suggestions are already addressed.`
 - after an accepted reviewed commit, `prs pr fix-tests <pr-number>` writes a hidden addressed-suggestion ledger into the managed AI Test Suggestions PR comment using the new local `HEAD` commit SHA before it pushes
-- after an accepted reviewed commit, `prs pr fix-comments <pr-number>` and `prs pr fix-tests <pr-number>` fetch `origin/<pr-head-branch>` and only push when `HEAD` is ahead and not behind; if the branch diverged or the remote head cannot be resolved, the command fails clearly and keeps the local commit
+- after an accepted reviewed commit, `prs pr fix-comments <pr-number>`, `prs pr fix-failing-tests <pr-number>`, and `prs pr fix-tests <pr-number>` fetch `origin/<pr-head-branch>` and only push when `HEAD` is ahead and not behind; if the branch diverged or the remote head cannot be resolved, the command fails clearly and keeps the local commit
 - if `prs pr fix-tests <pr-number>` creates the local commit but cannot update the managed PR comment with addressed-suggestion state, it fails before pushing and keeps the local commit
-- if you decline the reviewed commit message, `prs pr fix-comments <pr-number>` and `prs pr fix-tests <pr-number>` leave the changes uncommitted and do not attempt a push
+- if you decline the reviewed commit message, `prs pr fix-comments <pr-number>`, `prs pr fix-failing-tests <pr-number>`, and `prs pr fix-tests <pr-number>` leave the changes uncommitted and do not attempt a push
 - local interactive runtime prompts end with an explicit done-state summary, a short note about how to see the result or what was verified, and plain-language next steps
 - the command expects the relevant PR branch to already be checked out locally before the runtime starts editing
 - the interactive comment selector accepts numbered thread choices, grouped task choices like `g1` when available, `all`, `none`, and blank input; pressing Enter selects every individual thread
