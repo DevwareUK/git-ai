@@ -133,9 +133,17 @@ export async function runPrFixTestsCommand(
     );
   }
 
+  const uncheckedSuggestions = suggestionsComment.suggestions.filter(
+    (suggestion) => !suggestion.addressed
+  );
+  if (uncheckedSuggestions.length === 0) {
+    console.log("All managed AI test suggestions are already addressed.");
+    return;
+  }
+
   const selectedSuggestions = await selectPullRequestTestSuggestions(
     pullRequest,
-    suggestionsComment.suggestions,
+    uncheckedSuggestions,
     options.promptForLine
   );
   if (selectedSuggestions.length === 0) {

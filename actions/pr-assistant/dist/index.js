@@ -16170,6 +16170,8 @@ var require_dist = __commonJS({
       TestBacklogInput: () => TestBacklogInput,
       TestBacklogOutput: () => TestBacklogOutput,
       TestBacklogPriority: () => TestBacklogPriority,
+      TestSuggestionAddressedAssessmentInput: () => TestSuggestionAddressedAssessmentInput,
+      TestSuggestionAddressedAssessmentOutput: () => TestSuggestionAddressedAssessmentOutput,
       TestSuggestionsInput: () => TestSuggestionsInput,
       TestSuggestionsOutput: () => TestSuggestionsOutput,
       TestingSetupStatus: () => TestingSetupStatus,
@@ -16664,6 +16666,10 @@ var require_dist = __commonJS({
         "implementationNote must be non-empty"
       )
     });
+    var AddressedAssessmentSuggestionItem = TestSuggestionItem.extend({
+      suggestionId: TestSuggestionString.min(1, "suggestionId must be non-empty"),
+      addressed: import_zod12.z.boolean()
+    });
     var ResolvedTestSuggestionItem = import_zod12.z.object({
       area: TestSuggestionString.min(1, "area must be non-empty"),
       testType: TestSuggestionString.min(1, "testType must be non-empty"),
@@ -16687,6 +16693,21 @@ var require_dist = __commonJS({
       summary: TestSuggestionString.min(1, "summary must be non-empty"),
       suggestedTests: import_zod12.z.array(TestSuggestionItem),
       edgeCases: import_zod12.z.array(TestSuggestionString).optional()
+    });
+    var TestSuggestionAddressedAssessmentInput = import_zod12.z.object({
+      diff: import_zod12.z.string().trim().min(1),
+      prTitle: import_zod12.z.string().trim().min(1).optional(),
+      prBody: import_zod12.z.string().trim().min(1).optional(),
+      suggestions: import_zod12.z.array(AddressedAssessmentSuggestionItem).min(1)
+    });
+    var TestSuggestionAddressedAssessmentOutput = import_zod12.z.object({
+      addressedSuggestions: import_zod12.z.array(
+        import_zod12.z.object({
+          suggestionId: TestSuggestionString.min(1, "suggestionId must be non-empty"),
+          addressed: import_zod12.z.literal(true),
+          evidence: TestSuggestionString.min(1, "evidence must be non-empty")
+        }).strict()
+      )
     });
   }
 });
@@ -16726,6 +16747,7 @@ var require_dist2 = __commonJS({
       StructuredGenerationError: () => StructuredGenerationError,
       analyzeFeatureBacklog: () => analyzeFeatureBacklog,
       analyzeTestBacklog: () => analyzeTestBacklog,
+      assessAddressedTestSuggestions: () => assessAddressedTestSuggestions,
       buildGitHubPRReviewComments: () => buildGitHubPRReviewComments,
       buildPRAssistantSection: () => buildPRAssistantSection2,
       createRepositoryPathMatcher: () => createRepositoryPathMatcher,
@@ -19339,6 +19361,12 @@ ${managedSection}`;
       "Only suggest tests, locations, or edge cases supported by the diff or provided PR context.",
       "Do not generate inline review comments or full test code."
     ].join(" ");
+    var TEST_SUGGESTION_ADDRESSED_ASSESSMENT_SYSTEM_PROMPT = [
+      "You are a senior software engineer assessing whether existing PR test suggestions have been addressed.",
+      "Only mark a suggestion addressed when automated tests or test-related changes visible in the diff directly cover the requested behavior.",
+      ...DIFF_GROUNDED_SYSTEM_PROMPT_LINES,
+      "Do not invent replacement suggestions or new test work."
+    ].join(" ");
     function buildPrompt9(input) {
       const contextLines = [];
       if (input.prTitle) {
@@ -19409,6 +19437,57 @@ ${managedSection}`;
         input.diff
       ].join("\n");
     }
+    function buildAddressedAssessmentPrompt(input) {
+      const contextLines = [];
+      if (input.prTitle) {
+        contextLines.push(`PR Title: ${input.prTitle}`);
+      }
+      if (input.prBody) {
+        contextLines.push(`PR Body: ${input.prBody}`);
+      }
+      const uncheckedSuggestions = input.suggestions.filter(
+        (suggestion) => !suggestion.addressed
+      );
+      const suggestionLines = uncheckedSuggestions.flatMap((suggestion, index) => [
+        `${index + 1}. ${suggestion.suggestionId}: ${suggestion.area}`,
+        `   Priority: ${suggestion.priority}`,
+        `   Test type: ${suggestion.testType}`,
+        `   Behavior: ${suggestion.behavior}`,
+        `   Regression risk: ${suggestion.regressionRisk}`,
+        `   Why it matters: ${suggestion.value}`,
+        `   Implementation note: ${suggestion.implementationNote}`,
+        ...suggestion.protectedPaths?.length ? [`   Protected paths: ${suggestion.protectedPaths.join(", ")}`] : [],
+        ...suggestion.likelyLocations?.length ? [`   Likely locations: ${suggestion.likelyLocations.join(", ")}`] : [],
+        ...suggestion.edgeCases?.length ? [`   Edge cases: ${suggestion.edgeCases.join("; ")}`] : []
+      ]);
+      return [
+        "Determine whether existing unchecked AI test suggestions have now been addressed by the current PR diff.",
+        "Assess only the suggestions listed below. Do not generate new suggestions or replacement text.",
+        "Mark a suggestion addressed only when the diff shows automated tests or clearly test-related changes that cover the requested behavior.",
+        "Leave a suggestion out when the evidence is weak, indirect, or unrelated to tests.",
+        "Use the PR title/body only as supporting context and prefer the diff when they conflict.",
+        "Return strictly valid JSON in this exact shape:",
+        "{",
+        '  "addressedSuggestions": [',
+        "    {",
+        '      "suggestionId": string,',
+        '      "addressed": true,',
+        '      "evidence": string',
+        "    }",
+        "  ]",
+        "}",
+        "",
+        'Only include IDs from the unchecked suggestions list. "evidence" should name the relevant test file or changed test behavior from the diff.',
+        "Do not wrap JSON in markdown fences.",
+        "",
+        ...contextLines.length > 0 ? ["Supporting context (optional, may be incomplete):", ...contextLines, ""] : [],
+        "Unchecked suggestions:",
+        ...suggestionLines,
+        "",
+        "Diff:",
+        input.diff
+      ].join("\n");
+    }
     function normalizeKeyPart(value) {
       return value.trim().toLowerCase().replace(/\s+/g, " ");
     }
@@ -19475,6 +19554,27 @@ ${managedSection}`;
         normalizeParsedJson: normalizeModelOutput2
       });
       return filterResolvedDuplicates(output, parsedInput);
+    }
+    async function assessAddressedTestSuggestions(provider, input) {
+      const parsedInput = import_contracts15.TestSuggestionAddressedAssessmentInput.parse(input);
+      const uncheckedSuggestionIds = new Set(
+        parsedInput.suggestions.filter((suggestion) => !suggestion.addressed).map((suggestion) => suggestion.suggestionId)
+      );
+      if (uncheckedSuggestionIds.size === 0) {
+        return { addressedSuggestions: [] };
+      }
+      const output = await generateStructuredOutput({
+        provider,
+        systemPrompt: TEST_SUGGESTION_ADDRESSED_ASSESSMENT_SYSTEM_PROMPT,
+        prompt: buildAddressedAssessmentPrompt(parsedInput),
+        schema: import_contracts15.TestSuggestionAddressedAssessmentOutput,
+        validationErrorPrefix: "Model output failed test suggestion addressed assessment schema validation"
+      });
+      return {
+        addressedSuggestions: output.addressedSuggestions.filter(
+          (suggestion) => uncheckedSuggestionIds.has(suggestion.suggestionId)
+        )
+      };
     }
   }
 });

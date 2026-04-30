@@ -40,16 +40,15 @@ jobs:
             echo "has_diff=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Collect resolved test suggestions
-        id: resolved_suggestions
-        if: ${{ steps.diff.outputs.has_diff == 'true' }}
+      - name: Find existing managed comment
+        id: existing_comment
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
+            const fs = require("node:fs");
+            const path = require("node:path");
             const marker = "<!-- prs:test-suggestions -->";
-            const resolvedStart = "<!-- prs:test-suggestions:resolved-start -->";
-            const resolvedEnd = "<!-- prs:test-suggestions:resolved-end -->";
             const { owner, repo } = context.repo;
             const issue_number = context.payload.pull_request.number;
 
@@ -63,51 +62,23 @@ jobs:
               }
             );
 
-            const existingComment = comments.find((comment) => {
-              const body = comment.body ?? "";
-              return body.includes(marker) && comment.user?.type === "Bot";
-            });
-            const body = existingComment?.body ?? "";
-            const startIndex = body.indexOf(resolvedStart);
-            const endIndex = body.indexOf(resolvedEnd);
-            const hasResolvedBlock = startIndex >= 0 && endIndex > startIndex;
-            const resolvedJson = hasResolvedBlock
-              ? body.slice(startIndex + resolvedStart.length, endIndex).trim()
-              : "[]";
+            const existingComment = comments
+              .filter((comment) => {
+                const body = comment.body ?? "";
+                return body.includes(marker) && comment.user?.type === "Bot";
+              })
+              .sort((left, right) => {
+                const updatedAtComparison = new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime();
+                return updatedAtComparison || right.id - left.id;
+              })[0];
 
-            let records = [];
-            try {
-              const parsed = JSON.parse(resolvedJson);
-              records = Array.isArray(parsed) ? parsed : [];
-            } catch {
-              records = [];
+            const existingCommentFile = path.join(process.env.RUNNER_TEMP, "prs-test-suggestions-existing-comment.md");
+            if (existingComment?.body) {
+              fs.writeFileSync(existingCommentFile, existingComment.body, "utf8");
             }
 
-            const commits = await github.paginate(
-              github.rest.pulls.listCommits,
-              {
-                owner,
-                repo,
-                pull_number: issue_number,
-                per_page: 100,
-              }
-            );
-            const activeCommitShas = new Set(
-              commits.map((commit) => commit.sha).filter(Boolean)
-            );
-            const activeRecords = records.filter(
-              (record) =>
-                record &&
-                typeof record === "object" &&
-                typeof record.commitSha === "string" &&
-                activeCommitShas.has(record.commitSha)
-            );
-            const resolvedBlock = activeRecords.length > 0
-              ? `${resolvedStart}\n${JSON.stringify(activeRecords, null, 2)}\n${resolvedEnd}`
-              : "";
-
-            core.setOutput("resolved_json", JSON.stringify(activeRecords));
-            core.setOutput("resolved_block", resolvedBlock);
+            core.setOutput("comment_id", existingComment?.id ? String(existingComment.id) : "");
+            core.setOutput("existing_comment_file", existingComment?.body ? existingCommentFile : "");
 
       - name: Generate test suggestions
         id: test_suggestions
@@ -115,9 +86,9 @@ jobs:
         uses: DevwareUK/prs/actions/test-suggestions@main
         with:
           diff_file: ${{ steps.diff.outputs.diff_file }}
+          existing_comment_file: ${{ steps.existing_comment.outputs.existing_comment_file }}
           pr_title: ${{ github.event.pull_request.title }}
           pr_body: ${{ github.event.pull_request.body }}
-          resolved_suggestions: ${{ steps.resolved_suggestions.outputs.resolved_json }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           openai_model: ${{ vars.GIT_AI_OPENAI_MODEL }}
           openai_base_url: ${{ vars.GIT_AI_OPENAI_BASE_URL }}
@@ -127,46 +98,25 @@ jobs:
         uses: actions/github-script@v7
         env:
           TEST_SUGGESTIONS_BODY: ${{ steps.test_suggestions.outputs.body }}
-          RESOLVED_BLOCK: ${{ steps.resolved_suggestions.outputs.resolved_block }}
+          EXISTING_COMMENT_ID: ${{ steps.existing_comment.outputs.comment_id }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const marker = "<!-- prs:test-suggestions -->";
-            const managedBody = [
-              marker,
-              process.env.RESOLVED_BLOCK,
-              process.env.TEST_SUGGESTIONS_BODY,
-            ].filter(Boolean).join("\n");
             const { owner, repo } = context.repo;
             const issue_number = context.payload.pull_request.number;
 
-            const comments = await github.paginate(
-              github.rest.issues.listComments,
-              {
-                owner,
-                repo,
-                issue_number,
-                per_page: 100,
-              }
-            );
-
-            const existingComment = comments.find((comment) => {
-              const body = comment.body ?? "";
-              return body.includes(marker) && comment.user?.type === "Bot";
-            });
-
-            if (existingComment) {
+            if (process.env.EXISTING_COMMENT_ID) {
               await github.rest.issues.updateComment({
                 owner,
                 repo,
-                comment_id: existingComment.id,
-                body: managedBody,
+                comment_id: Number(process.env.EXISTING_COMMENT_ID),
+                body: process.env.TEST_SUGGESTIONS_BODY,
               });
             } else {
               await github.rest.issues.createComment({
                 owner,
                 repo,
                 issue_number,
-                body: managedBody,
+                body: process.env.TEST_SUGGESTIONS_BODY,
               });
             }

@@ -69,6 +69,7 @@ function parseSuggestionBlock(
   suggestionIndex: number
 ): PullRequestTestSuggestion {
   let priority: PullRequestTestSuggestionPriority | undefined;
+  let addressed = false;
   let testType: string | undefined;
   let behavior: string | undefined;
   let regressionRisk: string | undefined;
@@ -96,6 +97,12 @@ function parseSuggestionBlock(
     }
 
     const line = trimmed;
+    const addressedMatch = line.match(/^- \[( |x|X)\] Addressed$/);
+    if (addressedMatch) {
+      addressed = addressedMatch[1].toLowerCase() === "x";
+      continue;
+    }
+
     const priorityMatch = line.match(/^- Priority:\s*(.+)$/i);
     if (priorityMatch) {
       priority = normalizePriority(priorityMatch[1]);
@@ -181,6 +188,7 @@ function parseSuggestionBlock(
   return {
     suggestionId: `suggestion-${suggestionIndex + 1}`,
     area: blockTitle,
+    addressed,
     priority,
     testType,
     behavior,

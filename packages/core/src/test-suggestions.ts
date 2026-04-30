@@ -1,4 +1,8 @@
 import {
+  TestSuggestionAddressedAssessmentInput,
+  TestSuggestionAddressedAssessmentInputType,
+  TestSuggestionAddressedAssessmentOutput,
+  TestSuggestionAddressedAssessmentOutputType,
   TestSuggestionsInput,
   TestSuggestionsInputType,
   TestSuggestionsOutput,
@@ -18,6 +22,13 @@ const TEST_SUGGESTIONS_SYSTEM_PROMPT = [
   "Prefer high-value tests and edge cases over exhaustive low-signal lists.",
   "Only suggest tests, locations, or edge cases supported by the diff or provided PR context.",
   "Do not generate inline review comments or full test code.",
+].join(" ");
+
+const TEST_SUGGESTION_ADDRESSED_ASSESSMENT_SYSTEM_PROMPT = [
+  "You are a senior software engineer assessing whether existing PR test suggestions have been addressed.",
+  "Only mark a suggestion addressed when automated tests or test-related changes visible in the diff directly cover the requested behavior.",
+  ...DIFF_GROUNDED_SYSTEM_PROMPT_LINES,
+  "Do not invent replacement suggestions or new test work.",
 ].join(" ");
 
 function buildPrompt(input: TestSuggestionsInputType): string {
@@ -95,6 +106,70 @@ function buildPrompt(input: TestSuggestionsInputType): string {
           "",
         ]
       : []),
+    "Diff:",
+    input.diff,
+  ].join("\n");
+}
+
+function buildAddressedAssessmentPrompt(
+  input: TestSuggestionAddressedAssessmentInputType
+): string {
+  const contextLines: string[] = [];
+  if (input.prTitle) {
+    contextLines.push(`PR Title: ${input.prTitle}`);
+  }
+  if (input.prBody) {
+    contextLines.push(`PR Body: ${input.prBody}`);
+  }
+
+  const uncheckedSuggestions = input.suggestions.filter(
+    (suggestion) => !suggestion.addressed
+  );
+  const suggestionLines = uncheckedSuggestions.flatMap((suggestion, index) => [
+    `${index + 1}. ${suggestion.suggestionId}: ${suggestion.area}`,
+    `   Priority: ${suggestion.priority}`,
+    `   Test type: ${suggestion.testType}`,
+    `   Behavior: ${suggestion.behavior}`,
+    `   Regression risk: ${suggestion.regressionRisk}`,
+    `   Why it matters: ${suggestion.value}`,
+    `   Implementation note: ${suggestion.implementationNote}`,
+    ...(suggestion.protectedPaths?.length
+      ? [`   Protected paths: ${suggestion.protectedPaths.join(", ")}`]
+      : []),
+    ...(suggestion.likelyLocations?.length
+      ? [`   Likely locations: ${suggestion.likelyLocations.join(", ")}`]
+      : []),
+    ...(suggestion.edgeCases?.length
+      ? [`   Edge cases: ${suggestion.edgeCases.join("; ")}`]
+      : []),
+  ]);
+
+  return [
+    "Determine whether existing unchecked AI test suggestions have now been addressed by the current PR diff.",
+    "Assess only the suggestions listed below. Do not generate new suggestions or replacement text.",
+    "Mark a suggestion addressed only when the diff shows automated tests or clearly test-related changes that cover the requested behavior.",
+    "Leave a suggestion out when the evidence is weak, indirect, or unrelated to tests.",
+    "Use the PR title/body only as supporting context and prefer the diff when they conflict.",
+    "Return strictly valid JSON in this exact shape:",
+    "{",
+    '  "addressedSuggestions": [',
+    "    {",
+    '      "suggestionId": string,',
+    '      "addressed": true,',
+    '      "evidence": string',
+    "    }",
+    "  ]",
+    "}",
+    "",
+    'Only include IDs from the unchecked suggestions list. "evidence" should name the relevant test file or changed test behavior from the diff.',
+    "Do not wrap JSON in markdown fences.",
+    "",
+    ...(contextLines.length > 0
+      ? ["Supporting context (optional, may be incomplete):", ...contextLines, ""]
+      : []),
+    "Unchecked suggestions:",
+    ...suggestionLines,
+    "",
     "Diff:",
     input.diff,
   ].join("\n");
@@ -192,4 +267,35 @@ export async function generateTestSuggestions(
   });
 
   return filterResolvedDuplicates(output, parsedInput);
+}
+
+export async function assessAddressedTestSuggestions(
+  provider: AIProvider,
+  input: TestSuggestionAddressedAssessmentInputType
+): Promise<TestSuggestionAddressedAssessmentOutputType> {
+  const parsedInput = TestSuggestionAddressedAssessmentInput.parse(input);
+  const uncheckedSuggestionIds = new Set(
+    parsedInput.suggestions
+      .filter((suggestion) => !suggestion.addressed)
+      .map((suggestion) => suggestion.suggestionId)
+  );
+
+  if (uncheckedSuggestionIds.size === 0) {
+    return { addressedSuggestions: [] };
+  }
+
+  const output = await generateStructuredOutput({
+    provider,
+    systemPrompt: TEST_SUGGESTION_ADDRESSED_ASSESSMENT_SYSTEM_PROMPT,
+    prompt: buildAddressedAssessmentPrompt(parsedInput),
+    schema: TestSuggestionAddressedAssessmentOutput,
+    validationErrorPrefix:
+      "Model output failed test suggestion addressed assessment schema validation",
+  });
+
+  return {
+    addressedSuggestions: output.addressedSuggestions.filter((suggestion) =>
+      uncheckedSuggestionIds.has(suggestion.suggestionId)
+    ),
+  };
 }

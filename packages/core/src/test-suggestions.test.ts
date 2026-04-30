@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AIProvider } from "@prs/providers";
-import { generateTestSuggestions } from "./test-suggestions";
+import {
+  assessAddressedTestSuggestions,
+  generateTestSuggestions,
+} from "./test-suggestions";
 
 function createProvider(response: unknown): AIProvider & {
   generateText: ReturnType<typeof vi.fn>;
@@ -92,5 +95,104 @@ describe("generateTestSuggestions", () => {
       summary: "No new unresolved AI test suggestions were found for the current PR diff.",
       suggestedTests: [],
     });
+  });
+});
+
+describe("assessAddressedTestSuggestions", () => {
+  it("asks the model to assess only unchecked suggestions against the current diff", async () => {
+    const provider = createProvider({
+      addressedSuggestions: [
+        {
+          suggestionId: "suggestion-1",
+          addressed: true,
+          evidence: "The diff adds tests/checkout-flow.test.ts for checkout completion.",
+        },
+      ],
+    });
+
+    const result = await assessAddressedTestSuggestions(provider, {
+      diff: "diff --git a/tests/checkout-flow.test.ts b/tests/checkout-flow.test.ts\n+it('checks out')",
+      prTitle: "Add checkout coverage",
+      suggestions: [
+        {
+          suggestionId: "suggestion-1",
+          area: "Verify checkout flow",
+          addressed: false,
+          priority: "high",
+          testType: "integration",
+          behavior: "Checkout completes successfully.",
+          regressionRisk: "Checkout regressions could go unnoticed.",
+          value: "It protects the primary purchase path.",
+          implementationNote: "Add an integration test for checkout completion.",
+        },
+        {
+          suggestionId: "suggestion-2",
+          area: "Verify summary copy",
+          addressed: true,
+          priority: "medium",
+          testType: "unit",
+          behavior: "Summary copy renders.",
+          regressionRisk: "Copy can regress.",
+          value: "It protects support workflows.",
+          implementationNote: "Add a rendering test.",
+        },
+      ],
+    });
+
+    const request = provider.generateText.mock.calls[0]?.[0];
+    expect(request?.prompt).toContain("Determine whether existing unchecked AI test suggestions");
+    expect(request?.prompt).toContain("suggestion-1");
+    expect(request?.prompt).toContain("Verify checkout flow");
+    expect(request?.prompt).not.toContain("suggestion-2");
+    expect(request?.prompt).toContain("diff --git a/tests/checkout-flow.test.ts");
+    expect(result.addressedSuggestions).toEqual([
+      {
+        suggestionId: "suggestion-1",
+        addressed: true,
+        evidence: "The diff adds tests/checkout-flow.test.ts for checkout completion.",
+      },
+    ]);
+  });
+
+  it("filters model-addressed IDs that were not requested", async () => {
+    const provider = createProvider({
+      addressedSuggestions: [
+        {
+          suggestionId: "suggestion-1",
+          addressed: true,
+          evidence: "The diff adds a focused checkout test.",
+        },
+        {
+          suggestionId: "suggestion-99",
+          addressed: true,
+          evidence: "Not part of the unchecked request.",
+        },
+      ],
+    });
+
+    const result = await assessAddressedTestSuggestions(provider, {
+      diff: "diff --git a/tests/checkout-flow.test.ts b/tests/checkout-flow.test.ts\n+it('checks out')",
+      suggestions: [
+        {
+          suggestionId: "suggestion-1",
+          area: "Verify checkout flow",
+          addressed: false,
+          priority: "high",
+          testType: "integration",
+          behavior: "Checkout completes successfully.",
+          regressionRisk: "Checkout regressions could go unnoticed.",
+          value: "It protects the primary purchase path.",
+          implementationNote: "Add an integration test for checkout completion.",
+        },
+      ],
+    });
+
+    expect(result.addressedSuggestions).toEqual([
+      {
+        suggestionId: "suggestion-1",
+        addressed: true,
+        evidence: "The diff adds a focused checkout test.",
+      },
+    ]);
   });
 });
