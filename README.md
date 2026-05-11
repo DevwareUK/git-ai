@@ -195,6 +195,8 @@ The recommended Codex entrypoint is `/prs`. It is the unified workflow router ov
 
 `/prs issue` and `/prs pr` default to actionable-for-me lists. Issue multi-select starts parallel Superpowers issue work in separate worktrees. In Codex installs without a first-class slash-command directory, `prs setup` installs the managed `prs` Codex skill as the `/prs` router.
 
+Codex sessions should not assume `gh` is installed. GitHub-backed `/prs` flows can use `GH_TOKEN` or `GITHUB_TOKEN`; authenticated `gh` is only one supported auth source. In this source checkout, if the `prs` binary is not installed globally, use `corepack pnpm --filter @prs/cli... build` and `node packages/cli/dist/index.js <args>` to run the repo-local CLI. SSH pull refs can identify candidate PR numbers when API auth is unavailable, but they are not enough for an actionable-for-me picker.
+
 ## Command tiers
 
 Run `prs help` or `prs --help` for the same tiered overview in the terminal.

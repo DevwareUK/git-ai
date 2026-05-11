@@ -46,6 +46,9 @@ describe("managed prs Codex skills", () => {
     expect(markdown).toContain("/prs issue <number> finish");
     expect(markdown).toContain("/prs pr <number> resolve-conflicts");
     expect(markdown).toContain("actionable for me");
+    expect(markdown).toContain("Do not assume the GitHub CLI (`gh`) is installed");
+    expect(markdown).toContain("node packages/cli/dist/index.js <args>");
+    expect(markdown).toContain("do not call that an actionable-for-me list");
     expect(markdown).toContain("Existing managed skills are backing behaviors");
   });
 
