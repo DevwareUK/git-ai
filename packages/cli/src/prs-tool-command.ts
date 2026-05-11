@@ -1,9 +1,11 @@
 export type PrsToolCommand =
-  { kind: "pr-prepare-review"; prNumber: number; json: boolean };
+  | { kind: "pr-list"; actionable: boolean; json: boolean }
+  | { kind: "pr-prepare-review"; prNumber: number; json: boolean };
 
 export function renderPrsToolCommandHelp(): string {
   return [
     "Usage:",
+    "  prs tool pr list [--actionable] --json",
     "  prs tool pr prepare-review <pr-number> --json",
   ].join("\n");
 }
@@ -25,6 +27,16 @@ export function parsePrsToolCommandArgs(args: string[]): PrsToolCommand {
   const [scope, command, third, fourth, ...rest] = args;
 
   if (scope !== "pr" || !command || rest.length > 0) {
+    throw new Error(renderPrsToolCommandHelp());
+  }
+
+  if (command === "list") {
+    if (third === "--actionable" && fourth === "--json") {
+      return { kind: "pr-list", actionable: true, json: true };
+    }
+    if (third === "--json" && !fourth) {
+      return { kind: "pr-list", actionable: false, json: true };
+    }
     throw new Error(renderPrsToolCommandHelp());
   }
 

@@ -187,7 +187,7 @@ The recommended Codex entrypoint is `/prs`. It is the unified workflow router ov
 - `/prs issue <number> refine`: refine an issue into an implementation-ready specification
 - `/prs issue <number> plan`: publish or refresh an issue plan
 - `/prs issue <number> finish`: finish work with the issue context preserved
-- `/prs pr`: interactive "actionable for me" PR picker
+- `/prs pr`: interactive "actionable for me" PR picker backed by `prs tool pr list --actionable --json`
 - `/prs pr <number>`: choose a PR action
 - `/prs pr <number> resolve-conflicts`: resolve PR conflicts
 - `/prs pr <number> prepare-review`: run `prs tool pr prepare-review <number> --json`, leave the prepared PR branch checked out in the current repository, and continue review in the current Codex session without launching nested Codex
@@ -197,7 +197,7 @@ The recommended Codex entrypoint is `/prs`. It is the unified workflow router ov
 - `/prs audit publish`: publish run artifacts to GitHub audit comments
 - `/prs finish`: verify, commit, push, PR, audit, and safe cleanup
 
-`/prs issue` and `/prs pr` default to actionable-for-me lists. Issue multi-select starts parallel Superpowers issue work in separate worktrees. In Codex installs without a first-class slash-command directory, `prs setup` installs the managed `prs` Codex skill as the `/prs` router.
+`/prs issue` and `/prs pr` default to actionable-for-me lists. `/prs pr` must use `prs tool pr list --actionable --json` as the source of truth; when that tool returns `status: "blocked"`, Codex should report the tool's `message` and `nextAction` instead of recreating GitHub discovery from git refs or source inspection. Issue multi-select starts parallel Superpowers issue work in separate worktrees. In Codex installs without a first-class slash-command directory, `prs setup` installs the managed `prs` Codex skill as the `/prs` router.
 
 Codex sessions should not assume `gh` is installed. GitHub-backed `/prs` flows can use `GH_TOKEN` or `GITHUB_TOKEN`; authenticated `gh` is only one supported auth source. Codex sessions also should not assume shell profile paths are loaded. `prs setup` captures the current CLI entrypoint and writes it into the managed skills as an absolute fallback command. In this source checkout, if neither `prs` nor a setup-captured fallback is available, use `corepack pnpm --filter @prs/cli... build` and `node packages/cli/dist/index.js <args>` to run the repo-local CLI. SSH pull refs can identify candidate PR numbers when API auth is unavailable, but they are not enough for an actionable-for-me picker.
 
@@ -239,6 +239,7 @@ Supporting commands:
 
 - `prs setup`: guided repository onboarding for `prs`
 - `prs audit publish`: publish a local `.prs/runs` artifact to a managed GitHub audit comment
+- `prs tool pr list [--actionable] --json`: deterministic Codex-safe PR discovery; returns JSON and structured blocked results when GitHub auth is unavailable
 - `prs tool pr prepare-review <pr-number> --json`: deterministic Codex-safe PR review preparation; stdout is JSON and progress logs go to stderr
 - `prs commit`: generate a commit message from staged changes
 - `prs diff`: summarize `git diff HEAD`

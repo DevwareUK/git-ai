@@ -5059,6 +5059,77 @@ describe("CLI integration", () => {
     );
   });
 
+  it("runs prs tool pr list actionable as deterministic JSON", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          login: "me",
+        })
+      )
+      .mockResolvedValueOnce(
+        createFetchResponse([
+          {
+            number: 115,
+            title: "Needs my review",
+            user: { login: "someone-else" },
+            assignees: [],
+            requested_reviewers: [{ login: "me" }],
+            head: { ref: "codex/review-me" },
+            labels: [{ name: "ready" }],
+            updated_at: "2026-05-11T10:00:00Z",
+            mergeable: true,
+          },
+          {
+            number: 116,
+            title: "Unrelated PR",
+            user: { login: "someone-else" },
+            assignees: [],
+            requested_reviewers: [],
+            head: { ref: "feature/unrelated" },
+            labels: [],
+            updated_at: "2026-05-11T11:00:00Z",
+            mergeable: true,
+          },
+        ])
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { run } = await loadCli({
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "rev-parse") {
+          return `${REPO_ROOT}\n`;
+        }
+
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/prs.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.env.GITHUB_TOKEN = "test-token";
+    process.argv = ["node", "prs", "tool", "pr", "list", "--actionable", "--json"];
+    const stdout = captureStdout();
+
+    await run();
+
+    expect(stdout.output().trimStart()).toMatch(/^\{/);
+    expect(JSON.parse(stdout.output())).toMatchObject({
+      status: "ready",
+      actionable: true,
+      currentUser: "me",
+      pullRequests: [
+        {
+          number: 115,
+          reviewRequestedFrom: ["me"],
+        },
+      ],
+      source: "github-api",
+    });
+  });
+
   it("runs pr prepare-review, reuses the linked issue branch, and exits cleanly when follow-up makes no changes", async () => {
     const beforeRuns = listRunDirectories();
     const issueNumber = 211;

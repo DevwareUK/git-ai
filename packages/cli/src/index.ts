@@ -57,6 +57,7 @@ import {
   parsePrCommandArgs as parsePrCommandArgsImpl,
   type PrCommandOptions,
 } from "./commands/pr";
+import { listPullRequestsTool } from "./pr-list-tool";
 import { parsePrsToolCommandArgs } from "./prs-tool-command";
 import {
   createRepositoryForge,
@@ -440,6 +441,7 @@ const TOP_LEVEL_HELP = [
   "",
   "Supporting commands:",
   "  prs setup",
+  "  prs tool pr list [--actionable] --json",
   "  prs tool pr prepare-review <pr-number> --json",
   "  prs audit publish (--issue <number>|--pr <number>) --file <path> --section <name> [--local-run <path>]",
   "  prs commit",
@@ -4221,6 +4223,15 @@ async function runToolCommand(): Promise<void> {
   const repoRoot = getDefaultRepoRoot();
   const toolCommand = parsePrsToolCommandArgs(getCliArgs().slice(1));
   const repositoryConfig = getRepositoryConfig(repoRoot);
+
+  if (toolCommand.kind === "pr-list") {
+    const result = await listPullRequestsTool({
+      actionable: toolCommand.actionable,
+      repoRoot,
+    });
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
 
   if (toolCommand.kind === "pr-prepare-review") {
     const originalConsoleLog = console.log;
