@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { RepositoryForge, RepositoryComment } from "./forge";
+import type { AuditTarget, RepositoryForge, RepositoryComment } from "./forge";
 import {
   AUDIT_COMMENT_MARKER,
   publishAuditArtifact,
@@ -32,13 +32,34 @@ describe("audit artifacts", () => {
     expect(body).toContain("Local run: `.prs/runs/example`");
   });
 
+  it("rejects section names without marker-safe alphanumeric content", () => {
+    expect(() =>
+      renderAuditCommentBody({
+        title: "Issue #42 audit",
+        sections: [{ name: "!!!", content: "No marker id" }],
+      })
+    ).toThrow("Audit section name must contain at least one alphanumeric character.");
+  });
+
+  it("rejects duplicate normalized section marker IDs in one comment", () => {
+    expect(() =>
+      renderAuditCommentBody({
+        title: "Issue #42 audit",
+        sections: [
+          { name: "Spec Review", content: "First" },
+          { name: "Spec-Review", content: "Second" },
+        ],
+      })
+    ).toThrow('Duplicate audit section marker ID "spec-review".');
+  });
+
   it("creates a new issue audit comment when none exists", async () => {
     const calls: string[] = [];
     const forge = {
       type: "github",
       isAuthenticated: () => true,
       fetchAuditComment: async () => undefined,
-      createAuditComment: async (_target, body) => {
+      createAuditComment: async (_target: AuditTarget, body: string) => {
         calls.push(body);
         return comment(body);
       },
@@ -66,7 +87,7 @@ describe("audit artifacts", () => {
       type: "github",
       isAuthenticated: () => true,
       fetchAuditComment: async () => comment(existing),
-      updateIssueComment: async (_commentId, body) => {
+      updateIssueComment: async (_commentId: number, body: string) => {
         updatedBody = body;
         return comment(body);
       },

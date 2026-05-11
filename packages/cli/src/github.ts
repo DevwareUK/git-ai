@@ -1,6 +1,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import type {
+  AuditTarget,
   CreatePullRequestInput,
   CreatedPullRequestRecord,
   CreatedIssueRecord,
@@ -721,6 +722,10 @@ class GitHubRepositoryForge implements RepositoryForge {
       .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
   }
 
+  async fetchAuditComment(_target: AuditTarget): Promise<RepositoryComment | undefined> {
+    throw new Error("GitHub audit comment workflows are not implemented yet.");
+  }
+
   async fetchIssueComments(issueNumber: number): Promise<RepositoryComment[]> {
     const { owner, repo } = parseGitHubRepoFromRemote(this.repoRoot);
     return listIssueComments(owner, repo, issueNumber);
@@ -797,6 +802,13 @@ class GitHubRepositoryForge implements RepositoryForge {
       payload,
       `GitHub issue plan comment creation for #${issueNumber} returned an incomplete payload.`
     );
+  }
+
+  async createAuditComment(
+    _target: AuditTarget,
+    _body: string
+  ): Promise<RepositoryComment> {
+    throw new Error("GitHub audit comment workflows are not implemented yet.");
   }
 
   async updateIssuePlanComment(

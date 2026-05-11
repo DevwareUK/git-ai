@@ -25,13 +25,39 @@ function targetTitle(target: AuditTarget): string {
     : `Pull request #${target.number} audit`;
 }
 
-function sectionMarker(name: string, position: "start" | "end"): string {
+function normalizedSectionMarkerId(name: string): string {
   const normalized = name
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "");
+
+  if (!normalized) {
+    throw new Error("Audit section name must contain at least one alphanumeric character.");
+  }
+
+  return normalized;
+}
+
+function sectionMarkerFromId(id: string, position: "start" | "end"): string {
+  return `<!-- prs:audit:${id}:${position} -->`;
+}
+
+function sectionMarker(name: string, position: "start" | "end"): string {
+  const normalized = normalizedSectionMarkerId(name);
   return `<!-- prs:audit:${normalized}:${position} -->`;
+}
+
+function assertUniqueSectionMarkerIds(sections: AuditSection[]): void {
+  const markerIds = new Set<string>();
+
+  for (const section of sections) {
+    const markerId = normalizedSectionMarkerId(section.name);
+    if (markerIds.has(markerId)) {
+      throw new Error(`Duplicate audit section marker ID "${markerId}".`);
+    }
+    markerIds.add(markerId);
+  }
 }
 
 export function renderAuditCommentBody(input: {
@@ -39,6 +65,8 @@ export function renderAuditCommentBody(input: {
   sections: AuditSection[];
   localRun?: string;
 }): string {
+  assertUniqueSectionMarkerIds(input.sections);
+
   const lines = [AUDIT_COMMENT_MARKER, "", `# ${input.title}`, ""];
 
   if (input.localRun) {
@@ -58,8 +86,9 @@ export function renderAuditCommentBody(input: {
 }
 
 function replaceOrAppendSection(body: string, section: AuditSection): string {
-  const start = sectionMarker(section.name, "start");
-  const end = sectionMarker(section.name, "end");
+  const markerId = normalizedSectionMarkerId(section.name);
+  const start = sectionMarkerFromId(markerId, "start");
+  const end = sectionMarkerFromId(markerId, "end");
   const replacement = [start, `## ${section.name}`, "", section.content.trim(), end].join("\n");
   const pattern = new RegExp(`${start}[\\s\\S]*?${end}`);
 
@@ -78,10 +107,18 @@ export async function publishAuditArtifact(
     throw new Error("GitHub authentication is required to publish prs audit artifacts.");
   }
 
+  if (!forge.fetchAuditComment) {
+    throw new Error("Repository forge does not support prs audit comment workflows.");
+  }
+
   const existing = await forge.fetchAuditComment(input.target);
   const section = { name: input.sectionName, content: input.content };
 
   if (!existing) {
+    if (!forge.createAuditComment) {
+      throw new Error("Repository forge does not support prs audit comment workflows.");
+    }
+
     const body = renderAuditCommentBody({
       title: targetTitle(input.target),
       sections: [section],
