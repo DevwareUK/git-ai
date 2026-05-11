@@ -89,7 +89,7 @@ export const PRS_CODEX_SKILLS: ManagedCodexSkill[] = [
 ];
 
 export function resolveCodexSkillsRoot(
-  env: Pick<NodeJS.ProcessEnv, "CODEX_HOME"> = process.env,
+  env: { CODEX_HOME?: string } = process.env,
   home = homedir()
 ): string {
   const codexHome = env.CODEX_HOME?.trim() || resolve(home, ".codex");
