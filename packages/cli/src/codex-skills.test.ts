@@ -48,6 +48,8 @@ describe("managed prs Codex skills", () => {
     expect(markdown).toContain(
       "/prs pr <number> prepare-review`: run `prs tool pr prepare-review <number> --json`"
     );
+    expect(markdown).toContain("read the returned `snapshotFilePath`");
+    expect(markdown).toContain("does not generate `review-brief.md`");
     expect(markdown).not.toContain("prs codex");
     expect(markdown).not.toContain("codex exec");
     expect(markdown).toContain("Do not recreate prs workflows with ad hoc git commands");

@@ -112,7 +112,7 @@ export const PRS_CODEX_SKILLS: ManagedCodexSkill[] = [
       "- `/prs issue <number> plan`: publish or refresh the issue plan.",
       "- `/prs issue <number> finish`: finish work with the issue context preserved.",
       "- `/prs pr <number>`: choose an action for the PR.",
-      `- \`/prs pr <number> prepare-review\`: run \`${renderPrPrepareReviewToolCommand()}\`, keep the prepared branch checked out in the current repository, then continue review in this Codex session.`,
+      `- \`/prs pr <number> prepare-review\`: run \`${renderPrPrepareReviewToolCommand()}\`, keep the prepared branch checked out in the current repository, read the returned \`snapshotFilePath\` when useful, then continue review in this Codex session. The deterministic tool does not generate \`review-brief.md\`; do not look for one unless a separate command created it.`,
       "- `/prs pr <number> resolve-conflicts`: run `prs pr resolve-conflicts <number>`.",
       "- `/prs pr <number> fix-comments`: run `prs pr fix-comments <number>`.",
       "- `/prs pr <number> fix-failing-tests`: run `prs pr fix-failing-tests <number>`.",

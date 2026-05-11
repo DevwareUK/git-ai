@@ -572,7 +572,6 @@ export async function preparePullRequestReviewTool(
       status: "ready",
       prNumber: pullRequest.number,
       runDir: workspace.runDir,
-      reviewBriefFilePath: workspace.reviewBriefFilePath,
       snapshotFilePath: workspace.snapshotFilePath,
       metadataFilePath: workspace.metadataFilePath,
       checkout: checkoutTarget,

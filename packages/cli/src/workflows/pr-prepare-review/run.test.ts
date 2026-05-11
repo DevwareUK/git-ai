@@ -259,7 +259,6 @@ describe("runPrPrepareReviewCommand", () => {
       status: "ready",
       prNumber: 206,
       runDir: workspace.runDir,
-      reviewBriefFilePath: workspace.reviewBriefFilePath,
       snapshotFilePath: workspace.snapshotFilePath,
       metadataFilePath: workspace.metadataFilePath,
       checkout: {

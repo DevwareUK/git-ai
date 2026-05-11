@@ -5046,6 +5046,8 @@ describe("CLI integration", () => {
       status: string;
       prNumber: number;
       nextAction: string;
+      reviewBriefFilePath?: string;
+      snapshotFilePath?: string;
       checkout: { source: string; branchName: string };
     };
     const createdRunDir = listRunDirectories().find((entry) => !beforeRuns.includes(entry));
@@ -5062,6 +5064,8 @@ describe("CLI integration", () => {
         branchName,
       },
     });
+    expect(result.reviewBriefFilePath).toBeUndefined();
+    expect(result.snapshotFilePath).toMatch(/pr-review-prepare\.md$/);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(spawnSync).not.toHaveBeenCalledWith(
       "codex",

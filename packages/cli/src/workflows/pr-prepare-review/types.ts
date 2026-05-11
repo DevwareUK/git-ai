@@ -83,7 +83,6 @@ export type PullRequestPrepareReviewToolResult =
       status: "ready";
       prNumber: number;
       runDir: string;
-      reviewBriefFilePath: string;
       snapshotFilePath: string;
       metadataFilePath: string;
       checkout: PullRequestPrepareReviewCheckoutTarget;
