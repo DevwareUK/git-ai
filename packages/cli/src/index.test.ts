@@ -9848,10 +9848,21 @@ describe("CLI integration", () => {
         },
         {
           id: 3102,
-          body: "<!-- prs:audit -->\n# Issue #42 audit\n",
+          body: "<!-- prs:audit -->\n# Issue #42 stale audit\n",
           html_url: `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-3102`,
           created_at: "2026-04-24T11:02:00Z",
           updated_at: "2026-04-24T11:03:00Z",
+          user: {
+            login: "prs-bot",
+            type: "Bot",
+          },
+        },
+        {
+          id: 3103,
+          body: "<!-- prs:audit -->\n# Issue #42 newer audit\n",
+          html_url: `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-3103`,
+          created_at: "2026-04-24T10:02:00Z",
+          updated_at: "2026-04-24T11:04:00Z",
           user: {
             login: "prs-bot",
             type: "Bot",
@@ -9870,17 +9881,92 @@ describe("CLI integration", () => {
     await expect(
       (forge as any).fetchAuditComment({ type: "issue", number: issueNumber })
     ).resolves.toEqual({
-      id: 3102,
-      body: "<!-- prs:audit -->\n# Issue #42 audit\n",
-      url: `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-3102`,
-      createdAt: "2026-04-24T11:02:00Z",
-      updatedAt: "2026-04-24T11:03:00Z",
+      id: 3103,
+      body: "<!-- prs:audit -->\n# Issue #42 newer audit\n",
+      url: `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-3103`,
+      createdAt: "2026-04-24T10:02:00Z",
+      updatedAt: "2026-04-24T11:04:00Z",
       author: "prs-bot",
       isBot: true,
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
       `https://api.github.com/repos/DevwareUK/prs/issues/${issueNumber}/comments?per_page=100`,
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: "Bearer test-token",
+          "User-Agent": "prs-cli",
+        },
+      }
+    );
+  });
+
+  it("fetches audit comments from paginated GitHub issue comments", async () => {
+    const issueNumber = 43;
+    const ordinaryComments = Array.from({ length: 100 }, (_, index) => ({
+      id: 3300 + index,
+      body: `Ordinary comment ${index + 1}.`,
+      html_url: `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-${3300 + index}`,
+      created_at: "2026-04-24T11:00:00Z",
+      updated_at: "2026-04-24T11:00:00Z",
+      user: {
+        login: "alice",
+        type: "User",
+      },
+    }));
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(createFetchResponse(ordinaryComments))
+      .mockResolvedValueOnce(
+        createFetchResponse([
+          {
+            id: 3401,
+            body: "<!-- prs:audit -->\n# Issue #43 audit\n",
+            html_url: `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-3401`,
+            created_at: "2026-04-24T12:00:00Z",
+            updated_at: "2026-04-24T12:01:00Z",
+            user: {
+              login: "prs-bot",
+              type: "Bot",
+            },
+          },
+        ])
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "test-token";
+
+    const { createGitHubRepositoryForge } = await loadGitHubForge();
+    const forge = createGitHubRepositoryForge(REPO_ROOT);
+
+    await expect(
+      (forge as any).fetchAuditComment({ type: "pull-request", number: issueNumber })
+    ).resolves.toEqual({
+      id: 3401,
+      body: "<!-- prs:audit -->\n# Issue #43 audit\n",
+      url: `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-3401`,
+      createdAt: "2026-04-24T12:00:00Z",
+      updatedAt: "2026-04-24T12:01:00Z",
+      author: "prs-bot",
+      isBot: true,
+    });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      `https://api.github.com/repos/DevwareUK/prs/issues/${issueNumber}/comments?per_page=100`,
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: "Bearer test-token",
+          "User-Agent": "prs-cli",
+        },
+      }
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      `https://api.github.com/repos/DevwareUK/prs/issues/${issueNumber}/comments?per_page=100&page=2`,
       {
         headers: {
           Accept: "application/vnd.github+json",

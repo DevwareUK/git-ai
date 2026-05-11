@@ -245,37 +245,51 @@ async function listIssueComments(
     headers.Authorization = `Bearer ${token}`;
   }
 
-  const response = await fetch(
-    `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}/comments?per_page=100`,
-    { headers }
-  );
+  const comments: RepositoryComment[] = [];
+  let page = 1;
 
-  if (!response.ok) {
-    throw new Error(
-      `Failed to list comments for GitHub issue #${issueNumber} (${response.status} ${response.statusText}).`
+  while (true) {
+    const pageParameter = page === 1 ? "" : `&page=${page}`;
+    const response = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}/comments?per_page=100${pageParameter}`,
+      { headers }
     );
+
+    if (!response.ok) {
+      throw new Error(
+        `Failed to list comments for GitHub issue #${issueNumber} (${response.status} ${response.statusText}).`
+      );
+    }
+
+    const payload = (await response.json()) as Array<{
+      id?: number;
+      body?: string | null;
+      html_url?: string;
+      created_at?: string;
+      updated_at?: string;
+      user?: { login?: string; type?: string };
+    }>;
+
+    comments.push(
+      ...payload
+        .filter((comment) => comment.id && comment.body && comment.html_url && comment.updated_at)
+        .map((comment) => ({
+          id: comment.id as number,
+          body: comment.body as string,
+          url: comment.html_url as string,
+          createdAt: (comment.created_at ?? comment.updated_at) as string,
+          updatedAt: comment.updated_at as string,
+          author: comment.user?.login ?? "unknown",
+          isBot: comment.user?.type === "Bot",
+        }))
+    );
+
+    if (payload.length < 100) {
+      return comments;
+    }
+
+    page += 1;
   }
-
-  const payload = (await response.json()) as Array<{
-    id?: number;
-    body?: string | null;
-    html_url?: string;
-    created_at?: string;
-    updated_at?: string;
-    user?: { login?: string; type?: string };
-  }>;
-
-  return payload
-    .filter((comment) => comment.id && comment.body && comment.html_url && comment.updated_at)
-    .map((comment) => ({
-      id: comment.id as number,
-      body: comment.body as string,
-      url: comment.html_url as string,
-      createdAt: (comment.created_at ?? comment.updated_at) as string,
-      updatedAt: comment.updated_at as string,
-      author: comment.user?.login ?? "unknown",
-      isBot: comment.user?.type === "Bot",
-    }));
 }
 
 function tryFetchPullRequestWithGh(
@@ -727,7 +741,9 @@ class GitHubRepositoryForge implements RepositoryForge {
     const { owner, repo } = parseGitHubRepoFromRemote(this.repoRoot);
     const comments = await listIssueComments(owner, repo, target.number);
 
-    return comments.find((comment) => comment.body.includes(AUDIT_COMMENT_MARKER));
+    return comments
+      .filter((comment) => comment.body.includes(AUDIT_COMMENT_MARKER))
+      .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
   }
 
   async fetchIssueComments(issueNumber: number): Promise<RepositoryComment[]> {
