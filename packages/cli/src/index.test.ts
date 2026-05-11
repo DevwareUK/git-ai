@@ -9831,6 +9831,119 @@ describe("CLI integration", () => {
     );
   });
 
+  it("fetches audit comments through the GitHub repository forge adapter", async () => {
+    const issueNumber = 42;
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      createFetchResponse([
+        {
+          id: 3101,
+          body: "Ordinary issue discussion.",
+          html_url: `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-3101`,
+          created_at: "2026-04-24T11:00:00Z",
+          updated_at: "2026-04-24T11:01:00Z",
+          user: {
+            login: "alice",
+            type: "User",
+          },
+        },
+        {
+          id: 3102,
+          body: "<!-- prs:audit -->\n# Issue #42 audit\n",
+          html_url: `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-3102`,
+          created_at: "2026-04-24T11:02:00Z",
+          updated_at: "2026-04-24T11:03:00Z",
+          user: {
+            login: "prs-bot",
+            type: "Bot",
+          },
+        },
+      ])
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "test-token";
+
+    const { createGitHubRepositoryForge } = await loadGitHubForge();
+    const forge = createGitHubRepositoryForge(REPO_ROOT);
+
+    await expect(
+      (forge as any).fetchAuditComment({ type: "issue", number: issueNumber })
+    ).resolves.toEqual({
+      id: 3102,
+      body: "<!-- prs:audit -->\n# Issue #42 audit\n",
+      url: `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-3102`,
+      createdAt: "2026-04-24T11:02:00Z",
+      updatedAt: "2026-04-24T11:03:00Z",
+      author: "prs-bot",
+      isBot: true,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `https://api.github.com/repos/DevwareUK/prs/issues/${issueNumber}/comments?per_page=100`,
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: "Bearer test-token",
+          "User-Agent": "prs-cli",
+        },
+      }
+    );
+  });
+
+  it("creates audit comments through the GitHub repository forge adapter", async () => {
+    const prNumber = 88;
+    const body = "<!-- prs:audit -->\n# Pull request #88 audit\n";
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      createFetchResponse({
+        id: 3201,
+        body,
+        html_url: `https://github.com/DevwareUK/prs/pull/${prNumber}#issuecomment-3201`,
+        created_at: "2026-04-24T12:00:00Z",
+        updated_at: "2026-04-24T12:00:00Z",
+        user: {
+          login: "prs-bot",
+          type: "Bot",
+        },
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "test-token";
+
+    const { createGitHubRepositoryForge } = await loadGitHubForge();
+    const forge = createGitHubRepositoryForge(REPO_ROOT);
+
+    await expect(
+      (forge as any).createAuditComment({ type: "pull-request", number: prNumber }, body)
+    ).resolves.toEqual({
+      id: 3201,
+      body,
+      url: `https://github.com/DevwareUK/prs/pull/${prNumber}#issuecomment-3201`,
+      createdAt: "2026-04-24T12:00:00Z",
+      updatedAt: "2026-04-24T12:00:00Z",
+      author: "prs-bot",
+      isBot: true,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `https://api.github.com/repos/DevwareUK/prs/issues/${prNumber}/comments`,
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          Accept: "application/vnd.github+json",
+          Authorization: "Bearer test-token",
+          "Content-Type": "application/json",
+          "User-Agent": "prs-cli",
+        }),
+      })
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      body,
+    });
+  });
+
   it("updates issue bodies through the GitHub repository forge adapter", async () => {
     const issueNumber = 42;
     const fetchMock = vi.fn().mockResolvedValueOnce(

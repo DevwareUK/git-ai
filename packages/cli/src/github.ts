@@ -13,6 +13,7 @@ import type {
   PullRequestReviewComment,
   RepositoryForge,
 } from "./forge";
+import { AUDIT_COMMENT_MARKER } from "./audit-artifacts";
 
 function runCommand(
   command: string,
@@ -722,8 +723,11 @@ class GitHubRepositoryForge implements RepositoryForge {
       .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
   }
 
-  async fetchAuditComment(_target: AuditTarget): Promise<RepositoryComment | undefined> {
-    throw new Error("GitHub audit comment workflows are not implemented yet.");
+  async fetchAuditComment(target: AuditTarget): Promise<RepositoryComment | undefined> {
+    const { owner, repo } = parseGitHubRepoFromRemote(this.repoRoot);
+    const comments = await listIssueComments(owner, repo, target.number);
+
+    return comments.find((comment) => comment.body.includes(AUDIT_COMMENT_MARKER));
   }
 
   async fetchIssueComments(issueNumber: number): Promise<RepositoryComment[]> {
@@ -805,10 +809,44 @@ class GitHubRepositoryForge implements RepositoryForge {
   }
 
   async createAuditComment(
-    _target: AuditTarget,
-    _body: string
+    target: AuditTarget,
+    body: string
   ): Promise<RepositoryComment> {
-    throw new Error("GitHub audit comment workflows are not implemented yet.");
+    const { owner, repo } = parseGitHubRepoFromRemote(this.repoRoot);
+    const token = getGitHubApiToken(
+      "Publishing audit comments requires GH_TOKEN or GITHUB_TOKEN to be set, or gh to be installed and authenticated."
+    );
+    const response = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/issues/${target.number}/comments`,
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "User-Agent": "prs-cli",
+        },
+        body: JSON.stringify({ body }),
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Failed to publish the audit comment for ${target.type} #${target.number} (${response.status} ${response.statusText}).`
+      );
+    }
+
+    return parseRepositoryCommentPayload(
+      (await response.json()) as {
+        id?: number;
+        body?: string | null;
+        html_url?: string;
+        created_at?: string;
+        updated_at?: string;
+        user?: { login?: string; type?: string };
+      },
+      `GitHub audit comment publication for ${target.type} #${target.number} returned an incomplete payload.`
+    );
   }
 
   async updateIssuePlanComment(
