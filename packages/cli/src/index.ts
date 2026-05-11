@@ -50,6 +50,10 @@ import {
   type LaunchStageNoticeId,
 } from "./launch-stage";
 import {
+  parseCodexCommandArgs,
+  type CodexCommandOptions,
+} from "./commands/codex";
+import {
   parsePrCommandArgs as parsePrCommandArgsImpl,
   type PrCommandOptions,
 } from "./commands/pr";
@@ -427,6 +431,12 @@ const TOP_LEVEL_HELP = [
   "  prs pr prepare-review <pr-number>",
   "  prs pr resolve-conflicts <pr-number>",
   "  prs feature-backlog [repo-path]",
+  "",
+  "Codex launchers:",
+  "  prs codex issue <number>",
+  "  prs codex issue batch <number> <number> [...number] [--mode unattended]",
+  "  prs codex pr prepare-review <pr-number>",
+  "  prs codex pr resolve-conflicts <pr-number>",
   "",
   "Supporting commands:",
   "  prs setup",
@@ -1004,6 +1014,10 @@ export function parsePrCommandArgs(args: string[]): PrCommandOptions {
   return parsePrCommandArgsImpl(args, parseIssueNumber);
 }
 
+export function parseCodexCommand(args: string[]): CodexCommandOptions {
+  return parseCodexCommandArgs(args, parseIssueNumber);
+}
+
 export function parseAuditCommandArgs(args: string[]): AuditCommandOptions {
   const auditArgs = args[0] === "audit" ? args.slice(1) : args;
   const subcommand = auditArgs[0];
@@ -1470,6 +1484,22 @@ function resolveLaunchStageNoticeId(args: string[]): LaunchStageNoticeId | undef
       return "pr-resolve-conflicts";
     }
     return undefined;
+  }
+
+  if (command === "codex") {
+    const codexCommand = parseCodexCommand(args);
+    if (codexCommand.action === "issue") {
+      return "issue-run";
+    }
+    if (codexCommand.action === "issue-batch") {
+      return "issue-batch";
+    }
+    if (codexCommand.action === "pr-prepare-review") {
+      return "pr-prepare-review";
+    }
+    if (codexCommand.action === "pr-resolve-conflicts") {
+      return "pr-resolve-conflicts";
+    }
   }
 
   return undefined;
@@ -4016,35 +4046,12 @@ async function runPrCommand(): Promise<void> {
   const repositoryConfig = getRepositoryConfig(repoRoot);
 
   if (prCommand.action === "prepare-review") {
-    await runPrPrepareReviewCommand({
-      prNumber: prCommand.prNumber,
-      repoRoot,
-      buildCommand: repositoryConfig.buildCommand,
-      ensureVerificationCommandAvailable,
-      preflightBaseBranch: preflightRemoteBranch,
-      forge: getRepositoryForge(repoRoot),
-      ensureCleanWorkingTree,
-      promptForLine,
-      hasChanges,
-      verifyBuild,
-      commitGeneratedChanges,
-      readDiff: readIssueWorkflowDiff,
-      createProvider: async (providerRepoRoot) => createProvider(providerRepoRoot),
-    });
+    await runPrPrepareReviewCodexLauncher(prCommand.prNumber, repoRoot, repositoryConfig);
     return;
   }
 
   if (prCommand.action === "resolve-conflicts") {
-    await runPrResolveConflictsCommand({
-      prNumber: prCommand.prNumber,
-      repoRoot,
-      buildCommand: repositoryConfig.buildCommand,
-      ensureVerificationCommandAvailable,
-      preflightBaseBranch: preflightRemoteBranch,
-      forge: getRepositoryForge(repoRoot),
-      ensureCleanWorkingTree,
-      verifyBuild,
-    });
+    await runPrResolveConflictsCodexLauncher(prCommand.prNumber, repoRoot, repositoryConfig);
     return;
   }
 
@@ -4138,6 +4145,76 @@ async function runPrCommand(): Promise<void> {
     hasChanges,
     commitGeneratedChanges,
   });
+}
+
+async function runPrPrepareReviewCodexLauncher(
+  prNumber: number,
+  repoRoot: string,
+  repositoryConfig: ReturnType<typeof getRepositoryConfig>
+): Promise<void> {
+  await runPrPrepareReviewCommand({
+    prNumber,
+    repoRoot,
+    buildCommand: repositoryConfig.buildCommand,
+    ensureVerificationCommandAvailable,
+    preflightBaseBranch: preflightRemoteBranch,
+    forge: getRepositoryForge(repoRoot),
+    ensureCleanWorkingTree,
+    promptForLine,
+    hasChanges,
+    verifyBuild,
+    commitGeneratedChanges,
+    readDiff: readIssueWorkflowDiff,
+    createProvider: async (providerRepoRoot) => createProvider(providerRepoRoot),
+  });
+}
+
+async function runPrResolveConflictsCodexLauncher(
+  prNumber: number,
+  repoRoot: string,
+  repositoryConfig: ReturnType<typeof getRepositoryConfig>
+): Promise<void> {
+  await runPrResolveConflictsCommand({
+    prNumber,
+    repoRoot,
+    buildCommand: repositoryConfig.buildCommand,
+    ensureVerificationCommandAvailable,
+    preflightBaseBranch: preflightRemoteBranch,
+    forge: getRepositoryForge(repoRoot),
+    ensureCleanWorkingTree,
+    verifyBuild,
+  });
+}
+
+async function runCodexCommand(): Promise<void> {
+  const repoRoot = getDefaultRepoRoot();
+  const repositoryConfig = getRepositoryConfig(repoRoot);
+  const codexCommand = parseCodexCommand(getCliArgs());
+
+  if (codexCommand.action === "issue") {
+    await runUnattendedIssueCommand(codexCommand.issueNumber);
+    return;
+  }
+
+  if (codexCommand.action === "issue-batch") {
+    await runIssueBatchCommand(codexCommand.issueNumbers);
+    return;
+  }
+
+  if (codexCommand.action === "pr-prepare-review") {
+    await runPrPrepareReviewCodexLauncher(
+      codexCommand.prNumber,
+      repoRoot,
+      repositoryConfig
+    );
+    return;
+  }
+
+  await runPrResolveConflictsCodexLauncher(
+    codexCommand.prNumber,
+    repoRoot,
+    repositoryConfig
+  );
 }
 
 async function runToolCommand(): Promise<void> {
@@ -6285,6 +6362,7 @@ export async function run(): Promise<void> {
     command !== "audit" &&
     command !== "issue" &&
     command !== "pr" &&
+    command !== "codex" &&
     command !== "tool" &&
     command !== "review" &&
     command !== "test-backlog" &&
@@ -6324,6 +6402,11 @@ export async function run(): Promise<void> {
 
   if (command === "pr") {
     await runPrCommand();
+    return;
+  }
+
+  if (command === "codex") {
+    await runCodexCommand();
     return;
   }
 

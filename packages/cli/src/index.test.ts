@@ -1415,6 +1415,7 @@ async function loadCli(options: {
     recommendIssueBranchBase: module.recommendIssueBranchBase,
     parseFeatureBacklogCommandArgs: module.parseFeatureBacklogCommandArgs,
     parseAuditCommandArgs: module.parseAuditCommandArgs,
+    parseCodexCommand: module.parseCodexCommand,
     parseIssueCommandArgs: module.parseIssueCommandArgs,
     parsePrCommandArgs: module.parsePrCommandArgs,
     parseReviewCommandArgs: module.parseReviewCommandArgs,
@@ -2554,6 +2555,28 @@ describe("CLI integration", () => {
     });
   });
 
+  it("parses explicit codex launcher commands", async () => {
+    process.env.GIT_AI_DISABLE_AUTO_RUN = "1";
+    const { parseCodexCommand } = await loadCli();
+
+    expect(parseCodexCommand(["codex", "issue", "77"])).toEqual({
+      action: "issue",
+      issueNumber: 77,
+    });
+    expect(parseCodexCommand(["codex", "issue", "batch", "77", "78"])).toEqual({
+      action: "issue-batch",
+      issueNumbers: [77, 78],
+    });
+    expect(parseCodexCommand(["codex", "pr", "prepare-review", "79"])).toEqual({
+      action: "pr-prepare-review",
+      prNumber: 79,
+    });
+    expect(parseCodexCommand(["codex", "pr", "resolve-conflicts", "80"])).toEqual({
+      action: "pr-resolve-conflicts",
+      prNumber: 80,
+    });
+  });
+
   it("parses audit publish for issue artifacts", async () => {
     process.env.GIT_AI_DISABLE_AUTO_RUN = "1";
     const { parseAuditCommandArgs } = await loadCli();
@@ -2775,6 +2798,9 @@ describe("CLI integration", () => {
     expect(stdout.output()).toContain("prs issue refine <number>");
     expect(stdout.output()).toContain("prs pr prepare-review <pr-number>");
     expect(stdout.output()).toContain("prs pr resolve-conflicts <pr-number>");
+    expect(stdout.output()).toContain("Codex launchers:");
+    expect(stdout.output()).toContain("prs codex issue <number>");
+    expect(stdout.output()).toContain("prs codex pr prepare-review <pr-number>");
   });
 
   it("prints a deprecation notice when invoked through the legacy git-ai alias", async () => {

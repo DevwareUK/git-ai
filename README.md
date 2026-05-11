@@ -171,6 +171,7 @@ The launch path is not presented as full runtime or provider parity:
 - Codex `/prs pr <number> prepare-review` uses the deterministic `prs tool pr prepare-review <number> --json` command instead, so it does not launch a nested Codex session.
 - `prs pr resolve-conflicts <pr-number>` always requires `codex` on `PATH` for guided merge-conflict resolution, even though it only opens Codex when the base merge conflicts.
 - `prs issue <number> --mode unattended` and `prs issue batch ...` require `ai.runtime.type` to be `codex`.
+- `prs codex ...` commands are explicit launchers for CLI or CI contexts that should run the Codex-backed workflow. Do not call them from inside a Codex `/prs` skill flow.
 - Interactive local workflows such as `prs issue draft`, `prs issue refine <number>`, `prs issue <number>`, `prs pr fix-comments <pr-number>`, `prs pr fix-failing-tests <pr-number>`, and `prs pr fix-tests <pr-number>` use the configured runtime, with fallback to Codex when a configured non-default runtime is unavailable.
 - Structured-text workflows such as `prs commit`, `prs diff`, `prs review`, and issue-plan / PR-text generation use the configured provider, defaulting to OpenAI and allowing `bedrock-claude` as an advanced option.
 
@@ -224,6 +225,13 @@ Beta commands:
 - `prs pr prepare-review <pr-number>`: prepare a reviewer workspace and review brief before a live Codex session
 - `prs pr resolve-conflicts <pr-number>`: sync a PR branch with its base branch and resolve conflicts in a focused Codex session
 - `prs feature-backlog`: find high-value feature opportunities
+
+Codex launchers:
+
+- `prs codex issue <number>`: run the unattended Codex issue-to-PR workflow
+- `prs codex issue batch <number> <number> [...number] [--mode unattended]`: run the existing unattended Codex issue batch workflow
+- `prs codex pr prepare-review <pr-number>`: run the Codex-launching PR review preparation flow
+- `prs codex pr resolve-conflicts <pr-number>`: run the Codex-launching PR conflict resolution flow
 
 Supporting commands:
 
