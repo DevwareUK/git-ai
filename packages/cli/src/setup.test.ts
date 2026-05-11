@@ -217,13 +217,18 @@ describe("setup command", () => {
     expect(testSuggestionsWorkflow).toContain("github-script");
     expect(testSuggestionsWorkflow).toContain("updateComment");
     expect(testSuggestionsWorkflow).toContain("createComment");
-    expect(messages.join("\n")).toContain("Installed prs Codex skills: 4");
+    expect(messages.join("\n")).toContain("Installed prs Codex skills: 5");
+    expect(messages.join("\n")).toContain("Unified Codex entrypoint: /prs");
+    expect(messages.join("\n")).toContain(
+      "Use the managed `prs` Codex skill as the /prs router."
+    );
     expect(messages.join("\n")).toContain(
       "Workflow audit artifacts publish to GitHub; generated Superpowers docs are not committed."
     );
     expect(existsSync(resolve(codexHome, "skills", "prs-start-issue-work", "SKILL.md"))).toBe(
       true
     );
+    expect(existsSync(resolve(codexHome, "skills", "prs", "SKILL.md"))).toBe(true);
     expect(messages.join("\n")).toContain(
       "Recommended launch path: GitHub forge, OpenAI provider, and Codex runtime."
     );

@@ -1865,6 +1865,8 @@ export async function runSetupCommand(options: {
 
   console.log(`Installed prs Codex skills: ${installedSkills.installed}`);
   console.log(`Codex skills root: ${installedSkills.root}`);
+  console.log("Unified Codex entrypoint: /prs");
+  console.log("Use the managed `prs` Codex skill as the /prs router.");
   console.log(
     "Workflow audit artifacts publish to GitHub; generated Superpowers docs are not committed."
   );

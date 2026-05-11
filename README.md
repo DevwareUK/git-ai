@@ -173,6 +173,27 @@ The launch path is not presented as full runtime or provider parity:
 - Interactive local workflows such as `prs issue draft`, `prs issue refine <number>`, `prs issue <number>`, `prs pr fix-comments <pr-number>`, `prs pr fix-failing-tests <pr-number>`, and `prs pr fix-tests <pr-number>` use the configured runtime, with fallback to Codex when a configured non-default runtime is unavailable.
 - Structured-text workflows such as `prs commit`, `prs diff`, `prs review`, and issue-plan / PR-text generation use the configured provider, defaulting to OpenAI and allowing `bedrock-claude` as an advanced option.
 
+## Codex `/prs` workflow
+
+The recommended Codex entrypoint is `/prs`. It is the unified workflow router over the existing `prs` CLI and managed Codex skills.
+
+- `/prs`: interactive command center
+- `/prs issue`: interactive "actionable for me" issue picker
+- `/prs issue <number>`: start issue work
+- `/prs issue <number> refine`: refine an issue into an implementation-ready specification
+- `/prs issue <number> plan`: publish or refresh an issue plan
+- `/prs pr`: interactive "actionable for me" PR picker
+- `/prs pr <number>`: choose a PR action
+- `/prs pr <number> resolve-conflicts`: resolve PR conflicts
+- `/prs pr <number> prepare-review`: prepare a review workspace
+- `/prs pr <number> fix-comments`: fix selected PR review comments
+- `/prs pr <number> fix-failing-tests`: fix captured failing verification output
+- `/prs pr <number> fix-tests`: implement selected PRS AI test suggestions
+- `/prs audit publish`: publish run artifacts to GitHub audit comments
+- `/prs finish`: verify, commit, push, PR, audit, and safe cleanup
+
+`/prs issue` and `/prs pr` default to actionable-for-me lists. Issue multi-select starts parallel Superpowers issue work in separate worktrees. In Codex installs without a first-class slash-command directory, `prs setup` installs the managed `prs` Codex skill as the `/prs` router.
+
 ## Command tiers
 
 Run `prs help` or `prs --help` for the same tiered overview in the terminal.
