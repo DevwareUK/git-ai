@@ -43,6 +43,7 @@ describe("managed prs Codex skills", () => {
 
     expect(markdown).toContain("name: prs");
     expect(markdown).toContain("/prs issue");
+    expect(markdown).toContain("/prs issue <number> finish");
     expect(markdown).toContain("/prs pr <number> resolve-conflicts");
     expect(markdown).toContain("actionable for me");
     expect(markdown).toContain("Existing managed skills are backing behaviors");

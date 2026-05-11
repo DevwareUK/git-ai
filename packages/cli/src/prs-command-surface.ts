@@ -1,3 +1,10 @@
+import {
+  filterActionableIssuesForUser,
+  filterActionablePullRequestsForUser,
+  type ActionableIssue,
+  type ActionablePullRequest,
+} from "./actionable-github";
+
 export type PrsIssueAction = "work" | "refine" | "plan" | "finish";
 export type PrsPrAction =
   | "choose"
@@ -25,7 +32,13 @@ export type PrsCommandRoute = {
     | "prs:publish-audit"
     | "prs:finish-work";
   cliArgs?: string[];
+  picker?: "actionable-issues" | "actionable-pull-requests" | "pr-actions";
+  target?: { type: "issue" | "pull-request"; number: number };
 };
+
+export type PrsInteractivePickerModel =
+  | { kind: "issues"; items: ActionableIssue[] }
+  | { kind: "pull-requests"; items: ActionablePullRequest[] };
 
 const ISSUE_ACTIONS = new Set(["refine", "plan", "finish"]);
 const PR_ACTIONS = new Set([
@@ -138,7 +151,12 @@ export function routePrsCommandSurfaceAction(action: PrsCommandSurfaceAction): P
 
   if (action.kind === "issue") {
     if (action.mode === "interactive") {
-      return { interaction: "interactive", skillName: "prs:start-issue-work", cliArgs: undefined };
+      return {
+        interaction: "interactive",
+        skillName: "prs:start-issue-work",
+        cliArgs: undefined,
+        picker: "actionable-issues",
+      };
     }
 
     if (action.action === "work") {
@@ -146,6 +164,7 @@ export function routePrsCommandSurfaceAction(action: PrsCommandSurfaceAction): P
         interaction: "direct",
         skillName: "prs:start-issue-work",
         cliArgs: ["issue", String(action.issueNumber)],
+        target: { type: "issue", number: action.issueNumber },
       };
     }
 
@@ -154,6 +173,7 @@ export function routePrsCommandSurfaceAction(action: PrsCommandSurfaceAction): P
         interaction: "direct",
         skillName: "prs:start-issue-work",
         cliArgs: ["issue", "refine", String(action.issueNumber)],
+        target: { type: "issue", number: action.issueNumber },
       };
     }
 
@@ -162,25 +182,43 @@ export function routePrsCommandSurfaceAction(action: PrsCommandSurfaceAction): P
         interaction: "direct",
         skillName: "prs:start-issue-work",
         cliArgs: ["issue", "plan", String(action.issueNumber)],
+        target: { type: "issue", number: action.issueNumber },
       };
     }
 
-    return { interaction: "interactive", skillName: "prs:finish-work", cliArgs: undefined };
+    return {
+      interaction: "interactive",
+      skillName: "prs:finish-work",
+      cliArgs: undefined,
+      target: { type: "issue", number: action.issueNumber },
+    };
   }
 
   if (action.kind === "pr") {
     if (action.mode === "interactive") {
-      return { interaction: "interactive", skillName: "prs", cliArgs: undefined };
+      return {
+        interaction: "interactive",
+        skillName: "prs",
+        cliArgs: undefined,
+        picker: "actionable-pull-requests",
+      };
     }
 
     if (action.action === "choose") {
-      return { interaction: "interactive", skillName: "prs", cliArgs: undefined };
+      return {
+        interaction: "interactive",
+        skillName: "prs",
+        cliArgs: undefined,
+        picker: "pr-actions",
+        target: { type: "pull-request", number: action.prNumber },
+      };
     }
 
     return {
       interaction: "direct",
       skillName: "prs",
       cliArgs: ["pr", action.action, String(action.prNumber)],
+      target: { type: "pull-request", number: action.prNumber },
     };
   }
 
@@ -193,4 +231,29 @@ export function routePrsCommandSurfaceAction(action: PrsCommandSurfaceAction): P
   }
 
   return { interaction: "interactive", skillName: "prs:finish-work", cliArgs: undefined };
+}
+
+export function buildPrsInteractivePickerModel(
+  action: PrsCommandSurfaceAction,
+  input: {
+    currentUser: string;
+    issues?: ActionableIssue[];
+    pullRequests?: ActionablePullRequest[];
+  }
+): PrsInteractivePickerModel | undefined {
+  if (action.kind === "issue" && action.mode === "interactive") {
+    return {
+      kind: "issues",
+      items: filterActionableIssuesForUser(input.issues ?? [], input.currentUser),
+    };
+  }
+
+  if (action.kind === "pr" && action.mode === "interactive") {
+    return {
+      kind: "pull-requests",
+      items: filterActionablePullRequestsForUser(input.pullRequests ?? [], input.currentUser),
+    };
+  }
+
+  return undefined;
 }

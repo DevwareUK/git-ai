@@ -51,6 +51,7 @@ export const PRS_CODEX_SKILLS: ManagedCodexSkill[] = [
       "- `/prs issue <number>`: start work on the issue.",
       "- `/prs issue <number> refine`: refine the issue.",
       "- `/prs issue <number> plan`: publish or refresh the issue plan.",
+      "- `/prs issue <number> finish`: finish work with the issue context preserved.",
       "- `/prs pr <number>`: choose an action for the PR.",
       "- `/prs pr <number> prepare-review`: run `prs pr prepare-review <number>`.",
       "- `/prs pr <number> resolve-conflicts`: run `prs pr resolve-conflicts <number>`.",

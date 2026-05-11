@@ -182,6 +182,7 @@ The recommended Codex entrypoint is `/prs`. It is the unified workflow router ov
 - `/prs issue <number>`: start issue work
 - `/prs issue <number> refine`: refine an issue into an implementation-ready specification
 - `/prs issue <number> plan`: publish or refresh an issue plan
+- `/prs issue <number> finish`: finish work with the issue context preserved
 - `/prs pr`: interactive "actionable for me" PR picker
 - `/prs pr <number>`: choose a PR action
 - `/prs pr <number> resolve-conflicts`: resolve PR conflicts

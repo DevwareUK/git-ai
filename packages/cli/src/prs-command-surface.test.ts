@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildPrsInteractivePickerModel,
   parsePrsCommandSurfaceArgs,
   renderPrsCommandSurfaceHelp,
   routePrsCommandSurfaceAction,
@@ -139,6 +140,7 @@ describe("prs command surface routing", () => {
       interaction: "interactive",
       skillName: "prs:start-issue-work",
       cliArgs: undefined,
+      picker: "actionable-issues",
     });
     expect(
       routePrsCommandSurfaceAction({
@@ -151,6 +153,7 @@ describe("prs command surface routing", () => {
       interaction: "direct",
       skillName: "prs:start-issue-work",
       cliArgs: ["issue", "123"],
+      target: { type: "issue", number: 123 },
     });
     expect(
       routePrsCommandSurfaceAction({
@@ -163,6 +166,7 @@ describe("prs command surface routing", () => {
       interaction: "direct",
       skillName: "prs:start-issue-work",
       cliArgs: ["issue", "refine", "123"],
+      target: { type: "issue", number: 123 },
     });
     expect(
       routePrsCommandSurfaceAction({
@@ -175,10 +179,44 @@ describe("prs command surface routing", () => {
       interaction: "direct",
       skillName: "prs:start-issue-work",
       cliArgs: ["issue", "plan", "123"],
+      target: { type: "issue", number: 123 },
+    });
+    expect(
+      routePrsCommandSurfaceAction({
+        kind: "issue",
+        mode: "direct",
+        issueNumber: 123,
+        action: "finish",
+      })
+    ).toEqual({
+      interaction: "interactive",
+      skillName: "prs:finish-work",
+      cliArgs: undefined,
+      target: { type: "issue", number: 123 },
     });
   });
 
   it("routes PR actions to existing CLI commands", () => {
+    expect(routePrsCommandSurfaceAction({ kind: "pr", mode: "interactive" })).toEqual({
+      interaction: "interactive",
+      skillName: "prs",
+      cliArgs: undefined,
+      picker: "actionable-pull-requests",
+    });
+    expect(
+      routePrsCommandSurfaceAction({
+        kind: "pr",
+        mode: "direct",
+        prNumber: 456,
+        action: "choose",
+      })
+    ).toEqual({
+      interaction: "interactive",
+      skillName: "prs",
+      cliArgs: undefined,
+      picker: "pr-actions",
+      target: { type: "pull-request", number: 456 },
+    });
     expect(
       routePrsCommandSurfaceAction({
         kind: "pr",
@@ -190,6 +228,7 @@ describe("prs command surface routing", () => {
       interaction: "direct",
       skillName: "prs",
       cliArgs: ["pr", "resolve-conflicts", "456"],
+      target: { type: "pull-request", number: 456 },
     });
     expect(
       routePrsCommandSurfaceAction({
@@ -202,6 +241,7 @@ describe("prs command surface routing", () => {
       interaction: "direct",
       skillName: "prs",
       cliArgs: ["pr", "fix-comments", "456"],
+      target: { type: "pull-request", number: 456 },
     });
   });
 
@@ -222,5 +262,128 @@ describe("prs command surface routing", () => {
       skillName: "prs:finish-work",
       cliArgs: undefined,
     });
+  });
+});
+
+describe("prs interactive picker models", () => {
+  it("applies actionable issue filtering to the interactive issue picker", () => {
+    const model = buildPrsInteractivePickerModel(
+      { kind: "issue", mode: "interactive" },
+      {
+        currentUser: "me",
+        issues: [
+          {
+            number: 1,
+            title: "Mine",
+            author: "me",
+            assignees: [],
+            labels: [],
+            updatedAt: "2026-05-01T10:00:00Z",
+            hasLinkedOpenPullRequest: false,
+            hasPrsPlan: false,
+          },
+          {
+            number: 2,
+            title: "Already has PR",
+            author: "me",
+            assignees: ["me"],
+            labels: ["ready"],
+            updatedAt: "2026-05-02T10:00:00Z",
+            hasLinkedOpenPullRequest: true,
+            hasPrsPlan: true,
+          },
+        ],
+      }
+    );
+
+    expect(model).toEqual({
+      kind: "issues",
+      items: [
+        {
+          number: 1,
+          title: "Mine",
+          author: "me",
+          assignees: [],
+          labels: [],
+          updatedAt: "2026-05-01T10:00:00Z",
+          hasLinkedOpenPullRequest: false,
+          hasPrsPlan: false,
+        },
+      ],
+    });
+  });
+
+  it("applies actionable PR filtering to the interactive PR picker", () => {
+    const model = buildPrsInteractivePickerModel(
+      { kind: "pr", mode: "interactive" },
+      {
+        currentUser: "me",
+        pullRequests: [
+          {
+            number: 10,
+            title: "Conflicts",
+            author: "alice",
+            assignees: [],
+            reviewRequestedFrom: [],
+            headRefName: "feat/conflicts",
+            labels: [],
+            updatedAt: "2026-05-01T10:00:00Z",
+            hasConflicts: true,
+            hasFailedChecks: false,
+            hasUnresolvedReviewComments: false,
+            hasPrsTestSuggestions: false,
+          },
+          {
+            number: 11,
+            title: "Not actionable",
+            author: "alice",
+            assignees: [],
+            reviewRequestedFrom: [],
+            headRefName: "feat/other",
+            labels: [],
+            updatedAt: "2026-05-02T10:00:00Z",
+            hasConflicts: false,
+            hasFailedChecks: false,
+            hasUnresolvedReviewComments: false,
+            hasPrsTestSuggestions: false,
+          },
+        ],
+      }
+    );
+
+    expect(model).toEqual({
+      kind: "pull-requests",
+      items: [
+        {
+          number: 10,
+          title: "Conflicts",
+          author: "alice",
+          assignees: [],
+          reviewRequestedFrom: [],
+          headRefName: "feat/conflicts",
+          labels: [],
+          updatedAt: "2026-05-01T10:00:00Z",
+          hasConflicts: true,
+          hasFailedChecks: false,
+          hasUnresolvedReviewComments: false,
+          hasPrsTestSuggestions: false,
+        },
+      ],
+    });
+  });
+
+  it("only builds picker models for interactive list actions", () => {
+    expect(
+      buildPrsInteractivePickerModel(
+        { kind: "issue", mode: "direct", issueNumber: 123, action: "work" },
+        { currentUser: "me", issues: [] }
+      )
+    ).toBeUndefined();
+    expect(
+      buildPrsInteractivePickerModel(
+        { kind: "pr", mode: "direct", prNumber: 456, action: "choose" },
+        { currentUser: "me", pullRequests: [] }
+      )
+    ).toBeUndefined();
   });
 });
