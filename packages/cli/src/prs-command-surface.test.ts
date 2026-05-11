@@ -55,6 +55,14 @@ describe("prs command surface", () => {
       mode: "direct",
       prNumber: 456,
       action: "choose",
+      all: false,
+    });
+    expect(parsePrsCommandSurfaceArgs(["pr", "456", "--all"])).toEqual({
+      kind: "pr",
+      mode: "direct",
+      prNumber: 456,
+      action: "choose",
+      all: true,
     });
   });
 
@@ -211,11 +219,26 @@ describe("prs command surface routing", () => {
         action: "choose",
       })
     ).toEqual({
-      interaction: "interactive",
+      interaction: "direct",
       skillName: "prs",
-      cliArgs: undefined,
-      picker: "pr-actions",
+      cliArgs: ["tool", "pr", "ready", "456", "--json"],
       target: { type: "pull-request", number: 456 },
+      toolOnly: true,
+    });
+    expect(
+      routePrsCommandSurfaceAction({
+        kind: "pr",
+        mode: "direct",
+        prNumber: 456,
+        action: "choose",
+        all: true,
+      })
+    ).toEqual({
+      interaction: "direct",
+      skillName: "prs",
+      cliArgs: ["tool", "pr", "ready", "456", "--all", "--json"],
+      target: { type: "pull-request", number: 456 },
+      toolOnly: true,
     });
     expect(
       routePrsCommandSurfaceAction({

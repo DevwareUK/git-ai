@@ -46,6 +46,13 @@ describe("managed prs Codex skills", () => {
     expect(markdown).toContain("/prs issue <number> finish");
     expect(markdown).toContain("/prs pr <number> resolve-conflicts");
     expect(markdown).toContain(
+      "/prs pr <number>`: run `prs tool pr ready <number> --json`"
+    );
+    expect(markdown).toContain(
+      "/prs pr <number> --all`: run `prs tool pr ready <number> --all --json`"
+    );
+    expect(markdown).toContain("Do not push, review, fix, approve, or merge.");
+    expect(markdown).toContain(
       "/prs pr <number> prepare-review`: run `prs tool pr prepare-review <number> --json`"
     );
     expect(markdown).toContain("read the returned `snapshotFilePath`");

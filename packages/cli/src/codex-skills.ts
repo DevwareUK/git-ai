@@ -47,6 +47,18 @@ function renderPrPrepareReviewToolCommand(): string {
   return `prs ${cliArgs.replace("123", "<number>")}`;
 }
 
+function renderPrReadyToolCommand(all = false): string {
+  const route = routePrsCommandSurfaceAction(
+    parsePrsCommandSurfaceArgs(all ? ["pr", "123", "--all"] : ["pr", "123"])
+  );
+  const cliArgs = route.cliArgs?.join(" ");
+  if (!route.toolOnly || !cliArgs) {
+    throw new Error("Expected /prs pr <number> to route to a prs tool command.");
+  }
+
+  return `prs ${cliArgs.replace("123", "<number>")}`;
+}
+
 function formatShellCommandSegment(value: string): string {
   return /^[A-Za-z0-9_./:=@+-]+$/.test(value)
     ? value
@@ -111,7 +123,8 @@ export const PRS_CODEX_SKILLS: ManagedCodexSkill[] = [
       "- `/prs issue <number> refine`: refine the issue.",
       "- `/prs issue <number> plan`: publish or refresh the issue plan.",
       "- `/prs issue <number> finish`: finish work with the issue context preserved.",
-      "- `/prs pr <number>`: choose an action for the PR.",
+      `- \`/prs pr <number>\`: run \`${renderPrReadyToolCommand()}\`; check out the PR branch, report base sync/runtime readiness, and stop with the next sensible action so the user can browse the app quickly.`,
+      `- \`/prs pr <number> --all\`: run \`${renderPrReadyToolCommand(true)}\`; take all sensible readiness steps without prompting, including syncing the base branch and starting DDEV when detected. Do not push, review, fix, approve, or merge.`,
       `- \`/prs pr <number> prepare-review\`: run \`${renderPrPrepareReviewToolCommand()}\`, keep the prepared branch checked out in the current repository, read the returned \`snapshotFilePath\` when useful, then continue review in this Codex session. The deterministic tool does not generate \`review-brief.md\`; do not look for one unless a separate command created it.`,
       "- `/prs pr <number> resolve-conflicts`: run `prs pr resolve-conflicts <number>`.",
       "- `/prs pr <number> fix-comments`: run `prs pr fix-comments <number>`.",

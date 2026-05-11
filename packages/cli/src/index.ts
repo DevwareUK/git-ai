@@ -58,6 +58,7 @@ import {
   type PrCommandOptions,
 } from "./commands/pr";
 import { listPullRequestsTool } from "./pr-list-tool";
+import { readyPullRequestTool } from "./pr-ready-tool";
 import { parsePrsToolCommandArgs } from "./prs-tool-command";
 import {
   createRepositoryForge,
@@ -442,6 +443,7 @@ const TOP_LEVEL_HELP = [
   "Supporting commands:",
   "  prs setup",
   "  prs tool pr list [--actionable] --json",
+  "  prs tool pr ready <pr-number> [--all] --json",
   "  prs tool pr prepare-review <pr-number> --json",
   "  prs audit publish (--issue <number>|--pr <number>) --file <path> --section <name> [--local-run <path>]",
   "  prs commit",
@@ -4256,6 +4258,31 @@ async function runToolCommand(): Promise<void> {
         commitGeneratedChanges,
         readDiff: readIssueWorkflowDiff,
         createProvider: async (providerRepoRoot) => createProvider(providerRepoRoot),
+      });
+    } finally {
+      console.log = originalConsoleLog;
+    }
+
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+
+  if (toolCommand.kind === "pr-ready") {
+    const originalConsoleLog = console.log;
+    console.log = (...values: unknown[]) => {
+      process.stderr.write(`${values.map((value) => String(value)).join(" ")}\n`);
+    };
+
+    let result: Awaited<ReturnType<typeof readyPullRequestTool>>;
+    try {
+      result = await readyPullRequestTool({
+        all: toolCommand.all,
+        prNumber: toolCommand.prNumber,
+        repoRoot,
+        buildCommand: repositoryConfig.buildCommand,
+        ensureVerificationCommandAvailable,
+        forge: getRepositoryForge(repoRoot),
+        ensureCleanWorkingTree,
       });
     } finally {
       console.log = originalConsoleLog;

@@ -19,7 +19,7 @@ export type PrsCommandSurfaceAction =
   | { kind: "issue"; mode: "interactive" }
   | { kind: "issue"; mode: "direct"; issueNumber: number; action: PrsIssueAction }
   | { kind: "pr"; mode: "interactive" }
-  | { kind: "pr"; mode: "direct"; prNumber: number; action: PrsPrAction }
+  | { kind: "pr"; mode: "direct"; prNumber: number; action: PrsPrAction; all?: boolean }
   | { kind: "audit"; action: "publish"; passthroughArgs: string[] }
   | { kind: "finish" };
 
@@ -70,7 +70,7 @@ export function renderPrsCommandSurfaceHelp(): string {
     "  /prs issue",
     "  /prs issue <number> [refine|plan|finish]",
     "  /prs pr",
-    "  /prs pr <number> [prepare-review|resolve-conflicts|fix-comments|fix-failing-tests|fix-tests]",
+    "  /prs pr <number> [--all|prepare-review|resolve-conflicts|fix-comments|fix-failing-tests|fix-tests]",
     "  /prs audit publish [--issue <number>|--pr <number>] [--file <path>] [--section <name>] [--local-run <path>]",
     "  /prs finish",
   ].join("\n");
@@ -119,8 +119,11 @@ export function parsePrsCommandSurfaceArgs(args: string[]): PrsCommandSurfaceAct
     }
 
     const prNumber = parsePositiveNumber(second, "pr");
+    if (third === "--all") {
+      return { kind: "pr", mode: "direct", prNumber, action: "choose", all: true };
+    }
     if (!third) {
-      return { kind: "pr", mode: "direct", prNumber, action: "choose" };
+      return { kind: "pr", mode: "direct", prNumber, action: "choose", all: false };
     }
     if (!PR_ACTIONS.has(third)) {
       throw new Error(renderPrsCommandSurfaceHelp());
@@ -207,11 +210,13 @@ export function routePrsCommandSurfaceAction(action: PrsCommandSurfaceAction): P
 
     if (action.action === "choose") {
       return {
-        interaction: "interactive",
+        interaction: "direct",
         skillName: "prs",
-        cliArgs: undefined,
-        picker: "pr-actions",
+        cliArgs: action.all
+          ? ["tool", "pr", "ready", String(action.prNumber), "--all", "--json"]
+          : ["tool", "pr", "ready", String(action.prNumber), "--json"],
         target: { type: "pull-request", number: action.prNumber },
+        toolOnly: true,
       };
     }
 

@@ -188,7 +188,8 @@ The recommended Codex entrypoint is `/prs`. It is the unified workflow router ov
 - `/prs issue <number> plan`: publish or refresh an issue plan
 - `/prs issue <number> finish`: finish work with the issue context preserved
 - `/prs pr`: interactive "actionable for me" PR picker backed by `prs tool pr list --actionable --json`
-- `/prs pr <number>`: choose a PR action
+- `/prs pr <number>`: prepare the PR branch for local functional testing with `prs tool pr ready <number> --json`
+- `/prs pr <number> --all`: take all sensible readiness steps with `prs tool pr ready <number> --all --json`; this may sync the base branch and start DDEV, but does not push, review, fix, approve, or merge
 - `/prs pr <number> resolve-conflicts`: resolve PR conflicts
 - `/prs pr <number> prepare-review`: run `prs tool pr prepare-review <number> --json`, leave the prepared PR branch checked out in the current repository, use the returned `snapshotFilePath` for context when useful, and continue review in the current Codex session without launching nested Codex; this deterministic tool does not generate `review-brief.md`
 - `/prs pr <number> fix-comments`: fix selected PR review comments
@@ -240,6 +241,7 @@ Supporting commands:
 - `prs setup`: guided repository onboarding for `prs`
 - `prs audit publish`: publish a local `.prs/runs` artifact to a managed GitHub audit comment
 - `prs tool pr list [--actionable] --json`: deterministic Codex-safe PR discovery; returns JSON and structured blocked results when GitHub auth is unavailable
+- `prs tool pr ready <pr-number> [--all] --json`: deterministic Codex-safe local functional test readiness; checks out the PR branch, reports base freshness, optionally syncs the base branch and starts DDEV with `--all`, writes metadata, and returns JSON
 - `prs tool pr prepare-review <pr-number> --json`: deterministic Codex-safe PR review preparation; checks out the PR branch in the current repository, syncs it with the latest PR base branch when possible, writes snapshot and metadata artifacts, returns JSON, sends progress logs to stderr, and never launches Codex or generates `review-brief.md`
 - `prs commit`: generate a commit message from staged changes
 - `prs diff`: summarize `git diff HEAD`

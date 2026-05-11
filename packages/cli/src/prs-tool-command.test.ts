@@ -26,6 +26,21 @@ describe("prs tool command parser", () => {
     });
   });
 
+  it("parses PR ready JSON command", () => {
+    expect(parsePrsToolCommandArgs(["pr", "ready", "115", "--json"])).toEqual({
+      kind: "pr-ready",
+      prNumber: 115,
+      all: false,
+      json: true,
+    });
+    expect(parsePrsToolCommandArgs(["pr", "ready", "115", "--all", "--json"])).toEqual({
+      kind: "pr-ready",
+      prNumber: 115,
+      all: true,
+      json: true,
+    });
+  });
+
   it("rejects non-numeric PR numbers", () => {
     expect(() => parsePrsToolCommandArgs(["pr", "prepare-review", "abc", "--json"])).toThrow(
       'Invalid prs tool pr number: "abc".'

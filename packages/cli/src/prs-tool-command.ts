@@ -1,12 +1,14 @@
 export type PrsToolCommand =
   | { kind: "pr-list"; actionable: boolean; json: boolean }
-  | { kind: "pr-prepare-review"; prNumber: number; json: boolean };
+  | { kind: "pr-prepare-review"; prNumber: number; json: boolean }
+  | { kind: "pr-ready"; prNumber: number; all: boolean; json: boolean };
 
 export function renderPrsToolCommandHelp(): string {
   return [
     "Usage:",
     "  prs tool pr list [--actionable] --json",
     "  prs tool pr prepare-review <pr-number> --json",
+    "  prs tool pr ready <pr-number> [--all] --json",
   ].join("\n");
 }
 
@@ -26,11 +28,14 @@ function parsePrNumber(rawValue: string | undefined): number {
 export function parsePrsToolCommandArgs(args: string[]): PrsToolCommand {
   const [scope, command, third, fourth, ...rest] = args;
 
-  if (scope !== "pr" || !command || rest.length > 0) {
+  if (scope !== "pr" || !command) {
     throw new Error(renderPrsToolCommandHelp());
   }
 
   if (command === "list") {
+    if (rest.length > 0) {
+      throw new Error(renderPrsToolCommandHelp());
+    }
     if (third === "--actionable" && fourth === "--json") {
       return { kind: "pr-list", actionable: true, json: true };
     }
@@ -41,6 +46,9 @@ export function parsePrsToolCommandArgs(args: string[]): PrsToolCommand {
   }
 
   if (command === "prepare-review") {
+    if (rest.length > 0) {
+      throw new Error(renderPrsToolCommandHelp());
+    }
     if (!third || third === "--json") {
       throw new Error(renderPrsToolCommandHelp());
     }
@@ -51,6 +59,21 @@ export function parsePrsToolCommandArgs(args: string[]): PrsToolCommand {
     }
 
     return { kind: "pr-prepare-review", prNumber, json: true };
+  }
+
+  if (command === "ready") {
+    if (!third || third === "--json" || third === "--all") {
+      throw new Error(renderPrsToolCommandHelp());
+    }
+
+    const prNumber = parsePrNumber(third);
+    if (fourth === "--json" && rest.length === 0) {
+      return { kind: "pr-ready", prNumber, all: false, json: true };
+    }
+    if (fourth === "--all" && rest[0] === "--json" && rest.length === 1) {
+      return { kind: "pr-ready", prNumber, all: true, json: true };
+    }
+    throw new Error(renderPrsToolCommandHelp());
   }
 
   throw new Error(renderPrsToolCommandHelp());
