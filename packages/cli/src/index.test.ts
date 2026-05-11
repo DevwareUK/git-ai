@@ -904,6 +904,9 @@ async function loadCli(options: {
   prReviewResult?: ReturnType<typeof createPRReviewResult>;
   readlineAnswers?: string[];
   runtimeRepoRoot?: string;
+  dotenvConfigImpl?: (options?: { path?: string; quiet?: boolean }) => {
+    parsed?: Record<string, string>;
+  };
   execFileSyncImpl?: (command: string, args: string[]) => string;
   spawnSyncImpl?: (
     command: string,
@@ -1397,6 +1400,14 @@ async function loadCli(options: {
       awsDefaultRegion: process.env.AWS_DEFAULT_REGION?.trim() || undefined,
     })),
   }));
+  if (options.dotenvConfigImpl) {
+    vi.doMock("dotenv", () => ({
+      default: {
+        config: options.dotenvConfigImpl,
+      },
+      config: options.dotenvConfigImpl,
+    }));
+  }
   vi.doMock("node:child_process", () => ({
     execFileSync,
     spawnSync,
@@ -5127,6 +5138,69 @@ describe("CLI integration", () => {
         },
       ],
       source: "github-api",
+    });
+  });
+
+  it("loads repository .env before running prs tool pr list", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          login: "me",
+        })
+      )
+      .mockResolvedValueOnce(
+        createFetchResponse([
+          {
+            number: 117,
+            title: "Review me from env",
+            user: { login: "someone-else" },
+            assignees: [],
+            requested_reviewers: [{ login: "me" }],
+            head: { ref: "codex/env-token" },
+            labels: [],
+            updated_at: "2026-05-11T12:00:00Z",
+            mergeable: true,
+          },
+        ])
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const dotenvConfig = vi.fn((options?: { path?: string }) => {
+      expect(options?.path).toBe(resolve(REPO_ROOT, ".env"));
+      process.env.GITHUB_TOKEN = "test-token";
+      return { parsed: { GITHUB_TOKEN: "test-token" } };
+    });
+    const { run } = await loadCli({
+      dotenvConfigImpl: dotenvConfig,
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "rev-parse") {
+          return `${REPO_ROOT}\n`;
+        }
+
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/prs.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.argv = ["node", "prs", "tool", "pr", "list", "--actionable", "--json"];
+    const stdout = captureStdout();
+
+    await run();
+
+    expect(dotenvConfig).toHaveBeenCalledWith({ path: resolve(REPO_ROOT, ".env"), quiet: true });
+    expect(JSON.parse(stdout.output())).toMatchObject({
+      status: "ready",
+      actionable: true,
+      pullRequests: [
+        {
+          number: 117,
+          reviewRequestedFrom: ["me"],
+        },
+      ],
     });
   });
 

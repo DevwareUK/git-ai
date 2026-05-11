@@ -4221,6 +4221,7 @@ async function runCodexCommand(): Promise<void> {
 
 async function runToolCommand(): Promise<void> {
   const repoRoot = getDefaultRepoRoot();
+  loadRepoEnv(repoRoot);
   const toolCommand = parsePrsToolCommandArgs(getCliArgs().slice(1));
   const repositoryConfig = getRepositoryConfig(repoRoot);
 
