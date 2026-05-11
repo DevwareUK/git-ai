@@ -1794,6 +1794,9 @@ export async function runSetupCommand(options: {
   console.log("Guided repository setup for prs");
   console.log("");
   console.log("Recommended launch path: GitHub forge, OpenAI provider, and Codex runtime.");
+  console.log("Default workflow: Codex + Superpowers + GitHub audit");
+  console.log("Superpowers worktrees and agents handle execution isolation.");
+  console.log("prs publishes workflow artifacts to GitHub and keeps local traces in .prs/runs.");
   console.log(
     "Advanced customization stays available through `bedrock-claude` and `claude-code`, but those paths are not the default launch recommendation."
   );

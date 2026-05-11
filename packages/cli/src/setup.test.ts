@@ -234,6 +234,12 @@ describe("setup command", () => {
       "Recommended launch path: GitHub forge, OpenAI provider, and Codex runtime."
     );
     expect(messages.join("\n")).toContain(
+      "Default workflow: Codex + Superpowers + GitHub audit"
+    );
+    expect(messages.join("\n")).toContain(
+      "Superpowers worktrees and agents handle execution isolation."
+    );
+    expect(messages.join("\n")).toContain(
       "GitHub Actions in this repo are OpenAI-only today, and unattended issue runs plus `prs pr prepare-review` remain Codex-specific."
     );
     expect(existsSync(resolve(repoRoot, "AGENTS.md"))).toBe(false);

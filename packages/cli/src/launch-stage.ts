@@ -36,9 +36,9 @@ const LAUNCH_STAGE_NOTICE_DEFINITIONS: Record<
     tier: "beta",
     command: "`prs issue batch ...`",
     reason:
-      "It chains unattended issue-to-PR runs and is the most operationally fragile automation path in the CLI today.",
+      "It chains unattended issue-to-PR runs; the current sequential batch remains beta while parallel Superpowers-backed issue work is the target.",
     recommendedFirst:
-      "`prs review`, `prs pr fix-comments <pr-number>`, or a single `prs issue <number>` run.",
+      "Codex + Superpowers + GitHub audit for issue work, or `prs review` and PR fix workflows for narrower changes.",
     constraints:
       'Requires a clean working tree, at least two issue numbers, authenticated GitHub access, and `ai.runtime.type: "codex"`.',
   },
@@ -86,9 +86,9 @@ const LAUNCH_STAGE_NOTICE_DEFINITIONS: Record<
     tier: "advanced",
     command: "`prs issue <number>`",
     reason:
-      "It performs full issue-to-PR automation with branch switching, runtime execution, build verification, and optional PR creation.",
+      "This is the legacy issue automation path until it fully uses the Codex + Superpowers + GitHub audit contract.",
     recommendedFirst:
-      "`prs review`, `prs pr fix-comments <pr-number>`, or `prs pr fix-tests <pr-number>`.",
+      "Codex + Superpowers + GitHub audit for issue work, or `prs review`, `prs pr fix-comments <pr-number>`, and `prs pr fix-tests <pr-number>` for narrower PR work.",
     constraints:
       'Requires a clean working tree, issue access through the configured forge, and a usable text provider; interactive runs need an available runtime CLI, while `--mode unattended` also needs authenticated GitHub access and `ai.runtime.type: "codex"`.',
   },

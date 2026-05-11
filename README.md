@@ -18,11 +18,15 @@ GitHub-only by design:
 - `prs` currently targets GitHub repositories and GitHub pull request workflows on purpose
 - the launch goal is a strong GitHub offer first, not thin parity across every forge
 
-Recommended launch path today:
+Recommended workflow today:
 
 - forge: GitHub
 - structured-text provider: OpenAI
 - interactive runtime: Codex
+- execution discipline: Superpowers worktrees and agents
+- audit destination: managed GitHub issue and pull request comments
+
+Generated Superpowers specs, plans, and completion audits are published to GitHub by default and should not be committed under `docs/superpowers`.
 
 `bedrock-claude` and `claude-code` remain supported for advanced customization, but they are not the default first-offer path and some workflows remain intentionally asymmetric.
 
@@ -329,7 +333,7 @@ prs setup
 
 Runs a guided repository setup flow for the current Git repository. The command inspects the repo, suggests defaults for `baseBranch`, `forge.type`, `ai.runtime.type`, `ai.issue.useCodexSuperpowers`, `buildCommand`, and extra `aiContext.excludePaths`, prints the detection source for each suggestion, warns when it had to fall back because signals were missing or conflicting, and first offers a one-confirmation "use the recommended setup" path before dropping into per-field prompts when you want to customize values. It writes `.prs/config.json`, preserves any existing `ai.provider` settings already present in that file, preserves an existing explicit `ai.issue.useCodexSuperpowers` value on reruns, treats legacy `ai.issueDraft.useCodexSuperpowers` as a backward-compatible input, ensures `.prs/` is gitignored, and only touches `AGENTS.md` when you explicitly opt in to a minimal scaffold for non-obvious repository guidance.
 
-When Codex is available locally, setup also checks whether the Superpowers plugin is present under the active `CODEX_HOME` and reports whether Codex Superpowers-backed issue workflows were enabled or disabled. Setup does not install Codex plugins for you.
+When Codex is available locally, setup also checks whether the Superpowers plugin is present under the active `CODEX_HOME` and reports whether Codex Superpowers-backed issue workflows were enabled or disabled. Setup installs or updates the managed prs Codex skill pack under the active Codex home.
 
 When `forge.type` is `github`, setup can also install the recommended pull-request workflows into the target repository:
 
