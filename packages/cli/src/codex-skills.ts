@@ -62,14 +62,16 @@ function formatCliFallbackCommand(command: string[]): string | undefined {
   return normalized.map(formatShellCommandSegment).join(" ");
 }
 
-function renderSetupCapturedCliFallback(options: CodexSkillRenderOptions): string[] {
+function renderSetupCapturedCliGuidance(options: CodexSkillRenderOptions): string[] {
   const formattedCommand = formatCliFallbackCommand(options.cliFallbackCommand ?? []);
   if (!formattedCommand) {
     return [];
   }
 
   return [
-    `- If \`prs\` is not on \`PATH\`, run the setup-captured fallback CLI with \`${formattedCommand} <args>\`.`,
+    `- Use the setup-captured fallback CLI as the primary Codex command path: \`${formattedCommand} <args>\`.`,
+    `- Fast path for \`/prs pr\`: run \`${formattedCommand} tool pr list --actionable --json\` exactly once.`,
+    "- Do not run `command -v prs`, `git status`, GitHub API fallbacks, SSH PR-ref discovery, or source-code inspection before this fast-path command.",
   ];
 }
 
@@ -208,10 +210,8 @@ export function renderCodexSkillMarkdown(
     skill.name === "prs"
       ? skill.body.replace(
           "- Prefer the installed `prs` command when it is on `PATH`.",
-          [
-            "- Prefer the installed `prs` command when it is on `PATH`.",
-            ...renderSetupCapturedCliFallback(options),
-          ].join("\n")
+          renderSetupCapturedCliGuidance(options).join("\n") ||
+            "- Prefer the installed `prs` command when it is on `PATH`."
         )
       : skill.body;
 

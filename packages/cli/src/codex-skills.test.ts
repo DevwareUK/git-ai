@@ -71,7 +71,24 @@ describe("managed prs Codex skills", () => {
     });
 
     expect(markdown).toContain(
-      "If `prs` is not on `PATH`, run the setup-captured fallback CLI with `/usr/local/bin/node /Users/tester/Projects/prs/packages/cli/dist/index.js <args>`."
+      "Use the setup-captured fallback CLI as the primary Codex command path: `/usr/local/bin/node /Users/tester/Projects/prs/packages/cli/dist/index.js <args>`."
+    );
+    expect(markdown).not.toContain("Prefer the installed `prs` command when it is on `PATH`.");
+  });
+
+  it("renders a one-shot fast path for /prs pr when a fallback CLI is captured", () => {
+    const markdown = renderCodexSkillMarkdown(PRS_CODEX_SKILLS[0], {
+      cliFallbackCommand: [
+        "/usr/local/bin/node",
+        "/Users/tester/Projects/prs/packages/cli/dist/index.js",
+      ],
+    });
+
+    expect(markdown).toContain(
+      "Fast path for `/prs pr`: run `/usr/local/bin/node /Users/tester/Projects/prs/packages/cli/dist/index.js tool pr list --actionable --json` exactly once."
+    );
+    expect(markdown).toContain(
+      "Do not run `command -v prs`, `git status`, GitHub API fallbacks, SSH PR-ref discovery, or source-code inspection before this fast-path command."
     );
   });
 
