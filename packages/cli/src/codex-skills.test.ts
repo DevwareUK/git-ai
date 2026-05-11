@@ -1,9 +1,22 @@
-import { describe, expect, it } from "vitest";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   PRS_CODEX_SKILLS,
+  installManagedCodexSkills,
   renderCodexSkillMarkdown,
   resolveCodexSkillsRoot,
 } from "./codex-skills";
+
+const cleanupTargets = new Set<string>();
+
+afterEach(() => {
+  for (const target of cleanupTargets) {
+    rmSync(target, { recursive: true, force: true });
+  }
+  cleanupTargets.clear();
+});
 
 describe("managed prs Codex skills", () => {
   it("defines the expected workflow skills", () => {
@@ -29,5 +42,17 @@ describe("managed prs Codex skills", () => {
       "/tmp/codex-home/skills"
     );
     expect(resolveCodexSkillsRoot({}, "/Users/tester")).toBe("/Users/tester/.codex/skills");
+  });
+
+  it("installs managed skills under the Codex skills root", () => {
+    const codexHome = mkdtempSync(resolve(tmpdir(), "prs-codex-home-"));
+    cleanupTargets.add(codexHome);
+
+    const result = installManagedCodexSkills({ CODEX_HOME: codexHome }, "/Users/tester");
+
+    expect(result.installed).toBe(4);
+    const skillPath = resolve(codexHome, "skills", "prs-start-issue-work", "SKILL.md");
+    expect(existsSync(skillPath)).toBe(true);
+    expect(readFileSync(skillPath, "utf8")).toContain("name: prs:start-issue-work");
   });
 });

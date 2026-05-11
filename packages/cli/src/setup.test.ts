@@ -132,7 +132,7 @@ afterEach(() => {
 describe("setup command", () => {
   it("runs setup with repo-aware defaults without creating AGENTS guidance by default", async () => {
     const repoRoot = createRepo("prs-setup-node-");
-    createCodexHome("prs-setup-codex-home-");
+    const codexHome = createCodexHome("prs-setup-codex-home-");
     mkdirSync(resolve(repoRoot, ".github", "workflows"), { recursive: true });
     mkdirSync(resolve(repoRoot, "coverage"), { recursive: true });
     writeFileSync(
@@ -223,6 +223,13 @@ describe("setup command", () => {
       "if (process.env.EXISTING_COMMENT_ID)"
     );
     expect(testSuggestionsWorkflow).toContain("github.rest.issues.createComment");
+    expect(messages.join("\n")).toContain("Installed prs Codex skills: 4");
+    expect(messages.join("\n")).toContain(
+      "Workflow audit artifacts publish to GitHub; generated Superpowers docs are not committed."
+    );
+    expect(existsSync(resolve(codexHome, "skills", "prs-start-issue-work", "SKILL.md"))).toBe(
+      true
+    );
     expect(messages.join("\n")).toContain(
       "Recommended launch path: GitHub forge, OpenAI provider, and Codex runtime."
     );

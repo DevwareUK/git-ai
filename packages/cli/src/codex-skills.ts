@@ -1,3 +1,4 @@
+import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 
@@ -6,6 +7,12 @@ export type ManagedCodexSkill = {
   name: string;
   description: string;
   body: string;
+};
+
+export type InstalledCodexSkillsResult = {
+  root: string;
+  installed: number;
+  skillFiles: string[];
 };
 
 const SHARED_WORKFLOW_CONTRACT = [
@@ -106,4 +113,26 @@ export function renderCodexSkillMarkdown(skill: ManagedCodexSkill): string {
     skill.body.trim(),
     "",
   ].join("\n");
+}
+
+export function installManagedCodexSkills(
+  env: { CODEX_HOME?: string } = process.env,
+  home = homedir()
+): InstalledCodexSkillsResult {
+  const root = resolveCodexSkillsRoot(env, home);
+  const skillFiles: string[] = [];
+
+  for (const skill of PRS_CODEX_SKILLS) {
+    const skillDir = resolve(root, skill.folderName);
+    const skillFile = resolve(skillDir, "SKILL.md");
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(skillFile, renderCodexSkillMarkdown(skill), "utf8");
+    skillFiles.push(skillFile);
+  }
+
+  return {
+    root,
+    installed: skillFiles.length,
+    skillFiles,
+  };
 }

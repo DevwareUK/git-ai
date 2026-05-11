@@ -30,6 +30,7 @@ import {
   getRepositoryConfigPath,
   loadRepositoryConfig,
 } from "./config";
+import { installManagedCodexSkills } from "./codex-skills";
 import { getInteractiveRuntimeByType, isCodexSuperpowersAvailable } from "./runtime";
 
 const SETUP_USAGE = ["Usage:", "  prs setup"].join("\n");
@@ -1822,6 +1823,8 @@ export async function runSetupCommand(options: {
     upsertAgentsSection(options.repoRoot, renderAgentsSection());
   }
 
+  const installedSkills = installManagedCodexSkills();
+
   console.log("");
   console.log(`Wrote ${getRepositoryConfigPath(options.repoRoot)}.`);
   console.log(`Configured base branch: ${answers.baseBranch}`);
@@ -1856,6 +1859,12 @@ export async function runSetupCommand(options: {
   if (answers.updateAgents) {
     console.log(`Updated ${resolve(options.repoRoot, "AGENTS.md")}.`);
   }
+
+  console.log(`Installed prs Codex skills: ${installedSkills.installed}`);
+  console.log(`Codex skills root: ${installedSkills.root}`);
+  console.log(
+    "Workflow audit artifacts publish to GitHub; generated Superpowers docs are not committed."
+  );
 
   if (!fileExists(options.repoRoot, ".env")) {
     console.log("");
