@@ -1,6 +1,10 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+import {
+  parsePrsCommandSurfaceArgs,
+  routePrsCommandSurfaceAction,
+} from "./prs-command-surface";
 
 export type ManagedCodexSkill = {
   folderName: string;
@@ -27,6 +31,18 @@ const SHARED_WORKFLOW_CONTRACT = [
   "- Finish by verifying, committing, pushing, opening or updating a pull request, publishing final audit, and cleaning up only when safe.",
 ].join("\n");
 
+function renderPrPrepareReviewToolCommand(): string {
+  const route = routePrsCommandSurfaceAction(
+    parsePrsCommandSurfaceArgs(["pr", "123", "prepare-review"])
+  );
+  const cliArgs = route.cliArgs?.join(" ");
+  if (!route.toolOnly || !cliArgs) {
+    throw new Error("Expected /prs pr <number> prepare-review to route to a prs tool command.");
+  }
+
+  return `prs ${cliArgs.replace("123", "<number>")}`;
+}
+
 export const PRS_CODEX_SKILLS: ManagedCodexSkill[] = [
   {
     folderName: "prs",
@@ -47,6 +63,8 @@ export const PRS_CODEX_SKILLS: ManagedCodexSkill[] = [
       "- In a prs source checkout where `prs` is not on `PATH`, run the repository-local CLI with `corepack pnpm --filter @prs/cli... build` and `node packages/cli/dist/index.js <args>`.",
       "- For GitHub metadata, prefer `GH_TOKEN` or `GITHUB_TOKEN`, then authenticated `gh` when available.",
       "- If no GitHub API authentication is available, SSH pull refs may identify candidate PR numbers, but do not call that an actionable-for-me list because assignees, review requests, checks, comments, and draft state are unavailable.",
+      "- Never call commands that launch Codex from inside a Codex session.",
+      "- Do not recreate prs workflows with ad hoc git commands when a deterministic `prs tool ...` command exists.",
       "",
       "### Interactive forms",
       "",
@@ -61,7 +79,7 @@ export const PRS_CODEX_SKILLS: ManagedCodexSkill[] = [
       "- `/prs issue <number> plan`: publish or refresh the issue plan.",
       "- `/prs issue <number> finish`: finish work with the issue context preserved.",
       "- `/prs pr <number>`: choose an action for the PR.",
-      "- `/prs pr <number> prepare-review`: run `prs pr prepare-review <number>`.",
+      `- \`/prs pr <number> prepare-review\`: run \`${renderPrPrepareReviewToolCommand()}\`, keep the prepared branch checked out in the current repository, then continue review in this Codex session.`,
       "- `/prs pr <number> resolve-conflicts`: run `prs pr resolve-conflicts <number>`.",
       "- `/prs pr <number> fix-comments`: run `prs pr fix-comments <number>`.",
       "- `/prs pr <number> fix-failing-tests`: run `prs pr fix-failing-tests <number>`.",

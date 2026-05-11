@@ -45,6 +45,12 @@ describe("managed prs Codex skills", () => {
     expect(markdown).toContain("/prs issue");
     expect(markdown).toContain("/prs issue <number> finish");
     expect(markdown).toContain("/prs pr <number> resolve-conflicts");
+    expect(markdown).toContain(
+      "/prs pr <number> prepare-review`: run `prs tool pr prepare-review <number> --json`"
+    );
+    expect(markdown).not.toContain("prs codex");
+    expect(markdown).not.toContain("codex exec");
+    expect(markdown).toContain("Do not recreate prs workflows with ad hoc git commands");
     expect(markdown).toContain("actionable for me");
     expect(markdown).toContain("Do not assume the GitHub CLI (`gh`) is installed");
     expect(markdown).toContain("node packages/cli/dist/index.js <args>");

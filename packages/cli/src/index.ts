@@ -53,6 +53,7 @@ import {
   parsePrCommandArgs as parsePrCommandArgsImpl,
   type PrCommandOptions,
 } from "./commands/pr";
+import { parsePrsToolCommandArgs } from "./prs-tool-command";
 import {
   createRepositoryForge,
   type AuditTarget,
@@ -111,7 +112,10 @@ import {
 import { runPrFixCommentsCommand } from "./workflows/pr-fix-comments/run";
 import { runPrFixFailingTestsCommand } from "./workflows/pr-fix-failing-tests/run";
 import type { VerificationFailure } from "./workflows/pr-fix-failing-tests/types";
-import { runPrPrepareReviewCommand } from "./workflows/pr-prepare-review/run";
+import {
+  preparePullRequestReviewTool,
+  runPrPrepareReviewCommand,
+} from "./workflows/pr-prepare-review/run";
 import { runPrResolveConflictsCommand } from "./workflows/pr-resolve-conflicts/run";
 import { runPrFixTestsCommand } from "./workflows/pr-fix-tests/run";
 
@@ -426,6 +430,7 @@ const TOP_LEVEL_HELP = [
   "",
   "Supporting commands:",
   "  prs setup",
+  "  prs tool pr prepare-review <pr-number> --json",
   "  prs audit publish (--issue <number>|--pr <number>) --file <path> --section <name> [--local-run <path>]",
   "  prs commit",
   "  prs diff",
@@ -4135,6 +4140,45 @@ async function runPrCommand(): Promise<void> {
   });
 }
 
+async function runToolCommand(): Promise<void> {
+  const repoRoot = getDefaultRepoRoot();
+  const toolCommand = parsePrsToolCommandArgs(getCliArgs().slice(1));
+  const repositoryConfig = getRepositoryConfig(repoRoot);
+
+  if (toolCommand.kind === "pr-prepare-review") {
+    const originalConsoleLog = console.log;
+    console.log = (...values: unknown[]) => {
+      process.stderr.write(`${values.map((value) => String(value)).join(" ")}\n`);
+    };
+
+    let result: Awaited<ReturnType<typeof preparePullRequestReviewTool>>;
+    try {
+      result = await preparePullRequestReviewTool({
+        prNumber: toolCommand.prNumber,
+        repoRoot,
+        buildCommand: repositoryConfig.buildCommand,
+        ensureVerificationCommandAvailable,
+        preflightBaseBranch: preflightRemoteBranch,
+        forge: getRepositoryForge(repoRoot),
+        ensureCleanWorkingTree,
+        promptForLine,
+        hasChanges,
+        verifyBuild,
+        commitGeneratedChanges,
+        readDiff: readIssueWorkflowDiff,
+        createProvider: async (providerRepoRoot) => createProvider(providerRepoRoot),
+      });
+    } finally {
+      console.log = originalConsoleLog;
+    }
+
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+
+  throw new Error("This prs tool command is not implemented yet.");
+}
+
 function formatTestBacklogMarkdown(
   result: Awaited<ReturnType<typeof analyzeTestBacklog>>,
   createdIssues: CreatedIssueRecord[]
@@ -6241,6 +6285,7 @@ export async function run(): Promise<void> {
     command !== "audit" &&
     command !== "issue" &&
     command !== "pr" &&
+    command !== "tool" &&
     command !== "review" &&
     command !== "test-backlog" &&
     command !== "feature-backlog"
@@ -6279,6 +6324,11 @@ export async function run(): Promise<void> {
 
   if (command === "pr") {
     await runPrCommand();
+    return;
+  }
+
+  if (command === "tool") {
+    await runToolCommand();
     return;
   }
 

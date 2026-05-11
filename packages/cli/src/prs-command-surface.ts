@@ -34,6 +34,7 @@ export type PrsCommandRoute = {
   cliArgs?: string[];
   picker?: "actionable-issues" | "actionable-pull-requests" | "pr-actions";
   target?: { type: "issue" | "pull-request"; number: number };
+  toolOnly?: boolean;
 };
 
 export type PrsInteractivePickerModel =
@@ -211,6 +212,16 @@ export function routePrsCommandSurfaceAction(action: PrsCommandSurfaceAction): P
         cliArgs: undefined,
         picker: "pr-actions",
         target: { type: "pull-request", number: action.prNumber },
+      };
+    }
+
+    if (action.action === "prepare-review") {
+      return {
+        interaction: "direct",
+        skillName: "prs",
+        cliArgs: ["tool", "pr", "prepare-review", String(action.prNumber), "--json"],
+        target: { type: "pull-request", number: action.prNumber },
+        toolOnly: true,
       };
     }
 

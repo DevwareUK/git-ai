@@ -4922,6 +4922,117 @@ describe("CLI integration", () => {
     );
   });
 
+  it("runs prs tool pr prepare-review as deterministic JSON without launching Codex", async () => {
+    const beforeRuns = listRunDirectories();
+    const branchName = "feat/tool-pr-review";
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      createFetchResponse({
+        number: 87,
+        title: "Prepare a review workspace",
+        body: "Set up a reviewer-ready local workspace for this pull request.",
+        html_url: "https://github.com/DevwareUK/prs/pull/87",
+        base: { ref: "main" },
+        head: { ref: branchName },
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { run, spawnSync } = await loadCli({
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "status") {
+          return "";
+        }
+
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/prs.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+      spawnSyncImpl: (command, args) => {
+        if (command === "gh" && args[0] === "--version") {
+          return { status: 1, error: new Error("gh is unavailable") };
+        }
+
+        if (command === "pnpm" && args[0] === "--version") {
+          return { status: 0, stdout: "9.0.0\n", stderr: "" };
+        }
+
+        if (
+          command === "git" &&
+          args[0] === "rev-parse" &&
+          args[1] === "--verify" &&
+          args[2] === `refs/heads/${branchName}`
+        ) {
+          return { status: 0, stdout: "", stderr: "" };
+        }
+
+        if (command === "git" && args[0] === "checkout" && args[1] === branchName) {
+          return { status: 0, stdout: "", stderr: "" };
+        }
+
+        if (command === "git" && args[0] === "fetch" && args[1] === "origin" && args[2] === "main") {
+          return { status: 0, stdout: "", stderr: "" };
+        }
+
+        if (
+          command === "git" &&
+          args[0] === "rev-parse" &&
+          ((args[1] === "origin/main") ||
+            (args[1] === "--verify" && args[2] === "refs/remotes/origin/main"))
+        ) {
+          return { status: 0, stdout: "base-tip-87\n", stderr: "" };
+        }
+
+        if (
+          command === "git" &&
+          args[0] === "merge-base" &&
+          args[1] === "--is-ancestor" &&
+          args[2] === "base-tip-87" &&
+          args[3] === "HEAD"
+        ) {
+          return { status: 0, stdout: "", stderr: "" };
+        }
+
+        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.env.GITHUB_TOKEN = "test-token";
+    process.argv = ["node", "prs", "tool", "pr", "prepare-review", "87", "--json"];
+    const stdout = captureStdout();
+
+    await run();
+
+    expect(stdout.output().trimStart()).toMatch(/^\{/);
+    const result = JSON.parse(stdout.output()) as {
+      status: string;
+      prNumber: number;
+      nextAction: string;
+      checkout: { source: string; branchName: string };
+    };
+    const createdRunDir = listRunDirectories().find((entry) => !beforeRuns.includes(entry));
+    if (createdRunDir) {
+      cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", createdRunDir));
+    }
+
+    expect(result).toMatchObject({
+      status: "ready",
+      prNumber: 87,
+      nextAction: "review-current-checkout",
+      checkout: {
+        source: "local-head",
+        branchName,
+      },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(spawnSync).not.toHaveBeenCalledWith(
+      "codex",
+      expect.anything(),
+      expect.anything()
+    );
+  });
+
   it("runs pr prepare-review, reuses the linked issue branch, and exits cleanly when follow-up makes no changes", async () => {
     const beforeRuns = listRunDirectories();
     const issueNumber = 211;

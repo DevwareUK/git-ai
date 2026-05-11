@@ -168,6 +168,7 @@ The launch path is not presented as full runtime or provider parity:
 
 - prs GitHub Actions are OpenAI-only today. They do not expose Bedrock Claude or runtime-selection inputs.
 - `prs pr prepare-review <pr-number>` always requires `codex` on `PATH` and keeps its merge-conflict and review-brief flow Codex-specific.
+- Codex `/prs pr <number> prepare-review` uses the deterministic `prs tool pr prepare-review <number> --json` command instead, so it does not launch a nested Codex session.
 - `prs pr resolve-conflicts <pr-number>` always requires `codex` on `PATH` for guided merge-conflict resolution, even though it only opens Codex when the base merge conflicts.
 - `prs issue <number> --mode unattended` and `prs issue batch ...` require `ai.runtime.type` to be `codex`.
 - Interactive local workflows such as `prs issue draft`, `prs issue refine <number>`, `prs issue <number>`, `prs pr fix-comments <pr-number>`, `prs pr fix-failing-tests <pr-number>`, and `prs pr fix-tests <pr-number>` use the configured runtime, with fallback to Codex when a configured non-default runtime is unavailable.
@@ -186,7 +187,7 @@ The recommended Codex entrypoint is `/prs`. It is the unified workflow router ov
 - `/prs pr`: interactive "actionable for me" PR picker
 - `/prs pr <number>`: choose a PR action
 - `/prs pr <number> resolve-conflicts`: resolve PR conflicts
-- `/prs pr <number> prepare-review`: prepare a review workspace
+- `/prs pr <number> prepare-review`: run `prs tool pr prepare-review <number> --json`, leave the prepared PR branch checked out in the current repository, and continue review in the current Codex session without launching nested Codex
 - `/prs pr <number> fix-comments`: fix selected PR review comments
 - `/prs pr <number> fix-failing-tests`: fix captured failing verification output
 - `/prs pr <number> fix-tests`: implement selected PRS AI test suggestions
@@ -228,6 +229,7 @@ Supporting commands:
 
 - `prs setup`: guided repository onboarding for `prs`
 - `prs audit publish`: publish a local `.prs/runs` artifact to a managed GitHub audit comment
+- `prs tool pr prepare-review <pr-number> --json`: deterministic Codex-safe PR review preparation; stdout is JSON and progress logs go to stderr
 - `prs commit`: generate a commit message from staged changes
 - `prs diff`: summarize `git diff HEAD`
 

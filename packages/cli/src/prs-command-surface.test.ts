@@ -222,6 +222,20 @@ describe("prs command surface routing", () => {
         kind: "pr",
         mode: "direct",
         prNumber: 456,
+        action: "prepare-review",
+      })
+    ).toEqual({
+      interaction: "direct",
+      skillName: "prs",
+      cliArgs: ["tool", "pr", "prepare-review", "456", "--json"],
+      target: { type: "pull-request", number: 456 },
+      toolOnly: true,
+    });
+    expect(
+      routePrsCommandSurfaceAction({
+        kind: "pr",
+        mode: "direct",
+        prNumber: 456,
         action: "resolve-conflicts",
       })
     ).toEqual({
