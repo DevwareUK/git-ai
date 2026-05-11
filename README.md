@@ -199,6 +199,7 @@ Beta commands:
 Supporting commands:
 
 - `prs setup`: guided repository onboarding for `prs`
+- `prs audit publish`: publish a local `.prs/runs` artifact to a managed GitHub audit comment
 - `prs commit`: generate a commit message from staged changes
 - `prs diff`: summarize `git diff HEAD`
 
@@ -494,6 +495,15 @@ Important behavior:
 - when `forge.type` is `github`, PR fetching uses `gh pr view` when available, otherwise the GitHub API
 - when `forge.type` is `github`, GitHub API access for PR metadata, review comments, and PR issue comments uses `GH_TOKEN` or `GITHUB_TOKEN` when present
 - when `forge.type` is `none`, pull request workflows are disabled for the repository
+
+### `prs audit publish`
+
+```bash
+prs audit publish --issue 42 --file .prs/runs/<run-id>/design.md --section Spec --local-run .prs/runs/<run-id>
+prs audit publish --pr 88 --file .prs/runs/<run-id>/final-audit.md --section Completion --local-run .prs/runs/<run-id>
+```
+
+Publishes a local `.prs/runs` artifact to the managed `<!-- prs:audit -->` GitHub issue or pull request comment. If the comment already exists, the named section is replaced in place. Generated Superpowers specs and plans should be published this way instead of committed to `docs/superpowers`.
 
 ### `prs review`
 

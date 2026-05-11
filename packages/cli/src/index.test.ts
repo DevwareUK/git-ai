@@ -1414,6 +1414,7 @@ async function loadCli(options: {
     findOverlappingPullRequests: module.findOverlappingPullRequests,
     recommendIssueBranchBase: module.recommendIssueBranchBase,
     parseFeatureBacklogCommandArgs: module.parseFeatureBacklogCommandArgs,
+    parseAuditCommandArgs: module.parseAuditCommandArgs,
     parseIssueCommandArgs: module.parseIssueCommandArgs,
     parsePrCommandArgs: module.parsePrCommandArgs,
     parseReviewCommandArgs: module.parseReviewCommandArgs,
@@ -2550,6 +2551,109 @@ describe("CLI integration", () => {
     expect(parsePrCommandArgs(["pr", "resolve-conflicts", "76"])).toEqual({
       action: "resolve-conflicts",
       prNumber: 76,
+    });
+  });
+
+  it("parses audit publish for issue artifacts", async () => {
+    process.env.GIT_AI_DISABLE_AUTO_RUN = "1";
+    const { parseAuditCommandArgs } = await loadCli();
+
+    expect(
+      parseAuditCommandArgs([
+        "audit",
+        "publish",
+        "--issue",
+        "42",
+        "--file",
+        ".prs/runs/example/design.md",
+        "--section",
+        "Spec",
+      ])
+    ).toEqual({
+      action: "publish",
+      target: { type: "issue", number: 42 },
+      filePath: ".prs/runs/example/design.md",
+      sectionName: "Spec",
+      localRun: undefined,
+    });
+  });
+
+  it("rejects audit publish without a target", async () => {
+    process.env.GIT_AI_DISABLE_AUTO_RUN = "1";
+    const { parseAuditCommandArgs } = await loadCli();
+
+    expect(() =>
+      parseAuditCommandArgs([
+        "audit",
+        "publish",
+        "--file",
+        ".prs/runs/example/design.md",
+        "--section",
+        "Spec",
+      ])
+    ).toThrow("`prs audit publish` requires exactly one of --issue or --pr.");
+  });
+
+  it("publishes audit publish artifacts to managed GitHub comments", async () => {
+    const repoRoot = createTempRepoRoot();
+    const artifactPath = resolve(repoRoot, ".prs", "runs", "example", "design.md");
+    mkdirSync(dirname(artifactPath), { recursive: true });
+    writeFileSync(artifactPath, "# Design\n\nShip the focused audit path.\n", "utf8");
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(createFetchResponse([]))
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          id: 4101,
+          body: "<!-- prs:audit -->\n# Issue #42 audit\n",
+          html_url: "https://github.com/DevwareUK/prs/issues/42#issuecomment-4101",
+          created_at: "2026-05-11T10:00:00Z",
+          updated_at: "2026-05-11T10:00:00Z",
+          user: {
+            login: "prs-bot",
+            type: "Bot",
+          },
+        })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "test-token";
+
+    const { run } = await loadCli({
+      runtimeRepoRoot: repoRoot,
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "remote" && args[1] === "get-url") {
+          return "git@github.com:DevwareUK/prs.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    process.argv = [
+      "node",
+      "prs",
+      "audit",
+      "publish",
+      "--issue",
+      "42",
+      "--file",
+      artifactPath,
+      "--section",
+      "Spec",
+      "--local-run",
+      ".prs/runs/example",
+    ];
+
+    await run();
+
+    expect(consoleLog).toHaveBeenCalledWith(
+      "Audit artifact created: https://github.com/DevwareUK/prs/issues/42#issuecomment-4101"
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toMatchObject({
+      body: expect.stringContaining("## Spec"),
     });
   });
 

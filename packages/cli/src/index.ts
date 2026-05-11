@@ -43,6 +43,7 @@ import {
   formatCommandForDisplay,
   loadResolvedRepositoryConfig,
 } from "./config";
+import { publishAuditArtifact } from "./audit-artifacts";
 import { buildDoneStateInstructions } from "./done-state";
 import {
   formatLaunchStageNotice,
@@ -54,6 +55,7 @@ import {
 } from "./commands/pr";
 import {
   createRepositoryForge,
+  type AuditTarget,
   type CreatedIssueRecord,
   type IssueDetails,
   type IssuePlanComment,
@@ -186,6 +188,14 @@ type ReviewCommandOptions = {
   head?: string;
   format: ReviewOutputFormat;
   issueNumber?: number;
+};
+
+export type AuditCommandOptions = {
+  action: "publish";
+  target: AuditTarget;
+  filePath: string;
+  sectionName: string;
+  localRun?: string;
 };
 
 type TestBacklogCommandOptions = {
@@ -385,6 +395,9 @@ const REVIEW_USAGE = [
   "                [--issue-number <number>]",
 ].join("\n");
 
+const AUDIT_PUBLISH_USAGE =
+  "Usage: prs audit publish (--issue <number>|--pr <number>) --file <path> --section <name> [--local-run <path>]";
+
 const TOP_LEVEL_HELP = [
   "prs",
   "",
@@ -413,6 +426,7 @@ const TOP_LEVEL_HELP = [
   "",
   "Supporting commands:",
   "  prs setup",
+  "  prs audit publish (--issue <number>|--pr <number>) --file <path> --section <name> [--local-run <path>]",
   "  prs commit",
   "  prs diff",
   "",
@@ -983,6 +997,87 @@ export function parseIssueCommandArgs(args: string[]): IssueCommandOptions {
 
 export function parsePrCommandArgs(args: string[]): PrCommandOptions {
   return parsePrCommandArgsImpl(args, parseIssueNumber);
+}
+
+export function parseAuditCommandArgs(args: string[]): AuditCommandOptions {
+  const auditArgs = args[0] === "audit" ? args.slice(1) : args;
+  const subcommand = auditArgs[0];
+
+  if (subcommand !== "publish") {
+    throw new Error(AUDIT_PUBLISH_USAGE);
+  }
+
+  const optionArgs = auditArgs.slice(1);
+  let target: AuditTarget | undefined;
+  let filePath: string | undefined;
+  let sectionName: string | undefined;
+  let localRun: string | undefined;
+
+  for (let index = 0; index < optionArgs.length; index += 1) {
+    const rawArg = optionArgs[index];
+
+    if (rawArg === "--issue" || rawArg === "--pr") {
+      if (target) {
+        throw new Error("`prs audit publish` requires exactly one of --issue or --pr.");
+      }
+
+      target = {
+        type: rawArg === "--issue" ? "issue" : "pull-request",
+        number: parseIssueNumber(optionArgs[index + 1]),
+      };
+      index += 1;
+      continue;
+    }
+
+    if (rawArg === "--file") {
+      filePath = optionArgs[index + 1];
+      if (!filePath) {
+        throw new Error(AUDIT_PUBLISH_USAGE);
+      }
+      index += 1;
+      continue;
+    }
+
+    if (rawArg === "--section") {
+      sectionName = optionArgs[index + 1];
+      if (!sectionName) {
+        throw new Error(AUDIT_PUBLISH_USAGE);
+      }
+      index += 1;
+      continue;
+    }
+
+    if (rawArg === "--local-run") {
+      localRun = optionArgs[index + 1];
+      if (!localRun) {
+        throw new Error(AUDIT_PUBLISH_USAGE);
+      }
+      index += 1;
+      continue;
+    }
+
+    throw new Error(`Unknown audit option "${rawArg}".`);
+  }
+
+  if (!target) {
+    throw new Error("`prs audit publish` requires exactly one of --issue or --pr.");
+  }
+
+  if (!filePath) {
+    throw new Error(AUDIT_PUBLISH_USAGE);
+  }
+
+  if (!sectionName) {
+    throw new Error(AUDIT_PUBLISH_USAGE);
+  }
+
+  return {
+    action: "publish",
+    target,
+    filePath,
+    sectionName,
+    localRun,
+  };
 }
 
 function parsePositiveInteger(value: string | undefined, flagName: string): number {
@@ -3883,6 +3978,33 @@ async function runReviewCommand(): Promise<void> {
   );
 }
 
+async function runAuditCommand(): Promise<void> {
+  const repoRoot = getDefaultRepoRoot();
+  const command = parseAuditCommandArgs(getCliArgs());
+  const artifactPath = isAbsolute(command.filePath)
+    ? command.filePath
+    : resolve(repoRoot, command.filePath);
+
+  if (!existsSync(artifactPath)) {
+    throw new Error(`Audit artifact file does not exist: ${command.filePath}`);
+  }
+
+  const forge = getRepositoryForge(repoRoot);
+  const content = readFileSync(artifactPath, "utf8").trim();
+  if (!content) {
+    throw new Error(`Audit artifact file is empty: ${command.filePath}`);
+  }
+
+  const result = await publishAuditArtifact(forge, {
+    target: command.target,
+    sectionName: command.sectionName,
+    content,
+    localRun: command.localRun,
+  });
+
+  console.log(`Audit artifact ${result.status}: ${result.comment.url}`);
+}
+
 async function runPrCommand(): Promise<void> {
   const repoRoot = getDefaultRepoRoot();
   const prCommand = parsePrCommandArgs(getCliArgs());
@@ -6116,6 +6238,7 @@ export async function run(): Promise<void> {
     command !== "commit" &&
     command !== "diff" &&
     command !== "setup" &&
+    command !== "audit" &&
     command !== "issue" &&
     command !== "pr" &&
     command !== "review" &&
@@ -6146,6 +6269,11 @@ export async function run(): Promise<void> {
       repoRoot: getDefaultRepoRoot(),
       promptForLine,
     });
+    return;
+  }
+
+  if (command === "audit") {
+    await runAuditCommand();
     return;
   }
 
