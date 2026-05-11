@@ -90,13 +90,13 @@ export interface RepositoryForge {
   fetchIssueDetails(issueNumber: number): Promise<IssueDetails>;
   fetchIssueComments(issueNumber: number): Promise<RepositoryComment[]>;
   fetchIssuePlanComment(issueNumber: number): Promise<IssuePlanComment | undefined>;
-  fetchAuditComment?(target: AuditTarget): Promise<RepositoryComment | undefined>;
+  fetchAuditComment(target: AuditTarget): Promise<RepositoryComment | undefined>;
   fetchPullRequestDetails(prNumber: number): Promise<PullRequestDetails>;
   listOpenPullRequestChanges(): Promise<OpenPullRequestChange[]>;
   fetchPullRequestIssueComments(prNumber: number): Promise<RepositoryComment[]>;
   fetchPullRequestReviewComments(prNumber: number): Promise<PullRequestReviewComment[]>;
   createIssuePlanComment(issueNumber: number, body: string): Promise<IssuePlanComment>;
-  createAuditComment?(target: AuditTarget, body: string): Promise<RepositoryComment>;
+  createAuditComment(target: AuditTarget, body: string): Promise<RepositoryComment>;
   updateIssuePlanComment(commentId: number, body: string): Promise<IssuePlanComment>;
   updateIssueComment(commentId: number, body: string): Promise<RepositoryComment>;
   createDraftIssue(title: string, body: string): Promise<string>;

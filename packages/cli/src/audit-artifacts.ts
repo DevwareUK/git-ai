@@ -107,18 +107,10 @@ export async function publishAuditArtifact(
     throw new Error("GitHub authentication is required to publish prs audit artifacts.");
   }
 
-  if (!forge.fetchAuditComment) {
-    throw new Error("Repository forge does not support prs audit comment workflows.");
-  }
-
   const existing = await forge.fetchAuditComment(input.target);
   const section = { name: input.sectionName, content: input.content };
 
   if (!existing) {
-    if (!forge.createAuditComment) {
-      throw new Error("Repository forge does not support prs audit comment workflows.");
-    }
-
     const body = renderAuditCommentBody({
       title: targetTitle(input.target),
       sections: [section],
