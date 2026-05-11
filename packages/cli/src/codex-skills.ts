@@ -87,6 +87,24 @@ function renderSetupCapturedCliGuidance(options: CodexSkillRenderOptions): strin
   ];
 }
 
+function renderGenericSetupCapturedCliGuidance(
+  options: CodexSkillRenderOptions
+): string[] {
+  const formattedCommand = formatCliFallbackCommand(options.cliFallbackCommand ?? []);
+  if (!formattedCommand) {
+    return [];
+  }
+
+  return [
+    "",
+    "## Tooling Expectations",
+    "",
+    `- Use the setup-captured fallback CLI as the primary Codex command path: \`${formattedCommand} <args>\`.`,
+    "- Do not report `prs` as unavailable solely because it is missing from PATH; use the setup-captured fallback command instead.",
+    `- For audit publication, run \`${formattedCommand} audit publish --issue <number> --file <path> --section <name>\` or \`${formattedCommand} audit publish --pr <number> --file <path> --section <name>\`.`,
+  ];
+}
+
 export const PRS_CODEX_SKILLS: ManagedCodexSkill[] = [
   {
     folderName: "prs",
@@ -219,7 +237,7 @@ export function renderCodexSkillMarkdown(
   skill: ManagedCodexSkill,
   options: CodexSkillRenderOptions = {}
 ): string {
-  const body =
+  const bodyWithSkillGuidance =
     skill.name === "prs"
       ? skill.body.replace(
           "- Prefer the installed `prs` command when it is on `PATH`.",
@@ -227,6 +245,13 @@ export function renderCodexSkillMarkdown(
             "- Prefer the installed `prs` command when it is on `PATH`."
         )
       : skill.body;
+  const body =
+    skill.name === "prs"
+      ? bodyWithSkillGuidance
+      : bodyWithSkillGuidance.replace(
+          SHARED_WORKFLOW_CONTRACT,
+          [SHARED_WORKFLOW_CONTRACT, ...renderGenericSetupCapturedCliGuidance(options)].join("\n")
+        );
 
   return [
     "---",

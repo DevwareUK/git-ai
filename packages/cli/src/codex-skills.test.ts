@@ -101,6 +101,29 @@ describe("managed prs Codex skills", () => {
     );
   });
 
+  it("renders setup-captured fallback guidance in finish and audit skills", () => {
+    const options = {
+      cliFallbackCommand: [
+        "/usr/local/bin/node",
+        "/Users/tester/Projects/prs/packages/cli/dist/index.js",
+      ],
+    };
+    const finishMarkdown = renderCodexSkillMarkdown(PRS_CODEX_SKILLS[3], options);
+    const auditMarkdown = renderCodexSkillMarkdown(PRS_CODEX_SKILLS[2], options);
+
+    for (const markdown of [finishMarkdown, auditMarkdown]) {
+      expect(markdown).toContain(
+        "Use the setup-captured fallback CLI as the primary Codex command path: `/usr/local/bin/node /Users/tester/Projects/prs/packages/cli/dist/index.js <args>`."
+      );
+      expect(markdown).toContain(
+        "Do not report `prs` as unavailable solely because it is missing from PATH; use the setup-captured fallback command instead."
+      );
+    }
+    expect(auditMarkdown).toContain(
+      "`/usr/local/bin/node /Users/tester/Projects/prs/packages/cli/dist/index.js audit publish --pr <number> --file <path> --section <name>`"
+    );
+  });
+
   it("resolves CODEX_HOME before the user home fallback", () => {
     expect(resolveCodexSkillsRoot({ CODEX_HOME: "/tmp/codex-home" }, "/Users/tester")).toBe(
       "/tmp/codex-home/skills"
