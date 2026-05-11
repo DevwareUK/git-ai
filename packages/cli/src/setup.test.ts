@@ -211,18 +211,12 @@ describe("setup command", () => {
     );
     expect(testSuggestionsWorkflow).toContain("Find existing managed comment");
     expect(testSuggestionsWorkflow).toContain(
-      'core.setOutput("comment_id", existingComment?.id ? String(existingComment.id) : "")'
-    );
-    expect(testSuggestionsWorkflow).toContain(
       "existing_comment_file: ${{ steps.existing_comment.outputs.existing_comment_file }}"
     );
-    expect(testSuggestionsWorkflow).toContain(
-      "comment_id: Number(process.env.EXISTING_COMMENT_ID)"
-    );
-    expect(testSuggestionsWorkflow).toContain(
-      "if (process.env.EXISTING_COMMENT_ID)"
-    );
-    expect(testSuggestionsWorkflow).toContain("github.rest.issues.createComment");
+    expect(testSuggestionsWorkflow).toContain("comment_id:");
+    expect(testSuggestionsWorkflow).toContain("github-script");
+    expect(testSuggestionsWorkflow).toContain("updateComment");
+    expect(testSuggestionsWorkflow).toContain("createComment");
     expect(messages.join("\n")).toContain("Installed prs Codex skills: 4");
     expect(messages.join("\n")).toContain(
       "Workflow audit artifacts publish to GitHub; generated Superpowers docs are not committed."
@@ -240,7 +234,7 @@ describe("setup command", () => {
       "Superpowers worktrees and agents handle execution isolation."
     );
     expect(messages.join("\n")).toContain(
-      "GitHub Actions in this repo are OpenAI-only today, and unattended issue runs plus `prs pr prepare-review` remain Codex-specific."
+      "prs GitHub Actions are OpenAI-only today, and unattended issue runs plus `prs pr prepare-review` remain Codex-specific."
     );
     expect(existsSync(resolve(repoRoot, "AGENTS.md"))).toBe(false);
     expect(messages.join("\n")).toContain("Next step: create `.env`");
