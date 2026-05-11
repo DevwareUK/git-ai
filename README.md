@@ -166,7 +166,7 @@ You only need extra tooling for advanced or deeper local workflows:
 
 The launch path is not presented as full runtime or provider parity:
 
-- GitHub Actions in this repository are OpenAI-only today. They do not expose Bedrock Claude or runtime-selection inputs.
+- prs GitHub Actions are OpenAI-only today. They do not expose Bedrock Claude or runtime-selection inputs.
 - `prs pr prepare-review <pr-number>` always requires `codex` on `PATH` and keeps its merge-conflict and review-brief flow Codex-specific.
 - `prs pr resolve-conflicts <pr-number>` always requires `codex` on `PATH` for guided merge-conflict resolution, even though it only opens Codex when the base merge conflicts.
 - `prs issue <number> --mode unattended` and `prs issue batch ...` require `ai.runtime.type` to be `codex`.
