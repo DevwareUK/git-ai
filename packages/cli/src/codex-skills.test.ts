@@ -58,6 +58,19 @@ describe("managed prs Codex skills", () => {
     expect(markdown).toContain("Existing managed skills are backing behaviors");
   });
 
+  it("renders a setup-captured fallback CLI command for Codex sessions", () => {
+    const markdown = renderCodexSkillMarkdown(PRS_CODEX_SKILLS[0], {
+      cliFallbackCommand: [
+        "/usr/local/bin/node",
+        "/Users/tester/Projects/prs/packages/cli/dist/index.js",
+      ],
+    });
+
+    expect(markdown).toContain(
+      "If `prs` is not on `PATH`, run the setup-captured fallback CLI with `/usr/local/bin/node /Users/tester/Projects/prs/packages/cli/dist/index.js <args>`."
+    );
+  });
+
   it("resolves CODEX_HOME before the user home fallback", () => {
     expect(resolveCodexSkillsRoot({ CODEX_HOME: "/tmp/codex-home" }, "/Users/tester")).toBe(
       "/tmp/codex-home/skills"
@@ -69,12 +82,20 @@ describe("managed prs Codex skills", () => {
     const codexHome = mkdtempSync(resolve(tmpdir(), "prs-codex-home-"));
     cleanupTargets.add(codexHome);
 
-    const result = installManagedCodexSkills({ CODEX_HOME: codexHome }, "/Users/tester");
+    const result = installManagedCodexSkills({ CODEX_HOME: codexHome }, "/Users/tester", {
+      cliFallbackCommand: [
+        "/usr/local/bin/node",
+        "/Users/tester/Projects/prs/packages/cli/dist/index.js",
+      ],
+    });
 
     expect(result.installed).toBe(5);
     const unifiedSkillPath = resolve(codexHome, "skills", "prs", "SKILL.md");
     expect(existsSync(unifiedSkillPath)).toBe(true);
     expect(readFileSync(unifiedSkillPath, "utf8")).toContain("name: prs");
+    expect(readFileSync(unifiedSkillPath, "utf8")).toContain(
+      "/usr/local/bin/node /Users/tester/Projects/prs/packages/cli/dist/index.js <args>"
+    );
     const skillPath = resolve(codexHome, "skills", "prs-start-issue-work", "SKILL.md");
     expect(existsSync(skillPath)).toBe(true);
     expect(readFileSync(skillPath, "utf8")).toContain("name: prs:start-issue-work");

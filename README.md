@@ -128,6 +128,8 @@ prs setup
 
 `prs setup` detects the repository root, suggests repo-aware defaults for the base branch, verification command, forge, Codex-first runtime, the Codex-only `ai.issue.useCodexSuperpowers` flag, and extra AI exclusions, then offers a fast "use the recommended setup" confirmation path. It writes `.prs/config.json`, ensures `.prs/` is gitignored, can optionally add a minimal `AGENTS.md` scaffold for repo-specific agent guidance, and for GitHub repositories can also install the recommended PR-focused workflows under `.github/workflows/prs-*.yml`. When setup finds managed legacy `git-ai-*.yml` workflow files, it migrates them to the new `prs-*.yml` filenames instead of leaving duplicate managed files behind. When setup cannot determine a value confidently, it prints an explicit warning before asking you to confirm or replace the suggestion.
 
+Setup also installs the managed Codex skills with a setup-captured fallback CLI command. This matters because Codex app sessions may not inherit your login-shell or pnpm global `PATH`; when `prs` is not visible, the `/prs` skill can still call the same CLI through its absolute `node .../packages/cli/dist/index.js` fallback.
+
 The setup flow also makes the recommended launch path explicit: GitHub forge, OpenAI provider, and Codex runtime first. `bedrock-claude` and `claude-code` stay available as advanced customization paths after the default GitHub/OpenAI/Codex path is working.
 
 ### First successful CLI runs
@@ -197,7 +199,7 @@ The recommended Codex entrypoint is `/prs`. It is the unified workflow router ov
 
 `/prs issue` and `/prs pr` default to actionable-for-me lists. Issue multi-select starts parallel Superpowers issue work in separate worktrees. In Codex installs without a first-class slash-command directory, `prs setup` installs the managed `prs` Codex skill as the `/prs` router.
 
-Codex sessions should not assume `gh` is installed. GitHub-backed `/prs` flows can use `GH_TOKEN` or `GITHUB_TOKEN`; authenticated `gh` is only one supported auth source. In this source checkout, if the `prs` binary is not installed globally, use `corepack pnpm --filter @prs/cli... build` and `node packages/cli/dist/index.js <args>` to run the repo-local CLI. SSH pull refs can identify candidate PR numbers when API auth is unavailable, but they are not enough for an actionable-for-me picker.
+Codex sessions should not assume `gh` is installed. GitHub-backed `/prs` flows can use `GH_TOKEN` or `GITHUB_TOKEN`; authenticated `gh` is only one supported auth source. Codex sessions also should not assume shell profile paths are loaded. `prs setup` captures the current CLI entrypoint and writes it into the managed skills as an absolute fallback command. In this source checkout, if neither `prs` nor a setup-captured fallback is available, use `corepack pnpm --filter @prs/cli... build` and `node packages/cli/dist/index.js <args>` to run the repo-local CLI. SSH pull refs can identify candidate PR numbers when API auth is unavailable, but they are not enough for an actionable-for-me picker.
 
 ## Command tiers
 
@@ -367,7 +369,7 @@ prs setup
 
 Runs a guided repository setup flow for the current Git repository. The command inspects the repo, suggests defaults for `baseBranch`, `forge.type`, `ai.runtime.type`, `ai.issue.useCodexSuperpowers`, `buildCommand`, and extra `aiContext.excludePaths`, prints the detection source for each suggestion, warns when it had to fall back because signals were missing or conflicting, and first offers a one-confirmation "use the recommended setup" path before dropping into per-field prompts when you want to customize values. It writes `.prs/config.json`, preserves any existing `ai.provider` settings already present in that file, preserves an existing explicit `ai.issue.useCodexSuperpowers` value on reruns, treats legacy `ai.issueDraft.useCodexSuperpowers` as a backward-compatible input, ensures `.prs/` is gitignored, and only touches `AGENTS.md` when you explicitly opt in to a minimal scaffold for non-obvious repository guidance.
 
-When Codex is available locally, setup also checks whether the Superpowers plugin is present under the active `CODEX_HOME` and reports whether Codex Superpowers-backed issue workflows were enabled or disabled. Setup installs or updates the managed prs Codex skill pack under the active Codex home.
+When Codex is available locally, setup also checks whether the Superpowers plugin is present under the active `CODEX_HOME` and reports whether Codex Superpowers-backed issue workflows were enabled or disabled. Setup installs or updates the managed prs Codex skill pack under the active Codex home, including an absolute fallback CLI command for Codex sessions whose `PATH` cannot see the global `prs` link.
 
 When `forge.type` is `github`, setup can also install the recommended pull-request workflows into the target repository:
 

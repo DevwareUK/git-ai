@@ -19,6 +19,10 @@ export type InstalledCodexSkillsResult = {
   skillFiles: string[];
 };
 
+export type CodexSkillRenderOptions = {
+  cliFallbackCommand?: string[];
+};
+
 const SHARED_WORKFLOW_CONTRACT = [
   "## prs Workflow Contract",
   "",
@@ -41,6 +45,32 @@ function renderPrPrepareReviewToolCommand(): string {
   }
 
   return `prs ${cliArgs.replace("123", "<number>")}`;
+}
+
+function formatShellCommandSegment(value: string): string {
+  return /^[A-Za-z0-9_./:=@+-]+$/.test(value)
+    ? value
+    : `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function formatCliFallbackCommand(command: string[]): string | undefined {
+  const normalized = command.map((segment) => segment.trim()).filter(Boolean);
+  if (normalized.length === 0) {
+    return undefined;
+  }
+
+  return normalized.map(formatShellCommandSegment).join(" ");
+}
+
+function renderSetupCapturedCliFallback(options: CodexSkillRenderOptions): string[] {
+  const formattedCommand = formatCliFallbackCommand(options.cliFallbackCommand ?? []);
+  if (!formattedCommand) {
+    return [];
+  }
+
+  return [
+    `- If \`prs\` is not on \`PATH\`, run the setup-captured fallback CLI with \`${formattedCommand} <args>\`.`,
+  ];
 }
 
 export const PRS_CODEX_SKILLS: ManagedCodexSkill[] = [
@@ -169,21 +199,36 @@ export function resolveCodexSkillsRoot(
   return resolve(codexHome, "skills");
 }
 
-export function renderCodexSkillMarkdown(skill: ManagedCodexSkill): string {
+export function renderCodexSkillMarkdown(
+  skill: ManagedCodexSkill,
+  options: CodexSkillRenderOptions = {}
+): string {
+  const body =
+    skill.name === "prs"
+      ? skill.body.replace(
+          "- Prefer the installed `prs` command when it is on `PATH`.",
+          [
+            "- Prefer the installed `prs` command when it is on `PATH`.",
+            ...renderSetupCapturedCliFallback(options),
+          ].join("\n")
+        )
+      : skill.body;
+
   return [
     "---",
     `name: ${skill.name}`,
     `description: ${JSON.stringify(skill.description)}`,
     "---",
     "",
-    skill.body.trim(),
+    body.trim(),
     "",
   ].join("\n");
 }
 
 export function installManagedCodexSkills(
   env: { CODEX_HOME?: string } = process.env,
-  home = homedir()
+  home = homedir(),
+  options: CodexSkillRenderOptions = {}
 ): InstalledCodexSkillsResult {
   const root = resolveCodexSkillsRoot(env, home);
   const skillFiles: string[] = [];
@@ -192,7 +237,7 @@ export function installManagedCodexSkills(
     const skillDir = resolve(root, skill.folderName);
     const skillFile = resolve(skillDir, "SKILL.md");
     mkdirSync(skillDir, { recursive: true });
-    writeFileSync(skillFile, renderCodexSkillMarkdown(skill), "utf8");
+    writeFileSync(skillFile, renderCodexSkillMarkdown(skill, options), "utf8");
     skillFiles.push(skillFile);
   }
 

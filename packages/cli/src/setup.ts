@@ -8,7 +8,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import {
   GENERATED_BY_SETUP_HEADER,
   LEGACY_ACTION_REPOSITORY,
@@ -1781,7 +1781,28 @@ export function parseSetupCommandArgs(args: string[]): void {
   }
 }
 
+function resolveCurrentCliFallbackCommand(): string[] | undefined {
+  const rawEntrypoint = process.argv[1]?.trim();
+  if (!rawEntrypoint) {
+    return undefined;
+  }
+
+  const entrypoint = isAbsolute(rawEntrypoint)
+    ? rawEntrypoint
+    : resolve(process.cwd(), rawEntrypoint);
+  try {
+    if (!statSync(entrypoint).isFile()) {
+      return undefined;
+    }
+  } catch {
+    return undefined;
+  }
+
+  return [process.execPath, entrypoint];
+}
+
 export async function runSetupCommand(options: {
+  cliFallbackCommand?: string[];
   promptForLine(prompt: string): Promise<string>;
   repoRoot: string;
 }): Promise<void> {
@@ -1826,7 +1847,10 @@ export async function runSetupCommand(options: {
     upsertAgentsSection(options.repoRoot, renderAgentsSection());
   }
 
-  const installedSkills = installManagedCodexSkills();
+  const cliFallbackCommand = options.cliFallbackCommand ?? resolveCurrentCliFallbackCommand();
+  const installedSkills = installManagedCodexSkills(undefined, undefined, {
+    cliFallbackCommand,
+  });
 
   console.log("");
   console.log(`Wrote ${getRepositoryConfigPath(options.repoRoot)}.`);
@@ -1864,6 +1888,9 @@ export async function runSetupCommand(options: {
   }
 
   console.log(`Installed prs Codex skills: ${installedSkills.installed}`);
+  if (cliFallbackCommand && cliFallbackCommand.length > 0) {
+    console.log(`Codex fallback CLI: ${formatCommandForDisplay(cliFallbackCommand)}`);
+  }
   console.log(`Codex skills root: ${installedSkills.root}`);
   console.log("Unified Codex entrypoint: /prs");
   console.log("Use the managed `prs` Codex skill as the /prs router.");

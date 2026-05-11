@@ -170,6 +170,10 @@ describe("setup command", () => {
     });
 
     await runSetupCommand({
+      cliFallbackCommand: [
+        "/usr/local/bin/node",
+        "/Users/tester/Projects/prs/packages/cli/dist/index.js",
+      ],
       promptForLine: createPrompt(["", "", ""], prompts),
       repoRoot,
     });
@@ -218,6 +222,9 @@ describe("setup command", () => {
     expect(testSuggestionsWorkflow).toContain("updateComment");
     expect(testSuggestionsWorkflow).toContain("createComment");
     expect(messages.join("\n")).toContain("Installed prs Codex skills: 5");
+    expect(messages.join("\n")).toContain(
+      "Codex fallback CLI: /usr/local/bin/node /Users/tester/Projects/prs/packages/cli/dist/index.js"
+    );
     expect(messages.join("\n")).toContain("Unified Codex entrypoint: /prs");
     expect(messages.join("\n")).toContain(
       "Use the managed `prs` Codex skill as the /prs router."
@@ -229,6 +236,9 @@ describe("setup command", () => {
       true
     );
     expect(existsSync(resolve(codexHome, "skills", "prs", "SKILL.md"))).toBe(true);
+    expect(readFileSync(resolve(codexHome, "skills", "prs", "SKILL.md"), "utf8")).toContain(
+      "/usr/local/bin/node /Users/tester/Projects/prs/packages/cli/dist/index.js <args>"
+    );
     expect(messages.join("\n")).toContain(
       "Recommended launch path: GitHub forge, OpenAI provider, and Codex runtime."
     );
