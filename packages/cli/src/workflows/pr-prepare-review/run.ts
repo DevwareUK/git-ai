@@ -28,6 +28,7 @@ import type {
   PullRequestPrepareReviewIssueSessionState,
   PullRequestPrepareReviewLinkedIssueState,
   PullRequestPrepareReviewRuntimePlan,
+  PullRequestPrepareReviewToolResult,
   PullRequestPrepareReviewWorkspace,
 } from "./types";
 import {
@@ -126,8 +127,10 @@ function synchronizePullRequestBaseBranch(
   repoRoot: string,
   workspace: PullRequestPrepareReviewWorkspace,
   pullRequest: PullRequestDetails,
-  branchName: string
+  branchName: string,
+  options: { resolveConflicts?: boolean } = {}
 ): PullRequestPrepareReviewBaseSyncState {
+  const resolveConflicts = options.resolveConflicts ?? true;
   const remoteRef = resolveBaseSyncRemoteRef(pullRequest.baseRefName);
 
   console.log(`Fetching latest ${remoteRef}...`);
@@ -186,8 +189,9 @@ function synchronizePullRequestBaseBranch(
     );
   }
 
-  const conflictWarning =
-    `Merging ${remoteRef} into "${branchName}" produced conflicts. Opening Codex to resolve them before generating the review brief.`;
+  const conflictWarning = resolveConflicts
+    ? `Merging ${remoteRef} into "${branchName}" produced conflicts. Opening Codex to resolve them before generating the review brief.`
+    : `Merging ${remoteRef} into "${branchName}" produced conflicts. Resolve them in the current Codex session before continuing review preparation.`;
   console.log(conflictWarning);
   appendPullRequestPrepareReviewWarning(workspace, conflictWarning);
 
@@ -204,6 +208,13 @@ function synchronizePullRequestBaseBranch(
     branchName,
     baseSync: baseSyncForConflictPrompt,
   });
+
+  if (!resolveConflicts) {
+    throw new PullRequestPrepareReviewBaseSyncError(
+      conflictWarning,
+      baseSyncForConflictPrompt
+    );
+  }
 
   console.log(
     "Resolve the merge conflicts in the interactive Codex session, then exit Codex to continue."
@@ -258,9 +269,13 @@ function synchronizePullRequestBaseBranch(
 }
 
 function localBranchExists(repoRoot: string, branchName: string): boolean {
-  const result = spawnSync("git", ["-C", repoRoot, "rev-parse", "--verify", branchName], {
-    stdio: "ignore",
-  });
+  const result = spawnSync(
+    "git",
+    ["-C", repoRoot, "rev-parse", "--verify", `refs/heads/${branchName}`],
+    {
+      stdio: "ignore",
+    }
+  );
 
   return !result.error && result.status === 0;
 }
@@ -464,6 +479,144 @@ function ensureCodexAvailable(): void {
     throw new Error(
       `\`prs pr prepare-review\` requires Codex because it generates the review brief in an unattended runtime. Configured Codex is unavailable because ${availability.reason}.`
     );
+  }
+}
+
+export async function preparePullRequestReviewTool(
+  options: RunPrPrepareReviewCommandOptions
+): Promise<PullRequestPrepareReviewToolResult> {
+  if (options.forge.type === "none") {
+    throw new Error(
+      "Repository forge support is disabled by .prs/config.json. Configure `forge.type` to enable pull request workflows."
+    );
+  }
+
+  options.ensureCleanWorkingTree(options.repoRoot);
+  (options.ensureVerificationCommandAvailable ?? ensureVerificationCommandAvailable)(
+    options.repoRoot,
+    options.buildCommand,
+    "prs tool pr prepare-review"
+  );
+
+  console.log(`Fetching pull request #${options.prNumber}...`);
+  const pullRequest = await options.forge.fetchPullRequestDetails(options.prNumber);
+  (options.preflightBaseBranch ?? preflightRemoteBranch)(
+    options.repoRoot,
+    "origin",
+    pullRequest.baseRefName,
+    `PR base branch "${pullRequest.baseRefName}"`,
+    "confirm the pull request base branch still exists on origin"
+  );
+  const linkedIssues = (
+    await fetchLinkedIssuesForPullRequest(options.forge, pullRequest)
+  ).map((issue) => ({
+    issue,
+    sessionState: loadIssueSessionState(options.repoRoot, issue.number),
+  }));
+
+  const checkoutTarget = resolvePullRequestCheckoutTarget(
+    options.repoRoot,
+    pullRequest.number,
+    pullRequest.title,
+    pullRequest.headRefName,
+    linkedIssues
+  );
+  const runtimePlan: PullRequestPrepareReviewRuntimePlan = {
+    invocation: "new",
+    warnings: [],
+  };
+  const workspace = createPullRequestPrepareReviewWorkspace(
+    options.repoRoot,
+    pullRequest.number
+  );
+
+  initializePullRequestPrepareReviewOutputLog(options.repoRoot, workspace);
+  checkoutPullRequestReviewBranch(
+    options.repoRoot,
+    workspace,
+    checkoutTarget,
+    pullRequest.number
+  );
+
+  try {
+    const baseSync = synchronizePullRequestBaseBranch(
+      options.repoRoot,
+      workspace,
+      pullRequest,
+      checkoutTarget.branchName,
+      { resolveConflicts: false }
+    );
+    const snapshotInput = {
+      pullRequest,
+      linkedIssues,
+      checkoutTarget,
+      baseSync,
+      runtimePlan,
+      buildCommandDisplay: formatCommandForDisplay(options.buildCommand),
+    };
+
+    writePullRequestPrepareReviewWorkspaceFiles(
+      options.repoRoot,
+      workspace,
+      snapshotInput,
+      options.buildCommand
+    );
+    writePullRequestPrepareReviewMetadata(
+      options.repoRoot,
+      workspace,
+      snapshotInput,
+      runtimePlan
+    );
+
+    return {
+      status: "ready",
+      prNumber: pullRequest.number,
+      runDir: workspace.runDir,
+      reviewBriefFilePath: workspace.reviewBriefFilePath,
+      snapshotFilePath: workspace.snapshotFilePath,
+      metadataFilePath: workspace.metadataFilePath,
+      checkout: checkoutTarget,
+      baseSync,
+      nextAction: "review-current-checkout",
+    };
+  } catch (error) {
+    if (!(error instanceof PullRequestPrepareReviewBaseSyncError)) {
+      throw error;
+    }
+
+    const blockedSnapshotInput = {
+      pullRequest,
+      linkedIssues,
+      checkoutTarget,
+      baseSync: error.baseSync,
+      runtimePlan,
+      buildCommandDisplay: formatCommandForDisplay(options.buildCommand),
+    };
+
+    writePullRequestPrepareReviewWorkspaceFiles(
+      options.repoRoot,
+      workspace,
+      blockedSnapshotInput,
+      options.buildCommand
+    );
+    writePullRequestPrepareReviewMetadata(
+      options.repoRoot,
+      workspace,
+      blockedSnapshotInput,
+      runtimePlan
+    );
+
+    return {
+      status: "blocked",
+      reason: "merge-conflicts",
+      prNumber: pullRequest.number,
+      runDir: workspace.runDir,
+      conflictPromptFilePath: workspace.conflictPromptFilePath,
+      metadataFilePath: workspace.metadataFilePath,
+      checkout: checkoutTarget,
+      baseSync: error.baseSync,
+      nextAction: "resolve-conflicts-in-current-codex-session",
+    };
   }
 }
 
