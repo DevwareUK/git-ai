@@ -2602,7 +2602,9 @@ describe("CLI integration", () => {
 
     const fetchMock = vi
       .fn()
+      .mockResolvedValueOnce(createFetchResponse({ number: 42 }))
       .mockResolvedValueOnce(createFetchResponse([]))
+      .mockResolvedValueOnce(createFetchResponse({ number: 42 }))
       .mockResolvedValueOnce(
         createFetchResponse({
           id: 4101,
@@ -2651,8 +2653,30 @@ describe("CLI integration", () => {
     expect(consoleLog).toHaveBeenCalledWith(
       "Audit artifact created: https://github.com/DevwareUK/prs/issues/42#issuecomment-4101"
     );
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toMatchObject({
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "https://api.github.com/repos/DevwareUK/prs/issues/42",
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: "Bearer test-token",
+          "User-Agent": "prs-cli",
+        },
+      }
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "https://api.github.com/repos/DevwareUK/prs/issues/42",
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: "Bearer test-token",
+          "User-Agent": "prs-cli",
+        },
+      }
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body))).toMatchObject({
       body: expect.stringContaining("## Spec"),
     });
   });
@@ -9937,43 +9961,46 @@ describe("CLI integration", () => {
 
   it("fetches audit comments through the GitHub repository forge adapter", async () => {
     const issueNumber = 42;
-    const fetchMock = vi.fn().mockResolvedValueOnce(
-      createFetchResponse([
-        {
-          id: 3101,
-          body: "Ordinary issue discussion.",
-          html_url: `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-3101`,
-          created_at: "2026-04-24T11:00:00Z",
-          updated_at: "2026-04-24T11:01:00Z",
-          user: {
-            login: "alice",
-            type: "User",
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(createFetchResponse({ number: issueNumber }))
+      .mockResolvedValueOnce(
+        createFetchResponse([
+          {
+            id: 3101,
+            body: "Ordinary issue discussion.",
+            html_url: `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-3101`,
+            created_at: "2026-04-24T11:00:00Z",
+            updated_at: "2026-04-24T11:01:00Z",
+            user: {
+              login: "alice",
+              type: "User",
+            },
           },
-        },
-        {
-          id: 3102,
-          body: "<!-- prs:audit -->\n# Issue #42 stale audit\n",
-          html_url: `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-3102`,
-          created_at: "2026-04-24T11:02:00Z",
-          updated_at: "2026-04-24T11:03:00Z",
-          user: {
-            login: "prs-bot",
-            type: "Bot",
+          {
+            id: 3102,
+            body: "<!-- prs:audit -->\n# Issue #42 stale audit\n",
+            html_url: `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-3102`,
+            created_at: "2026-04-24T11:02:00Z",
+            updated_at: "2026-04-24T11:03:00Z",
+            user: {
+              login: "prs-bot",
+              type: "Bot",
+            },
           },
-        },
-        {
-          id: 3103,
-          body: "<!-- prs:audit -->\n# Issue #42 newer audit\n",
-          html_url: `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-3103`,
-          created_at: "2026-04-24T10:02:00Z",
-          updated_at: "2026-04-24T11:04:00Z",
-          user: {
-            login: "prs-bot",
-            type: "Bot",
+          {
+            id: 3103,
+            body: "<!-- prs:audit -->\n# Issue #42 newer audit\n",
+            html_url: `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-3103`,
+            created_at: "2026-04-24T10:02:00Z",
+            updated_at: "2026-04-24T11:04:00Z",
+            user: {
+              login: "prs-bot",
+              type: "Bot",
+            },
           },
-        },
-      ])
-    );
+        ])
+      );
     vi.stubGlobal("fetch", fetchMock);
 
     process.env.GH_TOKEN = "";
@@ -9994,7 +10021,19 @@ describe("CLI integration", () => {
       isBot: true,
     });
 
-    expect(fetchMock).toHaveBeenCalledWith(
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      `https://api.github.com/repos/DevwareUK/prs/issues/${issueNumber}`,
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: "Bearer test-token",
+          "User-Agent": "prs-cli",
+        },
+      }
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
       `https://api.github.com/repos/DevwareUK/prs/issues/${issueNumber}/comments?per_page=100`,
       {
         headers: {
@@ -10021,6 +10060,7 @@ describe("CLI integration", () => {
     }));
     const fetchMock = vi
       .fn()
+      .mockResolvedValueOnce(createFetchResponse({ number: issueNumber }))
       .mockResolvedValueOnce(createFetchResponse(ordinaryComments))
       .mockResolvedValueOnce(
         createFetchResponse([
@@ -10059,7 +10099,7 @@ describe("CLI integration", () => {
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      `https://api.github.com/repos/DevwareUK/prs/issues/${issueNumber}/comments?per_page=100`,
+      `https://api.github.com/repos/DevwareUK/prs/pulls/${issueNumber}`,
       {
         headers: {
           Accept: "application/vnd.github+json",
@@ -10070,6 +10110,17 @@ describe("CLI integration", () => {
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
+      `https://api.github.com/repos/DevwareUK/prs/issues/${issueNumber}/comments?per_page=100`,
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: "Bearer test-token",
+          "User-Agent": "prs-cli",
+        },
+      }
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
       `https://api.github.com/repos/DevwareUK/prs/issues/${issueNumber}/comments?per_page=100&page=2`,
       {
         headers: {
@@ -10084,19 +10135,22 @@ describe("CLI integration", () => {
   it("creates audit comments through the GitHub repository forge adapter", async () => {
     const prNumber = 88;
     const body = "<!-- prs:audit -->\n# Pull request #88 audit\n";
-    const fetchMock = vi.fn().mockResolvedValueOnce(
-      createFetchResponse({
-        id: 3201,
-        body,
-        html_url: `https://github.com/DevwareUK/prs/pull/${prNumber}#issuecomment-3201`,
-        created_at: "2026-04-24T12:00:00Z",
-        updated_at: "2026-04-24T12:00:00Z",
-        user: {
-          login: "prs-bot",
-          type: "Bot",
-        },
-      })
-    );
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(createFetchResponse({ number: prNumber }))
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          id: 3201,
+          body,
+          html_url: `https://github.com/DevwareUK/prs/pull/${prNumber}#issuecomment-3201`,
+          created_at: "2026-04-24T12:00:00Z",
+          updated_at: "2026-04-24T12:00:00Z",
+          user: {
+            login: "prs-bot",
+            type: "Bot",
+          },
+        })
+      );
     vi.stubGlobal("fetch", fetchMock);
 
     process.env.GH_TOKEN = "";
@@ -10117,7 +10171,19 @@ describe("CLI integration", () => {
       isBot: true,
     });
 
-    expect(fetchMock).toHaveBeenCalledWith(
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      `https://api.github.com/repos/DevwareUK/prs/pulls/${prNumber}`,
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: "Bearer test-token",
+          "User-Agent": "prs-cli",
+        },
+      }
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
       `https://api.github.com/repos/DevwareUK/prs/issues/${prNumber}/comments`,
       expect.objectContaining({
         method: "POST",
@@ -10129,9 +10195,34 @@ describe("CLI integration", () => {
         }),
       })
     );
-    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
       body,
     });
+  });
+
+  it("rejects issue audit targets that resolve to pull requests", async () => {
+    const issueNumber = 88;
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      createFetchResponse({
+        number: issueNumber,
+        pull_request: {
+          url: `https://api.github.com/repos/DevwareUK/prs/pulls/${issueNumber}`,
+        },
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "test-token";
+
+    const { createGitHubRepositoryForge } = await loadGitHubForge();
+    const forge = createGitHubRepositoryForge(REPO_ROOT);
+
+    await expect(
+      (forge as any).fetchAuditComment({ type: "issue", number: issueNumber })
+    ).rejects.toThrow(`Use --pr ${issueNumber} for audit publication.`);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it("updates issue bodies through the GitHub repository forge adapter", async () => {

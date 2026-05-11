@@ -76,11 +76,11 @@ describe("audit artifacts", () => {
     expect(calls[0]).toContain("## Plan");
   });
 
-  it("updates an existing issue audit comment by replacing the named section", async () => {
+  it("updates an existing issue audit comment by replacing the named section and local run", async () => {
     const existing = renderAuditCommentBody({
       title: "Issue #42 audit",
       sections: [{ name: "Plan", content: "Old plan" }],
-      localRun: ".prs/runs/example",
+      localRun: ".prs/runs/old",
     });
     let updatedBody = "";
     const forge = {
@@ -97,11 +97,13 @@ describe("audit artifacts", () => {
       target: { type: "issue", number: 42 },
       sectionName: "Plan",
       content: "New plan",
-      localRun: ".prs/runs/example",
+      localRun: ".prs/runs/new",
     });
 
     expect(result.status).toBe("updated");
     expect(updatedBody).toContain("New plan");
     expect(updatedBody).not.toContain("Old plan");
+    expect(updatedBody).toContain("Local run: `.prs/runs/new`");
+    expect(updatedBody).not.toContain("Local run: `.prs/runs/old`");
   });
 });

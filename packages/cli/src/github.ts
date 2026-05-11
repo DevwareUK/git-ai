@@ -292,6 +292,52 @@ async function listIssueComments(
   }
 }
 
+async function assertAuditTargetMatchesType(
+  owner: string,
+  repo: string,
+  target: AuditTarget
+): Promise<void> {
+  const token = tryResolveGitHubApiToken();
+  const headers: Record<string, string> = {
+    Accept: "application/vnd.github+json",
+    "User-Agent": "prs-cli",
+  };
+
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  if (target.type === "pull-request") {
+    const response = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/pulls/${target.number}`,
+      { headers }
+    );
+    if (!response.ok) {
+      throw new Error(
+        `GitHub pull request #${target.number} could not be validated for audit publication (${response.status} ${response.statusText}).`
+      );
+    }
+    return;
+  }
+
+  const response = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/issues/${target.number}`,
+    { headers }
+  );
+  if (!response.ok) {
+    throw new Error(
+      `GitHub issue #${target.number} could not be validated for audit publication (${response.status} ${response.statusText}).`
+    );
+  }
+
+  const payload = (await response.json()) as { pull_request?: unknown };
+  if (payload.pull_request) {
+    throw new Error(
+      `GitHub issue #${target.number} is a pull request. Use --pr ${target.number} for audit publication.`
+    );
+  }
+}
+
 function tryFetchPullRequestWithGh(
   owner: string,
   repo: string,
@@ -739,6 +785,7 @@ class GitHubRepositoryForge implements RepositoryForge {
 
   async fetchAuditComment(target: AuditTarget): Promise<RepositoryComment | undefined> {
     const { owner, repo } = parseGitHubRepoFromRemote(this.repoRoot);
+    await assertAuditTargetMatchesType(owner, repo, target);
     const comments = await listIssueComments(owner, repo, target.number);
 
     return comments
@@ -829,6 +876,7 @@ class GitHubRepositoryForge implements RepositoryForge {
     body: string
   ): Promise<RepositoryComment> {
     const { owner, repo } = parseGitHubRepoFromRemote(this.repoRoot);
+    await assertAuditTargetMatchesType(owner, repo, target);
     const token = getGitHubApiToken(
       "Publishing audit comments requires GH_TOKEN or GITHUB_TOKEN to be set, or gh to be installed and authenticated."
     );

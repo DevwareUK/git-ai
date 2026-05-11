@@ -99,6 +99,25 @@ function replaceOrAppendSection(body: string, section: AuditSection): string {
   return `${body.trim()}\n\n${replacement}\n`;
 }
 
+function replaceOrInsertLocalRun(body: string, localRun?: string): string {
+  if (!localRun) {
+    return body;
+  }
+
+  const localRunLine = `Local run: \`${localRun}\``;
+  const localRunPattern = /^Local run: `[^`\n]*`$/m;
+  if (localRunPattern.test(body)) {
+    return `${body.replace(localRunPattern, localRunLine).trim()}\n`;
+  }
+
+  const titlePattern = /^# .+$/m;
+  if (titlePattern.test(body)) {
+    return `${body.replace(titlePattern, `$&\n\n${localRunLine}`).trim()}\n`;
+  }
+
+  return `${body.trim()}\n\n${localRunLine}\n`;
+}
+
 export async function publishAuditArtifact(
   forge: RepositoryForge,
   input: PublishAuditArtifactInput
@@ -126,7 +145,10 @@ export async function publishAuditArtifact(
     status: "updated",
     comment: await forge.updateIssueComment(
       existing.id,
-      replaceOrAppendSection(existing.body, section)
+      replaceOrInsertLocalRun(
+        replaceOrAppendSection(existing.body, section),
+        input.localRun
+      )
     ),
   };
 }
