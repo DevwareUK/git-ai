@@ -34,13 +34,13 @@ const LAUNCH_STAGE_NOTICE_DEFINITIONS: Record<
   },
   "issue-batch": {
     tier: "beta",
-    command: "`prs issue batch ...`",
+    command: "`prs issue <number> <number> ...`",
     reason:
-      "It chains unattended issue-to-PR runs and is the most operationally fragile automation path in the CLI today.",
+      "It fans out unattended issue-to-PR runs across separate worktrees and remains the widest automation path in the CLI today.",
     recommendedFirst:
       "`prs review`, `prs pr fix-comments <pr-number>`, or a single `prs issue <number>` run.",
     constraints:
-      'Requires a clean working tree, at least two issue numbers, authenticated GitHub access, and `ai.runtime.type: "codex"`.',
+      'Requires at least two issue numbers, authenticated GitHub access, and `ai.runtime.type: "codex"`; `prs issue batch ...` remains a compatibility alias.',
   },
   "issue-draft": {
     tier: "advanced",
