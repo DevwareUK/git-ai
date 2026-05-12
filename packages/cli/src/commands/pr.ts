@@ -3,19 +3,23 @@ export type PrCommandOptions = {
     | "fix-comments"
     | "fix-failing-tests"
     | "fix-tests"
-    | "prepare-review"
     | "resolve-conflicts";
   prNumber: number;
 };
 
 export const PR_USAGE = [
   "Usage:",
-  "  prs pr prepare-review <pr-number>",
   "  prs pr resolve-conflicts <pr-number>",
   "  prs pr fix-comments <pr-number>",
   "  prs pr fix-failing-tests <pr-number>",
   "  prs pr fix-tests <pr-number>",
 ].join("\n");
+
+export const PR_PREPARE_REVIEW_RETIRED_MESSAGE = [
+  "`prs pr prepare-review <pr-number>` has been retired because it launched Codex from inside a PR workflow.",
+  "Use `prs tool pr prepare-review <pr-number> --json` for deterministic Codex-safe review preparation.",
+  "Use `prs codex pr prepare-review <pr-number>` only when you explicitly want the legacy Codex launcher.",
+].join(" ");
 
 export function parsePrCommandArgs(
   args: string[],
@@ -24,11 +28,14 @@ export function parsePrCommandArgs(
   const prArgs = args.slice(1);
   const subcommand = prArgs[0];
 
+  if (subcommand === "prepare-review") {
+    throw new Error(PR_PREPARE_REVIEW_RETIRED_MESSAGE);
+  }
+
   if (
     subcommand !== "fix-comments" &&
     subcommand !== "fix-failing-tests" &&
     subcommand !== "fix-tests" &&
-    subcommand !== "prepare-review" &&
     subcommand !== "resolve-conflicts"
   ) {
     throw new Error(`Unknown pr subcommand "${subcommand ?? ""}". ${PR_USAGE}`);

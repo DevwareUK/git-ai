@@ -118,7 +118,6 @@ Beta commands:
 
 - `prs issue <number> <number> ...`
 - `prs issue batch <number> <number> [...number]`
-- `prs pr prepare-review <pr-number>`
 - `prs pr resolve-conflicts <pr-number>`
 - `prs feature-backlog`
 

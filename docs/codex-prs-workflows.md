@@ -10,7 +10,7 @@ Codex is the default interactive runtime when `ai.runtime.type` is unset.
 
 Runtime-specific behavior:
 
-- `prs pr prepare-review <pr-number>` always requires `codex` on `PATH`.
+- `prs codex pr prepare-review <pr-number>` always requires `codex` on `PATH`.
 - `prs pr resolve-conflicts <pr-number>` always requires `codex` on `PATH` for guided merge-conflict resolution, even though Codex only opens when the base merge conflicts.
 - `prs issue <number> --mode unattended`, multi-issue `prs issue <number> <number> ...`, and `prs issue batch ...` require `ai.runtime.type` to be `codex`.
 - Interactive local workflows such as `prs issue draft`, `prs issue refine <number>`, `prs issue <number>`, `prs pr fix-comments <pr-number>`, `prs pr fix-failing-tests <pr-number>`, and `prs pr fix-tests <pr-number>` use the configured runtime, with fallback to Codex when a configured non-default runtime is unavailable.
