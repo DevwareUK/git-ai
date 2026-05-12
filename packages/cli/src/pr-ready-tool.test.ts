@@ -56,7 +56,10 @@ function createForge(): RepositoryForge {
 
 function createCommandRecorder(options: {
   containsBase: boolean;
+  currentBranch?: string;
+  ddevDescribeStatus?: number;
   lockedHeadBranch?: boolean;
+  reviewBranchFetchStatus?: number;
   mergeStatus?: number;
   ddevStatus?: number;
 }) {
@@ -67,6 +70,9 @@ function createCommandRecorder(options: {
 
     if (command === "git" && normalizedArgs[0] === "rev-parse" && normalizedArgs[1] === "--verify") {
       return { status: 0, stdout: "", stderr: "" };
+    }
+    if (command === "git" && normalizedArgs[0] === "branch" && normalizedArgs[1] === "--show-current") {
+      return { status: 0, stdout: `${options.currentBranch ?? "main"}\n`, stderr: "" };
     }
     if (command === "git" && normalizedArgs[0] === "checkout") {
       if (normalizedArgs[1] === "codex/sales-menu-images" && options.lockedHeadBranch) {
@@ -80,6 +86,16 @@ function createCommandRecorder(options: {
       return { status: 0, stdout: "", stderr: "" };
     }
     if (command === "git" && normalizedArgs[0] === "fetch" && normalizedArgs[1] === "origin") {
+      if (
+        normalizedArgs[2] === "+refs/pull/115/head:refs/heads/review/pr-115" &&
+        options.reviewBranchFetchStatus !== undefined
+      ) {
+        return {
+          status: options.reviewBranchFetchStatus,
+          stdout: "",
+          stderr: "fatal: refusing to fetch into branch 'refs/heads/review/pr-115' checked out\n",
+        };
+      }
       return { status: 0, stdout: "", stderr: "" };
     }
     if (command === "git" && normalizedArgs[0] === "rev-parse" && normalizedArgs[1] === "origin/main") {
@@ -91,7 +107,14 @@ function createCommandRecorder(options: {
     if (command === "git" && normalizedArgs[0] === "merge") {
       return { status: options.mergeStatus ?? 0, stdout: "", stderr: "conflict\n" };
     }
-    if (command === "ddev" && args[0] === "start") {
+    if (command.endsWith("ddev") && args[0] === "describe") {
+      return {
+        status: options.ddevDescribeStatus ?? 1,
+        stdout: options.ddevDescribeStatus === 0 ? "project is running\n" : "",
+        stderr: options.ddevDescribeStatus === 0 ? "" : "project is not running\n",
+      };
+    }
+    if (command.endsWith("ddev") && args[0] === "start") {
       return { status: options.ddevStatus ?? 0, stdout: "started\n", stderr: "" };
     }
 
@@ -119,6 +142,7 @@ describe("PR ready tool", () => {
       ensureCleanWorkingTree: vi.fn(),
       ensureVerificationCommandAvailable: vi.fn(),
       buildCommand: ["pnpm", "build"],
+      runtimeCommandCandidates: ["ddev"],
     });
 
     expect(result).toMatchObject({
@@ -152,6 +176,7 @@ describe("PR ready tool", () => {
       ensureCleanWorkingTree: vi.fn(),
       ensureVerificationCommandAvailable: vi.fn(),
       buildCommand: ["pnpm", "build"],
+      runtimeCommandCandidates: ["ddev"],
     });
 
     expect(result).toMatchObject({
@@ -189,6 +214,7 @@ describe("PR ready tool", () => {
       ensureCleanWorkingTree: vi.fn(),
       ensureVerificationCommandAvailable: vi.fn(),
       buildCommand: ["pnpm", "build"],
+      runtimeCommandCandidates: ["ddev"],
     });
 
     expect(result).toMatchObject({
@@ -209,6 +235,106 @@ describe("PR ready tool", () => {
     expect(calls.map(gitCallArgs)).toContainEqual(["checkout", "review/pr-115"]);
   });
 
+  it("reruns on the current review branch without fetching into the checked-out branch", async () => {
+    const repoRoot = createRepo();
+    mkdirSync(resolve(repoRoot, ".ddev"), { recursive: true });
+    writeFileSync(resolve(repoRoot, ".ddev", "config.yaml"), "name: bos\n", "utf8");
+    const { calls, runCommand } = createCommandRecorder({
+      containsBase: true,
+      currentBranch: "review/pr-115",
+      lockedHeadBranch: true,
+      reviewBranchFetchStatus: 128,
+    });
+
+    const result = await readyPullRequestTool({
+      all: true,
+      forge: createForge(),
+      prNumber: 115,
+      repoRoot,
+      runCommand,
+      ensureCleanWorkingTree: vi.fn(),
+      ensureVerificationCommandAvailable: vi.fn(),
+      buildCommand: ["pnpm", "build"],
+      runtimeCommandCandidates: ["ddev"],
+    });
+
+    expect(result).toMatchObject({
+      status: "ready",
+      branchName: "review/pr-115",
+      nextAction: "browse-local-app",
+    });
+    expect(calls.map(gitCallArgs)).not.toContainEqual([
+      "fetch",
+      "origin",
+      "+refs/pull/115/head:refs/heads/review/pr-115",
+    ]);
+  });
+
+  it("reports an already-running DDEV runtime without starting it again", async () => {
+    const repoRoot = createRepo();
+    mkdirSync(resolve(repoRoot, ".ddev"), { recursive: true });
+    writeFileSync(resolve(repoRoot, ".ddev", "config.yaml"), "name: bos\n", "utf8");
+    const { calls, runCommand } = createCommandRecorder({
+      containsBase: true,
+      ddevDescribeStatus: 0,
+    });
+
+    const result = await readyPullRequestTool({
+      all: true,
+      forge: createForge(),
+      prNumber: 115,
+      repoRoot,
+      runCommand,
+      ensureCleanWorkingTree: vi.fn(),
+      ensureVerificationCommandAvailable: vi.fn(),
+      buildCommand: ["pnpm", "build"],
+      runtimeCommandCandidates: ["ddev"],
+    });
+
+    expect(result).toMatchObject({
+      status: "ready",
+      runtime: {
+        kind: "ddev",
+        status: "running",
+        message: "DDEV is already running.",
+      },
+    });
+    expect(calls.some((call) => call.command.endsWith("ddev") && call.args[0] === "describe")).toBe(true);
+    expect(calls.some((call) => call.command.endsWith("ddev") && call.args[0] === "start")).toBe(false);
+  });
+
+  it("uses an available DDEV executable outside PATH", async () => {
+    const repoRoot = createRepo();
+    mkdirSync(resolve(repoRoot, ".ddev"), { recursive: true });
+    mkdirSync(resolve(repoRoot, "bin"), { recursive: true });
+    const ddevPath = resolve(repoRoot, "bin", "ddev");
+    writeFileSync(resolve(repoRoot, ".ddev", "config.yaml"), "name: bos\n", "utf8");
+    writeFileSync(ddevPath, "", "utf8");
+    const { calls, runCommand } = createCommandRecorder({ containsBase: true });
+
+    const result = await readyPullRequestTool({
+      all: true,
+      forge: createForge(),
+      prNumber: 115,
+      repoRoot,
+      runCommand,
+      ensureCleanWorkingTree: vi.fn(),
+      ensureVerificationCommandAvailable: vi.fn(),
+      buildCommand: ["pnpm", "build"],
+      runtimeCommandCandidates: [ddevPath],
+    });
+
+    expect(result).toMatchObject({
+      status: "ready",
+      runtime: {
+        kind: "ddev",
+        status: "running",
+        startCommand: [ddevPath, "start"],
+      },
+    });
+    expect(calls.some((call) => call.command === ddevPath && call.args[0] === "start")).toBe(true);
+  });
+
   it("blocks when --all base sync hits merge conflicts", async () => {
     const repoRoot = createRepo();
     mkdirSync(resolve(repoRoot, ".ddev"), { recursive: true });
@@ -227,6 +353,7 @@ describe("PR ready tool", () => {
       ensureCleanWorkingTree: vi.fn(),
       ensureVerificationCommandAvailable: vi.fn(),
       buildCommand: ["pnpm", "build"],
+      runtimeCommandCandidates: ["ddev"],
     });
 
     expect(result).toMatchObject({

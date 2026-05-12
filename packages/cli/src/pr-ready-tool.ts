@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { delimiter, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { formatRunTimestamp, toRepoRelativePath } from "./run-artifacts";
 import type { PullRequestDetails, RepositoryForge } from "./forge";
@@ -106,6 +106,7 @@ type PrReadyToolOptions = {
   prNumber: number;
   repoRoot: string;
   runCommand?: (command: string, args: string[]) => PrReadyRunCommandResult;
+  runtimeCommandCandidates?: string[];
 };
 
 function defaultRunCommand(command: string, args: string[]): PrReadyRunCommandResult {
@@ -156,6 +157,14 @@ function reviewBranchNameForPullRequest(pullRequest: PullRequestDetails): string
   return `review/pr-${pullRequest.number}`;
 }
 
+function currentBranchName(
+  runCommand: (command: string, args: string[]) => PrReadyRunCommandResult,
+  repoRoot: string
+): string | undefined {
+  const result = git(runCommand, repoRoot, ["branch", "--show-current"]);
+  return result.status === 0 ? result.stdout.trim() || undefined : undefined;
+}
+
 function checkoutPullRequestBranch(
   runCommand: (command: string, args: string[]) => PrReadyRunCommandResult,
   repoRoot: string,
@@ -182,6 +191,9 @@ function checkoutPullRequestBranch(
   if (checkoutResult.status !== 0) {
     if (isBranchCheckedOutInAnotherWorktree(checkoutResult)) {
       const reviewBranchName = reviewBranchNameForPullRequest(pullRequest);
+      if (currentBranchName(runCommand, repoRoot) === reviewBranchName) {
+        return reviewBranchName;
+      }
       ensureSuccess(
         git(runCommand, repoRoot, [
           "fetch",
@@ -204,7 +216,41 @@ function checkoutPullRequestBranch(
   return pullRequest.headRefName;
 }
 
-function detectRuntime(repoRoot: string): PrReadyRuntime {
+function unique(values: string[]): string[] {
+  return Array.from(new Set(values));
+}
+
+function defaultDdevCommandCandidates(): string[] {
+  const pathCandidates = (process.env.PATH ?? "")
+    .split(delimiter)
+    .filter(Boolean)
+    .map((entry) => resolve(entry, "ddev"));
+
+  return unique([
+    ...pathCandidates,
+    "/opt/homebrew/bin/ddev",
+    "/usr/local/bin/ddev",
+    "ddev",
+  ]);
+}
+
+function resolveDdevCommand(candidates: string[]): string {
+  for (const candidate of candidates) {
+    if (candidate === "ddev") {
+      continue;
+    }
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return "ddev";
+}
+
+function detectRuntime(
+  repoRoot: string,
+  ddevCommandCandidates = defaultDdevCommandCandidates()
+): PrReadyRuntime {
   const ddevConfigPath = resolve(repoRoot, ".ddev", "config.yaml");
   if (!existsSync(ddevConfigPath)) {
     return {
@@ -217,10 +263,11 @@ function detectRuntime(repoRoot: string): PrReadyRuntime {
 
   const config = readFileSync(ddevConfigPath, "utf8");
   const name = config.match(/^name:\s*([A-Za-z0-9_.-]+)/m)?.[1];
+  const ddevCommand = resolveDdevCommand(ddevCommandCandidates);
   return {
     kind: "ddev",
     status: "detected",
-    startCommand: ["ddev", "start"],
+    startCommand: [ddevCommand, "start"],
     url: name ? `https://${name}.ddev.site` : undefined,
   };
 }
@@ -233,7 +280,17 @@ function startRuntime(
     return runtime;
   }
 
-  const result = runCommand("ddev", ["start"]);
+  const command = runtime.startCommand[0] ?? "ddev";
+  const statusResult = runCommand(command, ["describe"]);
+  if (statusResult.status === 0) {
+    return {
+      ...runtime,
+      status: "running",
+      message: "DDEV is already running.",
+    };
+  }
+
+  const result = runCommand(command, ["start"]);
   if (result.status !== 0) {
     return {
       ...runtime,
@@ -353,7 +410,7 @@ export async function readyPullRequestTool(
   const runDir = createRunDir(options.repoRoot, pullRequest.number);
   const metadataFilePath = resolve(runDir, "metadata.json");
   const branchName = checkoutPullRequestBranch(runCommand, options.repoRoot, pullRequest);
-  const runtime = detectRuntime(options.repoRoot);
+  const runtime = detectRuntime(options.repoRoot, options.runtimeCommandCandidates);
   const baseSync = fetchBaseState(
     runCommand,
     options.repoRoot,
