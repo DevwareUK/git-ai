@@ -132,6 +132,7 @@ Supporting commands:
 - `prs codex pr resolve-conflicts <pr-number>`
 - `prs tool issue list [--actionable] --json`
 - `prs tool issue ready <issue-number> [--all] --json`
+- `prs tool issue create (--draft-file <path>|--issue-set <path>) --json`
 - `prs tool pr list [--actionable] --json`
 - `prs tool pr ready <pr-number> [--all] --json`
 - `prs tool pr prepare-review <pr-number> --json`

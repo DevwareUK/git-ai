@@ -457,6 +457,7 @@ const TOP_LEVEL_HELP = [
   "  prs setup",
   "  prs tool issue list [--actionable] --json",
   "  prs tool issue ready <issue-number> [--all] --json",
+  "  prs tool issue create (--draft-file <path>|--issue-set <path>) --json",
   "  prs tool pr list [--actionable] --json",
   "  prs tool pr ready <pr-number> [--all] --json",
   "  prs tool pr prepare-review <pr-number> --json",
@@ -3507,6 +3508,10 @@ type IssueSetCreatedIssue = {
   url: string;
 };
 
+type ToolCreatedIssueRecord = CreatedIssueRecord & {
+  id?: string;
+};
+
 function formatIssueNumberList(
   issueSet: ParsedIssueDraftSet,
   createdIssuesById: Map<string, IssueSetCreatedIssue>,
@@ -3679,6 +3684,84 @@ async function createLinkedIssueDraftSet(input: {
   }
 
   return createdIssues;
+}
+
+async function createIssueDraftSetWithRecords(input: {
+  issueSet: ParsedIssueDraftSet;
+  forge: RepositoryForge;
+  labels: string[];
+  forcePrsManaged: boolean;
+}): Promise<ToolCreatedIssueRecord[]> {
+  const createdIssues: ToolCreatedIssueRecord[] = [];
+
+  for (const issue of input.issueSet.issues) {
+    const initialBody = input.forcePrsManaged
+      ? ensurePrsManagedIssueBody(issue.body)
+      : issue.body;
+    const createdIssue = await input.forge.createOrReuseIssue(
+      issue.title,
+      initialBody,
+      input.labels
+    );
+    createdIssues.push({
+      ...createdIssue,
+      id: issue.id,
+    });
+  }
+
+  const createdIssuesById = new Map<string, IssueSetCreatedIssue>();
+  for (const issue of createdIssues) {
+    if (!issue.id) {
+      continue;
+    }
+
+    createdIssuesById.set(issue.id, {
+      id: issue.id,
+      number: issue.number,
+      url: issue.url,
+    });
+  }
+
+  for (const issue of input.issueSet.issues) {
+    const createdIssue = createdIssues.find((entry) => entry.id === issue.id);
+    if (!createdIssue || createdIssue.status !== "created") {
+      continue;
+    }
+
+    const linkedBody = buildLinkedIssueBody(
+      input.issueSet,
+      issue,
+      createdIssuesById,
+      {
+        forcePrsManaged: input.forcePrsManaged,
+      }
+    );
+    const updatedIssue = await input.forge.updateIssue(
+      createdIssue.number,
+      issue.title,
+      linkedBody
+    );
+    createdIssue.url = updatedIssue.url;
+  }
+
+  return createdIssues;
+}
+
+function createAuditPublicationHints(input: {
+  issueNumbers: number[];
+  planFilePath?: string;
+}): Array<{ issueNumber: number; file: string; section: string }> {
+  if (!input.planFilePath || input.issueNumbers.length === 0) {
+    return [];
+  }
+
+  return [
+    {
+      issueNumber: input.issueNumbers[0],
+      file: input.planFilePath,
+      section: "plan",
+    },
+  ];
 }
 
 async function promptForLine(prompt: string): Promise<string> {
@@ -4317,6 +4400,111 @@ async function runToolCommand(): Promise<void> {
       forge: getRepositoryForge(repoRoot),
     });
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+
+  if (toolCommand.kind === "issue-create") {
+    const forge = getRepositoryForge(repoRoot);
+
+    if (forge.type === "none") {
+      process.stdout.write(
+        `${JSON.stringify(
+          {
+            status: "blocked",
+            message:
+              "Repository forge support is disabled by .prs/config.json. Configure `forge.type` to enable issue creation.",
+            nextAction: "configure-forge",
+          },
+          null,
+          2
+        )}\n`
+      );
+      return;
+    }
+
+    if (!forge.isAuthenticated()) {
+      process.stdout.write(
+        `${JSON.stringify(
+          {
+            status: "blocked",
+            message:
+              "GitHub issue creation requires GH_TOKEN or GITHUB_TOKEN in the repository environment, or an authenticated gh session.",
+            nextAction: "configure-github-auth",
+          },
+          null,
+          2
+        )}\n`
+      );
+      return;
+    }
+
+    if (toolCommand.draftFilePath) {
+      const draftFilePath = resolve(repoRoot, toolCommand.draftFilePath);
+      const parsedDraft = parseIssueDraftDocument(readFileSync(draftFilePath, "utf8"));
+      const body = toolCommand.forcePrsManaged
+        ? ensurePrsManagedIssueBody(parsedDraft.body)
+        : parsedDraft.body;
+      const issue = await forge.createOrReuseIssue(
+        parsedDraft.title,
+        body,
+        toolCommand.labels
+      );
+
+      process.stdout.write(
+        `${JSON.stringify(
+          {
+            status: "ok",
+            mode: "single",
+            issues: [issue],
+            createdIssues: [issue],
+            auditPublicationHints: createAuditPublicationHints({
+              issueNumbers: [issue.number],
+              planFilePath: toolCommand.planFilePath,
+            }),
+          },
+          null,
+          2
+        )}\n`
+      );
+      return;
+    }
+
+    if (!toolCommand.issueSetFilePath) {
+      throw new Error("Provide exactly one of --draft-file or --issue-set.");
+    }
+
+    const issueSetFilePath = resolve(repoRoot, toolCommand.issueSetFilePath);
+    const runDir = toolCommand.runDir
+      ? resolve(repoRoot, toolCommand.runDir)
+      : dirname(issueSetFilePath);
+    const issueSet = loadIssueDraftSet({
+      repoRoot,
+      runDir,
+      issueSetFilePath,
+    });
+    const issues = await createIssueDraftSetWithRecords({
+      issueSet,
+      forge,
+      labels: toolCommand.labels,
+      forcePrsManaged: toolCommand.forcePrsManaged,
+    });
+
+    process.stdout.write(
+      `${JSON.stringify(
+        {
+          status: "ok",
+          mode: "multiple",
+          issues,
+          createdIssues: issues,
+          auditPublicationHints: createAuditPublicationHints({
+            issueNumbers: issues.map((issue) => issue.number),
+            planFilePath: toolCommand.planFilePath,
+          }),
+        },
+        null,
+        2
+      )}\n`
+    );
     return;
   }
 

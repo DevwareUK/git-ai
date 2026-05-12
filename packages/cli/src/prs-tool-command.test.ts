@@ -25,6 +25,52 @@ describe("prs tool command parser", () => {
     });
   });
 
+  it("parses issue create JSON command", () => {
+    expect(
+      parsePrsToolCommandArgs([
+        "issue",
+        "create",
+        "--draft-file",
+        ".prs/issues/issue-draft.md",
+        "--run-dir=.prs/runs/create",
+        "--plan-file",
+        ".prs/runs/create/plan.md",
+        "--label",
+        "bug",
+        "--labels=prs,approved",
+        "--force-prs-managed",
+        "--json",
+      ])
+    ).toEqual({
+      kind: "issue-create",
+      draftFilePath: ".prs/issues/issue-draft.md",
+      issueSetFilePath: undefined,
+      runDir: ".prs/runs/create",
+      planFilePath: ".prs/runs/create/plan.md",
+      labels: ["bug", "prs", "approved"],
+      forcePrsManaged: true,
+      json: true,
+    });
+
+    expect(
+      parsePrsToolCommandArgs([
+        "issue",
+        "create",
+        "--issue-set=.prs/runs/create/issue-set.json",
+        "--json",
+      ])
+    ).toEqual({
+      kind: "issue-create",
+      draftFilePath: undefined,
+      issueSetFilePath: ".prs/runs/create/issue-set.json",
+      runDir: undefined,
+      planFilePath: undefined,
+      labels: [],
+      forcePrsManaged: false,
+      json: true,
+    });
+  });
+
   it("parses actionable PR list JSON command", () => {
     expect(parsePrsToolCommandArgs(["pr", "list", "--actionable", "--json"])).toEqual({
       kind: "pr-list",
@@ -87,6 +133,20 @@ describe("prs tool command parser", () => {
     expect(() => parsePrsToolCommandArgs(["issue", "list"])).toThrow(
       renderPrsToolCommandHelp()
     );
+    expect(() =>
+      parsePrsToolCommandArgs(["issue", "create", "--draft-file", "draft.md"])
+    ).toThrow("prs tool issue create requires --json.");
+    expect(() =>
+      parsePrsToolCommandArgs([
+        "issue",
+        "create",
+        "--draft-file",
+        "draft.md",
+        "--issue-set",
+        "issue-set.json",
+        "--json",
+      ])
+    ).toThrow("Provide exactly one of --draft-file or --issue-set.");
     expect(() => parsePrsToolCommandArgs(["unknown"])).toThrow(renderPrsToolCommandHelp());
   });
 });
