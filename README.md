@@ -179,10 +179,10 @@ The launch path is not presented as full runtime or provider parity:
 
 ## Codex `/prs` workflow
 
-The recommended Codex entrypoint is `/prs`. It is the unified workflow router over the existing `prs` CLI and managed Codex skills.
+The recommended Codex entrypoint is `/prs`. It is the unified workflow router over the existing `prs` CLI and managed Codex skills. The shorter alias skills `/prs:create`, `/prs:issue`, `/prs:pr`, `/prs:audit`, and `/prs:finish` enter the same workflows directly when you already know which lane you want.
 
 - `/prs`: interactive command center
-- `/prs create`: guided route for creating new GitHub work items from a rough idea
+- `/prs create` or `/prs:create`: guided route for creating new GitHub work items from a rough idea; after draft artifacts are created, Codex should ask you to approve them before creating the GitHub issue or linked issue set
 - `/prs create issue`: create one implementation-ready GitHub issue or a linked issue set; this currently uses the existing `prs issue draft` implementation
 - `/prs issue`: interactive "actionable for me" issue picker backed by `prs tool issue list --actionable --json`
 - `/prs issue <number>`: prepare existing issue context for local implementation with `prs tool issue ready <number> --json`
@@ -191,7 +191,7 @@ The recommended Codex entrypoint is `/prs`. It is the unified workflow router ov
 - `/prs issue <number> plan`: publish or refresh an issue plan
 - `/prs issue <number> finish`: finish work with the issue context preserved
 - `/prs pr`: interactive "actionable for me" PR picker backed by `prs tool pr list --actionable --json`
-- `/prs pr <number>`: prepare the PR in the current checkout used by the normal local runtime with `prs tool pr ready <number> --json`; if the PR head branch is locked in another worktree, the tool uses a local `review/pr-<number>` branch in the current checkout instead of moving review into that worktree
+- `/prs pr <number>`: prepare the actual PR head branch in the current checkout used by the normal local runtime with `prs tool pr ready <number> --json`; if that branch is locked by a clean prs worktree, the tool may remove the clean worktree and then check out the actual PR branch in the current checkout, while dirty worktrees block with recovery guidance
 - `/prs pr <number> --all`: take all sensible readiness steps with `prs tool pr ready <number> --all --json`; this may sync the base branch and ensure the configured local app runtime is running from the current checkout, but does not push, review, fix, approve, merge, or switch to an existing PR worktree
 - `/prs pr <number> resolve-conflicts`: resolve PR conflicts
 - `/prs pr <number> prepare-review`: run `prs tool pr prepare-review <number> --json`, leave the prepared PR branch checked out in the current repository, use the returned `snapshotFilePath` for context when useful, and continue review in the current Codex session without launching nested Codex; this deterministic tool does not generate `review-brief.md`
@@ -200,6 +200,8 @@ The recommended Codex entrypoint is `/prs`. It is the unified workflow router ov
 - `/prs pr <number> fix-tests`: implement selected PRS AI test suggestions
 - `/prs audit publish`: publish run artifacts to GitHub audit comments
 - `/prs finish`: verify, commit, push, PR, audit, and safe cleanup
+
+The alias skills map as follows: `/prs:issue` to `/prs issue`, `/prs:pr` to `/prs pr`, `/prs:audit` to `/prs audit publish`, and `/prs:finish` to `/prs finish`. Their descriptions are intentionally more specific so Codex app task titles are less likely to collapse to generic text such as "Create PR".
 
 `/prs issue` and `/prs pr` default to actionable-for-me lists. `/prs issue` must use `prs tool issue list --actionable --json` as the source of truth, and `/prs pr` must use `prs tool pr list --actionable --json`; when either tool returns `status: "blocked"`, Codex should report the tool's `message` and `nextAction` instead of recreating GitHub discovery from git refs or source inspection. Issue multi-select starts parallel Superpowers issue work in separate worktrees. In Codex installs without a first-class slash-command directory, `prs setup` installs the managed `prs` Codex skill as the `/prs` router.
 
@@ -248,7 +250,7 @@ Supporting commands:
 - `prs tool issue list [--actionable] --json`: deterministic Codex-safe issue discovery; returns JSON and structured blocked results when GitHub auth is unavailable
 - `prs tool issue ready <issue-number> [--all] --json`: deterministic Codex-safe issue readiness; fetches issue context, writes readiness metadata, suggests a Superpowers worktree branch, and never launches Codex, commits, pushes, or opens a PR
 - `prs tool pr list [--actionable] --json`: deterministic Codex-safe PR discovery; returns JSON and structured blocked results when GitHub auth is unavailable
-- `prs tool pr ready <pr-number> [--all] --json`: deterministic Codex-safe local functional test readiness; checks out the PR in the current repository checkout, falls back to a local `review/pr-<number>` branch when the PR head branch is already checked out in another worktree, reruns safely when that review branch is already checked out, reports base freshness, optionally syncs the base branch, uses the configured `localRuntime` status/start commands to ensure the app is running with `--all`, writes metadata, and returns JSON
+- `prs tool pr ready <pr-number> [--all] --json`: deterministic Codex-safe local functional test readiness; checks out the actual PR head branch in the current repository checkout, removes a clean blocking prs worktree when the PR branch is parked there, blocks rather than deleting a dirty worktree, reports base freshness, optionally syncs the base branch, uses the configured `localRuntime` status/start commands to ensure the app is running with `--all`, writes metadata, and returns JSON
 - `prs tool pr prepare-review <pr-number> --json`: deterministic Codex-safe PR review preparation; checks out the PR branch in the current repository, syncs it with the latest PR base branch when possible, writes snapshot and metadata artifacts, returns JSON, sends progress logs to stderr, and never launches Codex or generates `review-brief.md`
 - `prs commit`: generate a commit message from staged changes
 - `prs diff`: summarize `git diff HEAD`

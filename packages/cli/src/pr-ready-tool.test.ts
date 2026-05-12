@@ -58,8 +58,8 @@ function createCommandRecorder(options: {
   containsBase: boolean;
   currentBranch?: string;
   ddevDescribeStatus?: number;
+  lockedWorktreeDirty?: boolean;
   lockedHeadBranch?: boolean;
-  reviewBranchFetchStatus?: number;
   mergeStatus?: number;
   ddevStatus?: number;
 }) {
@@ -76,6 +76,7 @@ function createCommandRecorder(options: {
     }
     if (command === "git" && normalizedArgs[0] === "checkout") {
       if (normalizedArgs[1] === "codex/sales-menu-images" && options.lockedHeadBranch) {
+        options.lockedHeadBranch = false;
         return {
           status: 128,
           stdout: "",
@@ -85,17 +86,17 @@ function createCommandRecorder(options: {
       }
       return { status: 0, stdout: "", stderr: "" };
     }
+    if (command === "git" && normalizedArgs[0] === "status" && normalizedArgs[1] === "--porcelain") {
+      return {
+        status: 0,
+        stdout: options.lockedWorktreeDirty ? " M changed-file.txt\n" : "",
+        stderr: "",
+      };
+    }
+    if (command === "git" && normalizedArgs[0] === "worktree" && normalizedArgs[1] === "remove") {
+      return { status: 0, stdout: "", stderr: "" };
+    }
     if (command === "git" && normalizedArgs[0] === "fetch" && normalizedArgs[1] === "origin") {
-      if (
-        normalizedArgs[2] === "+refs/pull/115/head:refs/heads/review/pr-115" &&
-        options.reviewBranchFetchStatus !== undefined
-      ) {
-        return {
-          status: options.reviewBranchFetchStatus,
-          stdout: "",
-          stderr: "fatal: refusing to fetch into branch 'refs/heads/review/pr-115' checked out\n",
-        };
-      }
       return { status: 0, stdout: "", stderr: "" };
     }
     if (command === "git" && normalizedArgs[0] === "rev-parse" && normalizedArgs[1] === "origin/main") {
@@ -198,7 +199,7 @@ describe("PR ready tool", () => {
     expect(calls.some((call) => call.command === "ddev" && call.args[0] === "start")).toBe(true);
   });
 
-  it("uses a current-checkout review branch when the PR head branch is locked in another worktree", async () => {
+  it("removes a clean PR worktree and checks out the actual PR branch when the head branch is locked", async () => {
     const repoRoot = createRepo();
     const { calls, runCommand } = createCommandRecorder({
       containsBase: true,
@@ -224,7 +225,7 @@ describe("PR ready tool", () => {
 
     expect(result).toMatchObject({
       status: "ready",
-      branchName: "review/pr-115",
+      branchName: "codex/sales-menu-images",
       nextAction: "browse-local-app",
       runtime: {
         kind: "command",
@@ -232,50 +233,37 @@ describe("PR ready tool", () => {
         url: "https://bos.ddev.site",
       },
     });
+    expect(calls.map(gitCallArgs)).toContainEqual(["status", "--porcelain"]);
     expect(calls.map(gitCallArgs)).toContainEqual([
-      "fetch",
-      "origin",
-      "+refs/pull/115/head:refs/heads/review/pr-115",
+      "worktree",
+      "remove",
+      "/repo/.worktrees/sales-menu-images",
     ]);
-    expect(calls.map(gitCallArgs)).toContainEqual(["checkout", "review/pr-115"]);
+    expect(calls.map(gitCallArgs)).toContainEqual(["checkout", "codex/sales-menu-images"]);
   });
 
-  it("reruns on the current review branch without fetching into the checked-out branch", async () => {
+  it("blocks when the PR head branch is locked by a dirty worktree", async () => {
     const repoRoot = createRepo();
-    const { calls, runCommand } = createCommandRecorder({
+    const { runCommand } = createCommandRecorder({
       containsBase: true,
-      currentBranch: "review/pr-115",
       lockedHeadBranch: true,
-      reviewBranchFetchStatus: 128,
+      lockedWorktreeDirty: true,
     });
 
-    const result = await readyPullRequestTool({
-      all: true,
-      forge: createForge(),
-      prNumber: 115,
-      repoRoot,
-      runCommand,
-      ensureCleanWorkingTree: vi.fn(),
-      ensureVerificationCommandAvailable: vi.fn(),
-      buildCommand: ["pnpm", "build"],
-      localRuntime: {
-        type: "command",
-        url: "https://bos.ddev.site",
-        statusCommand: ["ddev", "describe"],
-        startCommand: ["ddev", "start"],
-      },
-    });
-
-    expect(result).toMatchObject({
-      status: "ready",
-      branchName: "review/pr-115",
-      nextAction: "browse-local-app",
-    });
-    expect(calls.map(gitCallArgs)).not.toContainEqual([
-      "fetch",
-      "origin",
-      "+refs/pull/115/head:refs/heads/review/pr-115",
-    ]);
+    await expect(
+      readyPullRequestTool({
+        all: true,
+        forge: createForge(),
+        prNumber: 115,
+        repoRoot,
+        runCommand,
+        ensureCleanWorkingTree: vi.fn(),
+        ensureVerificationCommandAvailable: vi.fn(),
+        buildCommand: ["pnpm", "build"],
+      })
+    ).rejects.toThrow(
+      'PR branch "codex/sales-menu-images" is checked out in another worktree at /repo/.worktrees/sales-menu-images, and that worktree has uncommitted changes.'
+    );
   });
 
   it("reports an already-running local runtime without starting it again", async () => {

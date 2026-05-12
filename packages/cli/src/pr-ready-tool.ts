@@ -155,16 +155,33 @@ function isBranchCheckedOutInAnotherWorktree(result: PrReadyRunCommandResult): b
   return /already checked out at|is already used by worktree/i.test(output);
 }
 
-function reviewBranchNameForPullRequest(pullRequest: PullRequestDetails): string {
-  return `review/pr-${pullRequest.number}`;
+function extractCheckedOutWorktreePath(result: PrReadyRunCommandResult): string | undefined {
+  const output = `${result.stderr}\n${result.stdout}`;
+  return output.match(/already checked out at '([^']+)'/i)?.[1];
 }
 
-function currentBranchName(
+function removeCleanBlockingWorktree(
   runCommand: (command: string, args: string[]) => PrReadyRunCommandResult,
-  repoRoot: string
-): string | undefined {
-  const result = git(runCommand, repoRoot, ["branch", "--show-current"]);
-  return result.status === 0 ? result.stdout.trim() || undefined : undefined;
+  repoRoot: string,
+  branchName: string,
+  worktreePath: string
+): void {
+  const statusResult = runCommand("git", ["-C", worktreePath, "status", "--porcelain"]);
+  ensureSuccess(
+    statusResult,
+    `Failed to inspect worktree ${worktreePath} before checking out PR branch "${branchName}".`
+  );
+
+  if (statusResult.stdout.trim()) {
+    throw new Error(
+      `PR branch "${branchName}" is checked out in another worktree at ${worktreePath}, and that worktree has uncommitted changes. Commit, stash, or clear that worktree before preparing this PR in the main checkout.`
+    );
+  }
+
+  ensureSuccess(
+    git(runCommand, repoRoot, ["worktree", "remove", worktreePath]),
+    `Failed to remove clean worktree ${worktreePath} before checking out PR branch "${branchName}".`
+  );
 }
 
 function checkoutPullRequestBranch(
@@ -192,23 +209,24 @@ function checkoutPullRequestBranch(
   const checkoutResult = git(runCommand, repoRoot, ["checkout", pullRequest.headRefName]);
   if (checkoutResult.status !== 0) {
     if (isBranchCheckedOutInAnotherWorktree(checkoutResult)) {
-      const reviewBranchName = reviewBranchNameForPullRequest(pullRequest);
-      if (currentBranchName(runCommand, repoRoot) === reviewBranchName) {
-        return reviewBranchName;
+      const worktreePath = extractCheckedOutWorktreePath(checkoutResult);
+      if (!worktreePath) {
+        ensureSuccess(
+          checkoutResult,
+          `Failed to check out PR branch "${pullRequest.headRefName}".`
+        );
       }
-      ensureSuccess(
-        git(runCommand, repoRoot, [
-          "fetch",
-          "origin",
-          `+refs/pull/${pullRequest.number}/head:refs/heads/${reviewBranchName}`,
-        ]),
-        `Failed to fetch PR #${pullRequest.number} into local review branch "${reviewBranchName}".`
+      removeCleanBlockingWorktree(
+        runCommand,
+        repoRoot,
+        pullRequest.headRefName,
+        worktreePath
       );
       ensureSuccess(
-        git(runCommand, repoRoot, ["checkout", reviewBranchName]),
-        `Failed to check out local review branch "${reviewBranchName}".`
+        git(runCommand, repoRoot, ["checkout", pullRequest.headRefName]),
+        `Failed to check out PR branch "${pullRequest.headRefName}" after removing clean worktree ${worktreePath}.`
       );
-      return reviewBranchName;
+      return pullRequest.headRefName;
     }
     ensureSuccess(
       checkoutResult,
