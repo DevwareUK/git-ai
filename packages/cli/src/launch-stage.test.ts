@@ -20,11 +20,12 @@ describe("formatLaunchStageNotice", () => {
     );
   });
 
-  it("mentions runtime fallback and provider requirements for advanced issue runs", () => {
+  it("mentions skill-produced draft and provider requirements for advanced issue runs", () => {
     const draftNotice = formatLaunchStageNotice("issue-draft");
     const runNotice = formatLaunchStageNotice("issue-run");
 
-    expect(draftNotice).toContain("configured runtime or Codex fallback");
+    expect(draftNotice).toContain("completed issue draft from the active skill flow");
+    expect(draftNotice).toContain("--runtime");
     expect(runNotice).toContain("a usable text provider");
     expect(runNotice).toContain("authenticated GitHub access");
   });
