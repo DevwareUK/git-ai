@@ -1455,12 +1455,34 @@ afterEach(() => {
 });
 
 describe("CLI integration", () => {
-  it("parses issue draft as a dedicated issue subcommand", async () => {
+  it("parses issue draft explicit modes as dedicated issue subcommands", async () => {
     process.env.GIT_AI_DISABLE_AUTO_RUN = "1";
     const { parseIssueCommandArgs } = await loadCli();
 
-    expect(parseIssueCommandArgs(["issue", "draft"])).toEqual({
+    expect(parseIssueCommandArgs(["issue", "draft", "--runtime"])).toEqual({
       action: "draft",
+      mode: "runtime",
+    });
+    expect(
+      parseIssueCommandArgs([
+        "issue",
+        "draft",
+        "--from-caller",
+        "--draft-file",
+        "draft.md",
+        "--rough-idea",
+        "Preserve caller context.",
+        "--context-file",
+        "context.md",
+      ])
+    ).toEqual({
+      action: "draft",
+      mode: "caller",
+      draftFilePath: "draft.md",
+      roughIdea: "Preserve caller context.",
+      roughIdeaFilePath: undefined,
+      contextValues: [],
+      contextFilePaths: ["context.md"],
     });
   });
 
@@ -8112,7 +8134,107 @@ describe("CLI integration", () => {
     expect(agentsContent).not.toContain("`composer test`");
   });
 
-  it("launches the default issue draft runtime workflow and saves the draft under .prs/issues", async () => {
+  it("writes caller-produced issue draft artifacts without launching a runtime", async () => {
+    const beforeDrafts = listIssueDraftFiles();
+    const beforeRuns = listRunDirectories();
+    const inputDir = mkdtempSync(resolve(tmpdir(), "prs-caller-draft-"));
+    cleanupTargets.add(inputDir);
+    const draftInputPath = resolve(inputDir, "draft.md");
+    const roughIdeaPath = resolve(inputDir, "rough-idea.md");
+    const contextPath = resolve(inputDir, "context.md");
+    writeFileSync(
+      draftInputPath,
+      "# Preserve caller context for issue drafts\n\n## Summary\nSave the current caller's completed draft without opening another AI session.\n",
+      "utf8"
+    );
+    writeFileSync(
+      roughIdeaPath,
+      "The current Codex thread already has the project context and completed draft.",
+      "utf8"
+    );
+    writeFileSync(
+      contextPath,
+      "Caller context: screenshots, previous replies, and the active checkout should stay attached.",
+      "utf8"
+    );
+
+    const { run, spawnSync } = await loadCli({
+      spawnSyncImpl: (command, args) => {
+        if (command === "gh" && args[0] === "--version") {
+          return { status: 1, error: new Error("gh is unavailable") };
+        }
+
+        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.argv = [
+      "node",
+      "prs",
+      "issue",
+      "draft",
+      "--from-caller",
+      "--draft-file",
+      draftInputPath,
+      "--rough-idea-file",
+      roughIdeaPath,
+      "--context-file",
+      contextPath,
+    ];
+    const stdout = captureStdout();
+    await run();
+
+    const createdDraft = listIssueDraftFiles().find((entry) => !beforeDrafts.includes(entry));
+    expect(createdDraft).toBeDefined();
+    cleanupTargets.add(resolve(REPO_ROOT, ".prs", "issues", createdDraft as string));
+
+    const createdRunDir = listRunDirectories().find((entry) => !beforeRuns.includes(entry));
+    expect(createdRunDir).toBeDefined();
+    cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string));
+
+    const metadata = JSON.parse(
+      readFileSync(
+        resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string, "metadata.json"),
+        "utf8"
+      )
+    ) as {
+      draftProducer?: string;
+      featureIdea?: string;
+      caller?: {
+        context?: { source?: string; content?: string }[];
+      };
+      runtime?: unknown;
+    };
+    expect(metadata).toMatchObject({
+      draftProducer: "caller",
+      featureIdea:
+        "The current Codex thread already has the project context and completed draft.",
+      caller: {
+        context: [
+          {
+            source: contextPath,
+            content:
+              "Caller context: screenshots, previous replies, and the active checkout should stay attached.",
+          },
+        ],
+      },
+    });
+    expect(metadata.runtime).toBeUndefined();
+
+    const prompt = readFileSync(
+      resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string, "prompt.md"),
+      "utf8"
+    );
+    expect(prompt).toContain("without launching a separate interactive AI runtime");
+    expect(prompt).toContain("The current Codex thread already has the project context");
+    expect(prompt).toContain("Caller context: screenshots");
+
+    expect(stdout.output()).toContain("Generated issue draft");
+    expect(stdout.output()).toContain("# Preserve caller context for issue drafts");
+    expect(spawnSync.mock.calls.some(([command]) => command === "codex")).toBe(false);
+  });
+
+  it("launches the explicit issue draft runtime workflow and saves the draft under .prs/issues", async () => {
     const beforeDrafts = listIssueDraftFiles();
     const beforeRuns = listRunDirectories();
     let runtimePrompt = "";
@@ -8168,7 +8290,7 @@ describe("CLI integration", () => {
       },
     });
 
-    process.argv = ["node", "prs", "issue", "draft"];
+    process.argv = ["node", "prs", "issue", "draft", "--runtime"];
     await run();
 
     expect(runtimePrompt).toContain(
@@ -8274,7 +8396,7 @@ describe("CLI integration", () => {
           },
         });
 
-        process.argv = ["node", "prs", "issue", "draft"];
+        process.argv = ["node", "prs", "issue", "draft", "--runtime"];
         await run();
       }
     );
@@ -8321,11 +8443,39 @@ describe("CLI integration", () => {
       },
     });
 
-    process.argv = ["node", "prs", "issue", "draft"];
+    process.argv = ["node", "prs", "issue", "draft", "--runtime"];
 
     await expect(run()).rejects.toThrow(
       'Configured runtime "Codex" is unavailable because the `codex` CLI is not available on PATH. Install the missing dependency before running interactive prs workflows.'
     );
+  });
+
+  it("reports actionable paths when an explicit draft runtime exits without writing a draft", async () => {
+    const beforeRuns = listRunDirectories();
+    createMockCodexHome();
+    const { run } = await loadCli({
+      readlineAnswers: ["Unify PR assistant outputs."],
+      spawnSyncImpl: (command, args) => {
+        if (command === "codex" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        if (command === "codex") {
+          return { status: 0 };
+        }
+
+        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.argv = ["node", "prs", "issue", "draft", "--runtime"];
+    await expect(run()).rejects.toThrow(
+      /Codex returned without writing the expected issue draft[\s\S]*Expected draft path: \.prs\/issues\/issue-draft-[^.]+\.md[\s\S]*Run directory: \.prs\/runs\/[^/]+-issue-draft[\s\S]*Prompt path: \.prs\/runs\/[^/]+-issue-draft\/prompt\.md[\s\S]*Output log path: \.prs\/runs\/[^/]+-issue-draft\/output\.log[\s\S]*Recovery: rerun `prs issue draft --runtime`/
+    );
+
+    const createdRunDir = listRunDirectories().find((entry) => !beforeRuns.includes(entry));
+    expect(createdRunDir).toBeDefined();
+    cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", createdRunDir as string));
   });
 
   it("adds Superpowers-specific instructions to the Codex draft prompt when enabled", async () => {
@@ -8407,7 +8557,7 @@ describe("CLI integration", () => {
           },
         });
 
-        process.argv = ["node", "prs", "issue", "draft"];
+        process.argv = ["node", "prs", "issue", "draft", "--runtime"];
         await run();
       }
     );
@@ -8528,7 +8678,7 @@ describe("CLI integration", () => {
 
         process.env.GH_TOKEN = "";
         process.env.GITHUB_TOKEN = "test-token";
-        process.argv = ["node", "prs", "issue", "draft"];
+        process.argv = ["node", "prs", "issue", "draft", "--runtime"];
         await run();
       }
     );
@@ -8624,7 +8774,7 @@ describe("CLI integration", () => {
         });
         process.env.GH_TOKEN = "";
         process.env.GITHUB_TOKEN = "test-token";
-        process.argv = ["node", "prs", "issue", "draft"];
+        process.argv = ["node", "prs", "issue", "draft", "--runtime"];
         await run();
       }
     );
@@ -8693,7 +8843,7 @@ describe("CLI integration", () => {
           },
         });
 
-        process.argv = ["node", "prs", "issue", "draft"];
+        process.argv = ["node", "prs", "issue", "draft", "--runtime"];
         const stdout = captureStdout();
         const messages: string[] = [];
         vi.spyOn(console, "log").mockImplementation((message?: unknown) => {
@@ -8765,7 +8915,7 @@ describe("CLI integration", () => {
       },
     });
 
-    process.argv = ["node", "prs", "issue", "draft"];
+    process.argv = ["node", "prs", "issue", "draft", "--runtime"];
     const stdout = captureStdout();
     await run();
 
@@ -8855,7 +9005,7 @@ describe("CLI integration", () => {
       },
     });
 
-    process.argv = ["node", "prs", "issue", "draft"];
+    process.argv = ["node", "prs", "issue", "draft", "--runtime"];
     await run();
 
     const createdDraft = listIssueDraftFiles().find((entry) => !beforeDrafts.includes(entry));
@@ -8927,7 +9077,7 @@ describe("CLI integration", () => {
       },
     });
 
-    process.argv = ["node", "prs", "issue", "draft"];
+    process.argv = ["node", "prs", "issue", "draft", "--runtime"];
 
     const messages: string[] = [];
     vi.spyOn(console, "log").mockImplementation((message?: unknown) => {
@@ -9000,7 +9150,7 @@ describe("CLI integration", () => {
       },
     });
 
-    process.argv = ["node", "prs", "issue", "draft"];
+    process.argv = ["node", "prs", "issue", "draft", "--runtime"];
 
     const messages: string[] = [];
     vi.spyOn(console, "log").mockImplementation((message?: unknown) => {
@@ -9077,7 +9227,7 @@ describe("CLI integration", () => {
 
     process.env.GH_TOKEN = "";
     process.env.GITHUB_TOKEN = "test-token";
-    process.argv = ["node", "prs", "issue", "draft"];
+    process.argv = ["node", "prs", "issue", "draft", "--runtime"];
 
     await run();
 
@@ -9210,7 +9360,7 @@ describe("CLI integration", () => {
       },
     });
 
-    process.argv = ["node", "prs", "issue", "draft"];
+    process.argv = ["node", "prs", "issue", "draft", "--runtime"];
     const messages: string[] = [];
     vi.spyOn(console, "log").mockImplementation((message?: unknown) => {
       messages.push(String(message ?? ""));
@@ -9287,7 +9437,7 @@ describe("CLI integration", () => {
       },
     });
 
-    process.argv = ["node", "prs", "issue", "draft"];
+    process.argv = ["node", "prs", "issue", "draft", "--runtime"];
     await expect(run()).rejects.toThrow(/duplicate issue id/);
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -9416,7 +9566,7 @@ describe("CLI integration", () => {
         },
       });
 
-      process.argv = ["node", "prs", "issue", "draft"];
+      process.argv = ["node", "prs", "issue", "draft", "--runtime"];
       await expect(run()).rejects.toThrow(expected);
       expect(fetchMock).not.toHaveBeenCalled();
     }
@@ -14732,7 +14882,7 @@ describe("CLI integration", () => {
           },
         });
 
-        process.argv = ["node", "prs", "issue", "draft"];
+        process.argv = ["node", "prs", "issue", "draft", "--runtime"];
 
         const messages: string[] = [];
         const stdout = captureStdout();

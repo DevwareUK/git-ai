@@ -63,7 +63,8 @@ These workflows remain supported and documented below, but they are separate fro
 
 Advanced workflows:
 
-- `prs issue draft`
+- `prs issue draft --from-caller --draft-file <path>`
+- `prs issue draft --runtime`
 - `prs issue refine <number>`
 - `prs issue plan <number> [--refresh]`
 - `prs issue prepare <number>`
@@ -147,7 +148,7 @@ The matching GitHub automation surfaces are `actions/pr-review`, `actions/pr-ass
 
 You only need extra tooling for advanced or deeper local workflows:
 
-- an available interactive runtime CLI on `PATH` for `prs issue draft`, `prs issue refine <number>`, local interactive `prs issue <number>` runs, `prs pr fix-comments <pr-number>`, `prs pr fix-failing-tests <pr-number>`, and `prs pr fix-tests <pr-number>`
+- an available interactive runtime CLI on `PATH` for `prs issue draft --runtime`, `prs issue refine <number>`, local interactive `prs issue <number>` runs, `prs pr fix-comments <pr-number>`, `prs pr fix-failing-tests <pr-number>`, and `prs pr fix-tests <pr-number>`
   default: `codex`
   `ai.runtime.type: "claude-code"`: `claude`
   if the configured non-default runtime is unavailable, `prs` falls back to `codex` when it is installed
@@ -166,7 +167,7 @@ The launch path is not presented as full runtime or provider parity:
 - `prs pr prepare-review <pr-number>` always requires `codex` on `PATH` and keeps its merge-conflict and review-brief flow Codex-specific.
 - `prs pr resolve-conflicts <pr-number>` always requires `codex` on `PATH` for guided merge-conflict resolution, even though it only opens Codex when the base merge conflicts.
 - `prs issue <number> --mode unattended` and `prs issue batch ...` require `ai.runtime.type` to be `codex`.
-- Interactive local workflows such as `prs issue draft`, `prs issue refine <number>`, `prs issue <number>`, `prs pr fix-comments <pr-number>`, `prs pr fix-failing-tests <pr-number>`, and `prs pr fix-tests <pr-number>` use the configured runtime, with fallback to Codex when a configured non-default runtime is unavailable.
+- Interactive local workflows such as `prs issue draft --runtime`, `prs issue refine <number>`, `prs issue <number>`, `prs pr fix-comments <pr-number>`, `prs pr fix-failing-tests <pr-number>`, and `prs pr fix-tests <pr-number>` use the configured runtime, with fallback to Codex when a configured non-default runtime is unavailable.
 - Structured-text workflows such as `prs commit`, `prs diff`, `prs review`, and issue-plan / PR-text generation use the configured provider, defaulting to OpenAI and allowing `bedrock-claude` as an advanced option.
 
 ## Command tiers
@@ -183,7 +184,8 @@ Primary offer commands:
 
 Advanced commands:
 
-- `prs issue draft`: turn a rough idea into a structured issue draft
+- `prs issue draft --from-caller --draft-file <path>`: save a caller-produced issue draft without launching another runtime
+- `prs issue draft --runtime`: turn a rough idea into a structured issue draft
 - `prs issue refine <number>`: refine an existing GitHub issue into an implementation-ready specification
 - `prs issue plan <number> [--refresh]`: maintain an issue-resolution plan comment as secondary execution support
 - `prs issue <number>`: run the full local issue-to-PR workflow
@@ -255,8 +257,8 @@ Recommended first configuration: leave `ai.provider.type` unset so it defaults t
 
 Supported fields:
 
-- `ai.runtime.type`: interactive runtime used by `prs issue draft`, `prs issue refine <number>`, local `prs issue <number>`, `prs pr fix-comments <pr-number>`, `prs pr fix-failing-tests <pr-number>`, and `prs pr fix-tests <pr-number>`. Supported values: `"codex"` and `"claude-code"`. Default: `"codex"`.
-- `ai.issue.useCodexSuperpowers`: repository default for Superpowers-backed issue draft, refine, and plan workflows. When `true`, `prs issue draft`, `prs issue refine <number>`, and `prs issue plan <number>` use Codex Superpowers-specific instructions if the launched or selected runtime is Codex and Superpowers is available in the current Codex installation. Final single issue drafts still use the normal `.prs/issues/` or refine-run draft paths, optional multi-issue draft sets use run-local draft files plus `issue-set.json`, and intermediate Superpowers spec and plan artifacts stay inside the current `.prs/runs/<timestamp>-issue-draft/`, `.prs/runs/<timestamp>-issue-refine-<number>/`, or `.prs/runs/<timestamp>-issue-plan-<number>/` directory. `prs setup` detects local Codex Superpowers availability and writes this preferred flag automatically. Default: `false`.
+- `ai.runtime.type`: interactive runtime used by `prs issue draft --runtime`, `prs issue refine <number>`, local `prs issue <number>`, `prs pr fix-comments <pr-number>`, `prs pr fix-failing-tests <pr-number>`, and `prs pr fix-tests <pr-number>`. Supported values: `"codex"` and `"claude-code"`. Default: `"codex"`.
+- `ai.issue.useCodexSuperpowers`: repository default for Superpowers-backed issue draft, refine, and plan workflows. When `true`, `prs issue draft --runtime`, `prs issue refine <number>`, and `prs issue plan <number>` use Codex Superpowers-specific instructions if the launched or selected runtime is Codex and Superpowers is available in the current Codex installation. Final single issue drafts still use the normal `.prs/issues/` or refine-run draft paths, optional multi-issue draft sets use run-local draft files plus `issue-set.json`, and intermediate Superpowers spec and plan artifacts stay inside the current `.prs/runs/<timestamp>-issue-draft/`, `.prs/runs/<timestamp>-issue-refine-<number>/`, or `.prs/runs/<timestamp>-issue-plan-<number>/` directory. `prs setup` detects local Codex Superpowers availability and writes this preferred flag automatically. Default: `false`.
 - `ai.issueDraft.useCodexSuperpowers`: backward-compatible legacy input for repositories that already configured Superpowers-backed issue drafting. `ai.issue.useCodexSuperpowers` takes precedence when both settings are present.
 - `ai.provider.type`: structured text provider used by `prs commit`, `prs diff`, `prs review`, `prs issue plan <number> [--refresh]`, and commit/PR generation inside `prs issue <number>` and `prs issue finalize <number>`. Supported values: `"openai"` and `"bedrock-claude"`. Default: `"openai"`.
 - `ai.provider.model`: optional for `"openai"`, required for `"bedrock-claude"`.
@@ -273,7 +275,7 @@ Runtime and provider fallback behavior:
 - if no `ai.issue.useCodexSuperpowers` or legacy `ai.issueDraft.useCodexSuperpowers` config is present, Superpowers-backed issue workflows use `false`
 - if no `ai.provider` config is present, `prs` uses `openai`
 - if a configured runtime is unavailable, `prs` falls back to `codex` when possible and prints a clear fallback message
-- if Superpowers-backed issue workflows are enabled but Superpowers is unavailable when `prs issue draft`, `prs issue refine <number>`, or `prs issue plan <number>` runs, `prs` prints a clear fallback message and uses the standard prompt or structured provider-generated plan instead of failing
+- if Superpowers-backed issue workflows are enabled but Superpowers is unavailable when `prs issue draft --runtime`, `prs issue refine <number>`, or `prs issue plan <number>` runs, `prs` prints a clear fallback message and uses the standard prompt or structured provider-generated plan instead of failing
 - if a configured provider is unavailable, `prs` falls back to `openai` when possible and prints a clear fallback message
 - if neither the configured choice nor the default choice is usable, the command fails with an actionable error
 
@@ -349,7 +351,8 @@ Usage:
 ```bash
 prs issue <number> [--mode <interactive|unattended>]
 prs issue batch <number> <number> [...number] [--mode unattended]
-prs issue draft
+prs issue draft --from-caller --draft-file <path> [--rough-idea <text>|--rough-idea-file <path>] [--context <text>] [--context-file <path>]
+prs issue draft --runtime
 prs issue refine <number>
 prs issue plan <number> [--refresh]
 prs issue prepare <number> [--mode <local|github-action>]
@@ -363,7 +366,8 @@ Available subcommands:
 | `prs issue <number>` | Full local issue-to-PR flow in interactive mode. Preflights the configured forge, verification command, and `baseBranch`, fetches the configured forge issue, creates a missing managed issue plan comment before writing the runtime snapshot, checks the plan's `### Likely files` against files changed by open pull requests, then either prompts you to review or merge overlapping PRs first, branches from the recommended overlapping PR head, or continues from the configured base. It creates the issue branch, writes `.prs/` workspace files, opens the configured interactive runtime, runs the configured build command after that runtime exits, generates a proposed commit message from the completed diff for review, and then either creates the commit plus an AI-authored PR title/body or leaves the branch uncommitted. The completed diff includes tracked changes and included untracked files. Before runtime launch it prints the prepared branch and run artifact directory, reports when the runtime exits back to `prs`, and ends with a branch, commit, PR URL, manual-PR, or skipped-PR summary. Creating the pull request pushes the reviewed issue branch first. Generated PR bodies use a concise change narrative plus issue-closing references, include an `Open PR File Overlap` note when overlap was detected and the run continued, and keep reviewer-operational detail in the managed PR assistant section. |
 | `prs issue <number> --mode unattended` | Full local issue-to-PR flow in unattended mode. Requires `ai.runtime.type` to be `codex`, creates a missing managed issue plan comment before writing the runtime snapshot, checks open PR file overlap without prompting, automatically uses the recommended base branch or overlapping PR head, reuses the same per-issue branch and session state as interactive runs, launches Codex non-interactively, includes tracked changes and included untracked files in the generated commit and PR diff, commits with the generated commit message automatically, pushes the issue branch through the pull-request creation path, and then opens the pull request without prompting. If Codex and verification succeed but no included tracked or untracked files changed, the run records a skipped `no-changes` outcome instead of committing or opening a pull request. |
 | `prs issue batch <number> <number> [...number]` | Sequential unattended issue queue. Defaults to `--mode unattended`, requires at least two unique issue numbers, runs each issue as its own independent unattended issue execution, creates a missing managed issue plan comment before each issue runtime snapshot is written, checks open PR file overlap non-interactively for each issue, stores batch progress separately under `.prs/batches/`, and stops immediately at the first incomplete issue so reruns can resume from there. Each completed issue uses the same unattended issue-to-PR path, including pushing the branch before opening the pull request. True no-change issues are recorded as completed/skipped `no-changes` entries and the batch continues; runtime, build, commit, push, and PR creation failures still stop the queue. |
-| `prs issue draft` | Interactive issue drafting flow. Prompts for a rough idea, creates `.prs/` draft-run artifacts, launches the configured runtime so it can inspect the repository and ask targeted follow-up questions itself, and supports either one Markdown draft under `.prs/issues/` or a multi-issue set described by `.prs/runs/<timestamp>-issue-draft/issue-set.json` with draft files under that run directory. Single drafts are previewed and can be created as-is, modified in `$VISUAL`, `$EDITOR`, or `vim`, or kept on disk. Multi-issue sets are validated before any GitHub writes, previewed as a set, and after approval are created first and then updated with `## Linked Issues` sections that use the real sibling issue numbers. When `ai.issue.useCodexSuperpowers` is active, Superpowers spec/plan artifacts stay in the run directory; if a plan exists after creation, prs publishes it to the created issue or the first created issue in a set. |
+| `prs issue draft --from-caller --draft-file <path>` | Non-nested issue drafting flow for callers that already have the current conversation context and a completed Markdown draft. Copies the caller-produced draft into `.prs/issues/issue-draft-<timestamp>.md`, writes matching `.prs/runs/<timestamp>-issue-draft/` metadata, prompt, and output log artifacts, records `draftProducer: "caller"` plus any rough idea or context supplied with `--rough-idea`, `--rough-idea-file`, `--context`, or `--context-file`, previews the draft, and keeps the normal review gate before GitHub issue creation. |
+| `prs issue draft --runtime` | Explicit interactive issue drafting flow. Prompts for a rough idea, creates `.prs/` draft-run artifacts, prints that a separate AI session is being opened with only prompt-file context, launches the configured runtime so it can inspect the repository and ask targeted follow-up questions itself, and supports either one Markdown draft under `.prs/issues/` or a multi-issue set described by `.prs/runs/<timestamp>-issue-draft/issue-set.json` with draft files under that run directory. Single drafts are previewed and can be created as-is, modified in `$VISUAL`, `$EDITOR`, or `vim`, or kept on disk. Multi-issue sets are validated before any GitHub writes, previewed as a set, and after approval are created first and then updated with `## Linked Issues` sections that use the real sibling issue numbers. When `ai.issue.useCodexSuperpowers` is active, Superpowers spec/plan artifacts stay in the run directory; if a plan exists after creation, prs publishes it to the created issue or the first created issue in a set. If the runtime exits without writing the expected draft, prs reports the draft path, run directory, prompt path, output log path, and a recovery command. |
 | `prs issue refine <number>` | Interactive existing-issue refinement flow. Fetches the current issue body plus comments, resumes the saved runtime session when that session is still tracked locally, otherwise asks whether to specify changes to the original requirements, defaults to no, only asks for change text when you answer yes, and starts a fresh refinement run, writes resumable state to `.prs/issues/<number>/refine-session.json` plus run artifacts to `.prs/runs/<timestamp>-issue-refine-<number>/`. The runtime may write one refined Markdown draft or a multi-issue set in `.prs/runs/<timestamp>-issue-refine-<number>/issue-set.json`. Single drafts keep the existing behavior: update a PRS-managed source issue or create one linked PRS-managed issue from a non-managed source. Multi-issue refinements are validated and reviewed as a set, then created as PRS-managed linked issues with sibling links and `Source issue: #<number>` entries; the source issue body is not overwritten. If GitHub authentication is unavailable, the refined draft or set is kept on disk instead of being applied. |
 | `prs issue plan <number> [--refresh]` | Secondary issue-execution support. By default it creates the managed implementation plan comment once and safely reuses the latest edited managed comment on later runs. Pass `--refresh` or `--update` to regenerate and update the managed comment when the issue context has changed. When `ai.issue.useCodexSuperpowers` is active, the selected runtime is Codex, and local Codex Superpowers is available, the command launches a plan-only Codex run and publishes the resulting `.prs/runs/<timestamp>-issue-plan-<number>/superpowers-plan.md` as the managed `<!-- prs:issue-plan -->` comment. If Superpowers is disabled, unavailable, or produces no plan artifact, `prs` falls back to the structured provider-generated plan. |
 | `prs issue prepare <number>` | Preflights the configured forge, verification command, and `baseBranch`, creates a missing managed issue plan comment before writing the runtime snapshot, checks the plan's `### Likely files` against files changed by open pull requests, prompts in interactive terminals when overlap remains, prepares the issue branch from the selected base, and then prints machine-readable JSON describing the run. |
@@ -372,15 +376,17 @@ Available subcommands:
 
 Important behavior:
 
-- `prs issue draft`, `prs issue plan <number> [--refresh]`, `prs issue prepare <number>`, `prs issue finalize <number>`, and full `prs issue <number>` runs print an advanced workflow notice before execution
+- `prs issue draft --from-caller`, `prs issue draft --runtime`, `prs issue plan <number> [--refresh]`, `prs issue prepare <number>`, `prs issue finalize <number>`, and full `prs issue <number>` runs print an advanced workflow notice before execution
 - `prs issue batch ...` prints a beta workflow notice before execution
 - `prs issue` requires a clean working tree before it starts
 - `prs issue <number>` and `prs issue prepare <number>` fail before checkout if the configured verification command cannot run from the repository root
 - `prs issue <number>` and `prs issue prepare <number>` fail before checkout if the configured base branch is missing locally, missing on `origin`, or cannot be fast-forwarded cleanly
 - `prs issue batch ...` requires at least two unique issue numbers
-- `prs issue draft` previews the generated draft in the terminal and only opens `$VISUAL`, `$EDITOR`, or `vim` when you explicitly choose modify
-- `prs issue draft` and `prs issue refine <number>` require an available interactive runtime CLI on `PATH`; if the configured non-default runtime is unavailable, `prs` falls back to `codex` when possible
-- `prs issue draft` and `prs issue refine <number>` reserve `.prs/runs/<timestamp>-.../issue-set.json`; when present, it must point only to draft files inside the same run directory and all referenced drafts must parse as issue Markdown before prs creates or updates anything remotely
+- `prs issue draft` requires an explicit mode: use `--from-caller` when the current caller already wrote the draft, or `--runtime` when you intentionally want a separate interactive drafting session
+- `prs issue draft --from-caller` validates the provided Markdown draft before writing run artifacts and does not support multi-issue draft-set manifests
+- `prs issue draft --runtime` previews the generated draft in the terminal and only opens `$VISUAL`, `$EDITOR`, or `vim` when you explicitly choose modify
+- `prs issue draft --runtime` and `prs issue refine <number>` require an available interactive runtime CLI on `PATH`; if the configured non-default runtime is unavailable, `prs` falls back to `codex` when possible
+- `prs issue draft --runtime` and `prs issue refine <number>` reserve `.prs/runs/<timestamp>-.../issue-set.json`; when present, it must point only to draft files inside the same run directory and all referenced drafts must parse as issue Markdown before prs creates or updates anything remotely
 - approved multi-issue sets are created before links are injected, then each created issue is updated with a deterministic `## Linked Issues` section containing real GitHub issue numbers for `dependsOn`, `blocks`, `related`, the set `linkingStrategy`, and the source issue for refinements
 - `prs issue <number>`, `prs issue <number> --mode unattended`, `prs issue prepare <number>`, and `prs issue batch ...` create a missing managed issue plan comment before the issue snapshot is written; if a managed plan comment already exists, the latest edited comment is used unchanged
 - fresh `prs issue <number>`, `prs issue <number> --mode unattended`, `prs issue prepare <number>`, and `prs issue batch ...` runs compare the managed plan's concrete `### Likely files` entries with changed files from open pull requests before creating the issue branch; the check is skipped with a concise log message when the plan has no concrete likely files
@@ -390,11 +396,11 @@ Important behavior:
 - issue finalization includes untracked, non-ignored files that are not excluded by `aiContext.excludePaths` when generating commit and pull request text; excluded tracked or untracked paths do not make a run count as changed
 - true no-change unattended issue runs record `pullRequest.reason: "no-changes"` in run metadata, print the standard final issue summary, and skip `git commit`, `git push`, and pull request creation
 - when `prs issue <number>` or unattended issue execution opens a pull request for a PRS-created linked issue from `prs issue refine <source-number>`, the generated PR body includes closing references for both the linked implementation issue and the original source issue
-- `ai.issue.useCodexSuperpowers` affects `prs issue draft`, `prs issue refine <number>`, and `prs issue plan <number>` and is ignored unless the launched or selected runtime is Codex; legacy `ai.issueDraft.useCodexSuperpowers` is still accepted when the broader setting is absent
+- `ai.issue.useCodexSuperpowers` affects `prs issue draft --runtime`, `prs issue refine <number>`, and `prs issue plan <number>` and is ignored unless the launched or selected runtime is Codex; legacy `ai.issueDraft.useCodexSuperpowers` is still accepted when the broader setting is absent
 - when `ai.issue.useCodexSuperpowers` is active, draft runs keep the final single draft at `.prs/issues/issue-draft-<timestamp>.md` or multi-issue drafts under `.prs/runs/<timestamp>-issue-draft/`, and record reserved Superpowers spec/plan artifact paths under the run directory
 - when `ai.issue.useCodexSuperpowers` is active, refine runs keep the refined single draft or multi-issue draft set under `.prs/runs/<timestamp>-issue-refine-<number>/` and record reserved Superpowers spec/plan artifact paths in the same run directory
 - when `ai.issue.useCodexSuperpowers` is active, plan runs reserve `superpowers-spec.md` and `superpowers-plan.md` under `.prs/runs/<timestamp>-issue-plan-<number>/` and publish the non-empty plan artifact to the managed issue plan comment
-- if Superpowers-backed issue workflows are enabled but local Codex Superpowers is no longer available, `prs issue draft`, `prs issue refine <number>`, and `prs issue plan <number>` print a fallback notice and continue with the standard prompt or structured provider-generated plan
+- if Superpowers-backed issue workflows are enabled but local Codex Superpowers is no longer available, `prs issue draft --runtime`, `prs issue refine <number>`, and `prs issue plan <number>` print a fallback notice and continue with the standard prompt or structured provider-generated plan
 - `prs issue refine <number>` stores resumable state at `.prs/issues/<number>/refine-session.json` and keeps run-local prompt, metadata, log, and draft artifacts under `.prs/runs/<timestamp>-issue-refine-<number>/`
 - `prs issue refine <number>` resumes a saved tracked runtime session only when the saved runtime still matches, the session is still tracked, and the saved run workspace still exists; otherwise it warns and starts a fresh refinement run
 - fresh `prs issue refine <number>` runs ask whether to specify changes to the original requirements, default that prompt to no, and only include requested change text in run prompts and metadata when you answer yes
@@ -422,7 +428,7 @@ Important behavior:
 - if an issue resolution plan comment exists, `prs issue prepare <number>` and full `prs issue <number>` runs copy the latest edited plan into the generated issue snapshot
 - when `forge.type` is `github`, issue fetching uses `gh issue view` when available, otherwise the GitHub API
 - when `forge.type` is `github`, GitHub API access for issue fetching, plan comments, or issue creation uses `GH_TOKEN` or `GITHUB_TOKEN` when present
-- when `forge.type` is `github`, `prs issue draft` can create issues and `prs issue refine <number>` can create linked issues or update PRS-managed issues with either `gh`, `GH_TOKEN`, or `GITHUB_TOKEN`
+- when `forge.type` is `github`, `prs issue draft --from-caller`, `prs issue draft --runtime`, and `prs issue refine <number>` can create issues, and `prs issue refine <number>` can create linked issues or update PRS-managed issues with either `gh`, `GH_TOKEN`, or `GITHUB_TOKEN`
 - when `forge.type` is `none`, issue and PR creation features are disabled for the repository
 
 ### `prs pr`

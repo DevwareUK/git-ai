@@ -46,11 +46,11 @@ const LAUNCH_STAGE_NOTICE_DEFINITIONS: Record<
     tier: "advanced",
     command: "`prs issue draft`",
     reason:
-      "It depends on interactive runtime judgment and broader repository exploration to turn an idea into an implementation-ready issue.",
+      "It either records a caller-produced draft or intentionally opens a separate runtime to turn an idea into an implementation-ready issue.",
     recommendedFirst:
       "`prs review`, `prs pr fix-comments <pr-number>`, or `prs test-backlog --top 5`.",
     constraints:
-      "Requires an available interactive runtime CLI on PATH (configured runtime or Codex fallback) and writes draft artifacts under `.prs/`.",
+      "Requires `--from-caller` with a draft file or `--runtime` with an available interactive runtime CLI on PATH (configured runtime or Codex fallback), and writes draft artifacts under `.prs/`.",
   },
   "issue-finalize": {
     tier: "advanced",

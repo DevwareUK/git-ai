@@ -138,6 +138,19 @@ type IssueDraftWorkspace = {
   superpowersPlanFilePath: string;
 };
 
+type IssueDraftCommandOptions =
+  | {
+      mode: "caller";
+      draftFilePath: string;
+      roughIdea?: string;
+      roughIdeaFilePath?: string;
+      contextValues: string[];
+      contextFilePaths: string[];
+    }
+  | {
+      mode: "runtime";
+    };
+
 type IssueCommandOptions =
   | {
       action: "run";
@@ -165,9 +178,9 @@ type IssueCommandOptions =
       mode: "local";
       refresh: boolean;
     }
-  | {
+  | ({
       action: "draft";
-    }
+    } & IssueDraftCommandOptions)
   | {
       action: "refine";
       issueNumber: number;
@@ -358,7 +371,8 @@ const ISSUE_USAGE = [
   "Usage:",
   "  prs issue <number> [--mode <interactive|unattended>]",
   "  prs issue batch <number> <number> [...number] [--mode unattended]",
-  "  prs issue draft",
+  "  prs issue draft --from-caller --draft-file <path> [--rough-idea <text>|--rough-idea-file <path>] [--context <text>] [--context-file <path>]",
+  "  prs issue draft --runtime",
   "  prs issue refine <number>",
   "  prs issue plan <number> [--refresh]",
   "  prs issue prepare <number> [--mode <local|github-action>]",
@@ -398,7 +412,8 @@ const TOP_LEVEL_HELP = [
   "  prs test-backlog [--top <count>]",
   "",
   "Advanced:",
-  "  prs issue draft",
+  "  prs issue draft --from-caller --draft-file <path>",
+  "  prs issue draft --runtime",
   "  prs issue refine <number>",
   "  prs issue plan <number> [--refresh]",
   "  prs issue <number> [--mode <interactive|unattended>]",
@@ -907,17 +922,131 @@ function parseIssueBatchArgs(rawArgs: string[]): {
   };
 }
 
+function takeRequiredOptionValue(
+  args: string[],
+  index: number,
+  optionName: string
+): string {
+  const value = args[index + 1];
+  if (!value || value.startsWith("--")) {
+    throw new Error(`Missing value for ${optionName}. ${ISSUE_USAGE}`);
+  }
+
+  return value;
+}
+
+function parseIssueDraftOptions(args: string[]): IssueDraftCommandOptions {
+  let mode: "caller" | "runtime" | undefined;
+  let draftFilePath: string | undefined;
+  let roughIdea: string | undefined;
+  let roughIdeaFilePath: string | undefined;
+  const contextValues: string[] = [];
+  const contextFilePaths: string[] = [];
+
+  for (let index = 0; index < args.length; index += 1) {
+    const rawArg = args[index];
+
+    if (rawArg === "--from-caller") {
+      if (mode === "runtime") {
+        throw new Error("`prs issue draft` cannot use both --from-caller and --runtime.");
+      }
+      mode = "caller";
+      continue;
+    }
+
+    if (rawArg === "--runtime") {
+      if (mode === "caller") {
+        throw new Error("`prs issue draft` cannot use both --from-caller and --runtime.");
+      }
+      mode = "runtime";
+      continue;
+    }
+
+    if (rawArg === "--draft-file") {
+      draftFilePath = takeRequiredOptionValue(args, index, rawArg);
+      index += 1;
+      continue;
+    }
+
+    if (rawArg === "--rough-idea") {
+      roughIdea = takeRequiredOptionValue(args, index, rawArg);
+      index += 1;
+      continue;
+    }
+
+    if (rawArg === "--rough-idea-file") {
+      roughIdeaFilePath = takeRequiredOptionValue(args, index, rawArg);
+      index += 1;
+      continue;
+    }
+
+    if (rawArg === "--context") {
+      contextValues.push(takeRequiredOptionValue(args, index, rawArg));
+      index += 1;
+      continue;
+    }
+
+    if (rawArg === "--context-file") {
+      contextFilePaths.push(takeRequiredOptionValue(args, index, rawArg));
+      index += 1;
+      continue;
+    }
+
+    throw new Error(`Unknown issue option "${rawArg}". ${ISSUE_USAGE}`);
+  }
+
+  if (!mode) {
+    throw new Error(
+      "`prs issue draft` requires an explicit draft mode. Use --from-caller to save caller-produced draft artifacts, or --runtime to intentionally open a separate interactive runtime session."
+    );
+  }
+
+  if (mode === "runtime") {
+    if (
+      draftFilePath ||
+      roughIdea ||
+      roughIdeaFilePath ||
+      contextValues.length > 0 ||
+      contextFilePaths.length > 0
+    ) {
+      throw new Error(
+        "`prs issue draft --runtime` does not accept caller draft or context options."
+      );
+    }
+
+    return { mode: "runtime" };
+  }
+
+  if (!draftFilePath) {
+    throw new Error(
+      "`prs issue draft --from-caller` requires --draft-file <path> so prs can save the caller-produced draft artifact."
+    );
+  }
+
+  if (roughIdea && roughIdeaFilePath) {
+    throw new Error(
+      "`prs issue draft --from-caller` accepts either --rough-idea or --rough-idea-file, not both."
+    );
+  }
+
+  return {
+    mode: "caller",
+    draftFilePath,
+    roughIdea,
+    roughIdeaFilePath,
+    contextValues,
+    contextFilePaths,
+  };
+}
+
 export function parseIssueCommandArgs(args: string[]): IssueCommandOptions {
   const issueArgs = args.slice(1);
   const subcommand = issueArgs[0];
 
   if (subcommand === "draft") {
-    if (issueArgs.length > 1) {
-      throw new Error(`Unknown issue option "${issueArgs[1]}". ${ISSUE_USAGE}`);
-    }
-
     return {
       action: "draft",
+      ...parseIssueDraftOptions(issueArgs.slice(1)),
     };
   }
 
@@ -1768,6 +1897,7 @@ function writeIssueDraftWorkspaceFiles(
       {
         createdAt,
         flow: "issue-draft",
+        draftProducer: "runtime",
         featureIdea,
         draftFile: toRepoRelativePath(repoRoot, workspace.draftFilePath),
         issueSetFile: toRepoRelativePath(repoRoot, workspace.issueSetFilePath),
@@ -1791,6 +1921,7 @@ function writeIssueDraftWorkspaceFiles(
     [
       "# prs issue draft run log",
       "",
+      "Draft producer: runtime",
       `Created: ${createdAt}`,
       `Runtime: ${runtime.displayName}`,
       `Draft file: ${toRepoRelativePath(repoRoot, workspace.draftFilePath)}`,
@@ -1805,6 +1936,147 @@ function writeIssueDraftWorkspaceFiles(
       "",
     ].join("\n"),
     "utf8"
+  );
+}
+
+function resolveCallerInputPath(repoRoot: string, inputPath: string): string {
+  return isAbsolute(inputPath) ? inputPath : resolve(repoRoot, inputPath);
+}
+
+function readCallerInputFile(repoRoot: string, inputPath: string, label: string): string {
+  const resolvedPath = resolveCallerInputPath(repoRoot, inputPath);
+  if (!existsSync(resolvedPath)) {
+    throw new Error(`${label} does not exist: ${inputPath}`);
+  }
+
+  return readFileSync(resolvedPath, "utf8");
+}
+
+function buildCallerIssueDraftPrompt(input: {
+  roughIdea: string;
+  contextEntries: { source: string; content: string }[];
+  draftContents: string;
+}): string {
+  return [
+    "The current caller produced this issue draft without launching a separate interactive AI runtime.",
+    "",
+    "Rough idea:",
+    input.roughIdea || "(not provided)",
+    "",
+    "Caller-provided context:",
+    ...(input.contextEntries.length > 0
+      ? input.contextEntries.flatMap((entry, index) => [
+          "",
+          `Context ${index + 1} (${entry.source}):`,
+          entry.content.trimEnd(),
+        ])
+      : ["(not provided)"]),
+    "",
+    "Caller-produced issue draft:",
+    input.draftContents.trimEnd(),
+  ].join("\n");
+}
+
+function writeCallerIssueDraftWorkspaceFiles(
+  repoRoot: string,
+  options: Extract<IssueDraftCommandOptions, { mode: "caller" }>,
+  workspace: IssueDraftWorkspace
+): void {
+  const createdAt = new Date().toISOString();
+  const draftContents = readCallerInputFile(repoRoot, options.draftFilePath, "Draft file").trim();
+  if (!draftContents) {
+    throw new Error(`Draft file is empty: ${options.draftFilePath}`);
+  }
+
+  parseIssueDraftDocument(draftContents);
+
+  const roughIdea =
+    options.roughIdeaFilePath !== undefined
+      ? readCallerInputFile(repoRoot, options.roughIdeaFilePath, "Rough idea file").trim()
+      : options.roughIdea?.trim() ?? "";
+  const contextEntries = [
+    ...options.contextValues.map((content, index) => ({
+      source: `--context ${index + 1}`,
+      content,
+    })),
+    ...options.contextFilePaths.map((filePath) => ({
+      source: filePath,
+      content: readCallerInputFile(repoRoot, filePath, "Context file"),
+    })),
+  ];
+  const prompt = buildCallerIssueDraftPrompt({
+    roughIdea,
+    contextEntries,
+    draftContents,
+  });
+
+  writeFileSync(workspace.draftFilePath, `${draftContents}\n`, "utf8");
+  writeFileSync(workspace.promptFilePath, `${prompt}\n`, "utf8");
+  writeFileSync(
+    workspace.metadataFilePath,
+    `${JSON.stringify(
+      {
+        createdAt,
+        flow: "issue-draft",
+        draftProducer: "caller",
+        featureIdea: roughIdea,
+        draftFile: toRepoRelativePath(repoRoot, workspace.draftFilePath),
+        issueSetFile: toRepoRelativePath(repoRoot, workspace.issueSetFilePath),
+        promptFile: toRepoRelativePath(repoRoot, workspace.promptFilePath),
+        outputLog: toRepoRelativePath(repoRoot, workspace.outputLogPath),
+        runDir: toRepoRelativePath(repoRoot, workspace.runDir),
+        caller: {
+          draftFile: options.draftFilePath,
+          roughIdea,
+          roughIdeaFile: options.roughIdeaFilePath,
+          context: contextEntries.map((entry) => ({
+            source: entry.source,
+            content: entry.content,
+          })),
+        },
+        superpowers: {
+          enabled: false,
+        },
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+  writeFileSync(
+    workspace.outputLogPath,
+    [
+      "# prs issue draft run log",
+      "",
+      "Draft producer: caller",
+      `Created: ${createdAt}`,
+      "Runtime: not launched",
+      `Draft source: ${options.draftFilePath}`,
+      `Draft file: ${toRepoRelativePath(repoRoot, workspace.draftFilePath)}`,
+      `Issue set file: ${toRepoRelativePath(repoRoot, workspace.issueSetFilePath)}`,
+      `Prompt file: ${toRepoRelativePath(repoRoot, workspace.promptFilePath)}`,
+      "",
+      "The draft was produced by the current caller; no separate interactive AI runtime was opened.",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+}
+
+function buildMissingIssueDraftError(
+  repoRoot: string,
+  workspace: IssueDraftWorkspace,
+  runtimeDisplayName: string
+): Error {
+  return new Error(
+    [
+      `${runtimeDisplayName} returned without writing the expected issue draft.`,
+      `Expected draft path: ${toRepoRelativePath(repoRoot, workspace.draftFilePath)}`,
+      `Run directory: ${toRepoRelativePath(repoRoot, workspace.runDir)}`,
+      `Prompt path: ${toRepoRelativePath(repoRoot, workspace.promptFilePath)}`,
+      `Output log path: ${toRepoRelativePath(repoRoot, workspace.outputLogPath)}`,
+      "Recovery: rerun `prs issue draft --runtime` to open a new runtime session, or use `prs issue draft --from-caller --draft-file <path>` with a completed draft from the current caller.",
+    ].join("\n")
   );
 }
 
@@ -4424,39 +4696,55 @@ async function runFeatureBacklogCommand(): Promise<void> {
   process.stdout.write(`${formatFeatureBacklogMarkdown(analysis, createdIssues)}\n`);
 }
 
-async function runIssueDraftCommand(): Promise<void> {
+async function runIssueDraftCommand(
+  options: IssueDraftCommandOptions
+): Promise<void> {
   const repoRoot = getDefaultRepoRoot();
   const repositoryConfig = getRepositoryConfig(repoRoot);
-  const runtime = selectInteractiveRuntime(repositoryConfig.ai.runtime, {
-    onFallback: (message) => {
-      console.log(message);
-    },
-  });
-  const shouldUseCodexSuperpowers =
-    runtime.type === "codex" &&
-    repositoryConfig.ai.issue.useCodexSuperpowers &&
-    isCodexSuperpowersAvailable();
-
-  if (
-    runtime.type === "codex" &&
-    repositoryConfig.ai.issue.useCodexSuperpowers &&
-    !shouldUseCodexSuperpowers
-  ) {
-    console.log(
-      "Codex Superpowers-backed issue workflows are enabled in .prs/config.json, but Superpowers is not available in the current Codex installation. Falling back to the standard issue-draft prompt."
-    );
-  }
-
-  const featureIdea = await promptForRequiredLine("Rough idea: ");
   const workspace = createIssueDraftWorkspace(repoRoot);
-  writeIssueDraftWorkspaceFiles(repoRoot, featureIdea, workspace, runtime.type, {
-    useCodexSuperpowers: shouldUseCodexSuperpowers,
-  });
+  let shouldUseCodexSuperpowers = false;
+  let runtimeDisplayName: string | undefined;
 
-  runtime.launch(repoRoot, {
-    promptFilePath: workspace.promptFilePath,
-    outputLogPath: workspace.outputLogPath,
-  });
+  if (options.mode === "caller") {
+    writeCallerIssueDraftWorkspaceFiles(repoRoot, options, workspace);
+  } else {
+    const runtime = selectInteractiveRuntime(repositoryConfig.ai.runtime, {
+      onFallback: (message) => {
+        console.log(message);
+      },
+    });
+    shouldUseCodexSuperpowers =
+      runtime.type === "codex" &&
+      repositoryConfig.ai.issue.useCodexSuperpowers &&
+      isCodexSuperpowersAvailable();
+    runtimeDisplayName = runtime.displayName;
+
+    if (
+      runtime.type === "codex" &&
+      repositoryConfig.ai.issue.useCodexSuperpowers &&
+      !shouldUseCodexSuperpowers
+    ) {
+      console.log(
+        "Codex Superpowers-backed issue workflows are enabled in .prs/config.json, but Superpowers is not available in the current Codex installation. Falling back to the standard issue-draft prompt."
+      );
+    }
+
+    const featureIdea = await promptForRequiredLine("Rough idea: ");
+    writeIssueDraftWorkspaceFiles(repoRoot, featureIdea, workspace, runtime.type, {
+      useCodexSuperpowers: shouldUseCodexSuperpowers,
+    });
+
+    console.log(
+      `${runtime.displayName} will open a separate interactive AI session for issue drafting. Only the context saved in ${toRepoRelativePath(
+        repoRoot,
+        workspace.promptFilePath
+      )} will be available to that session.`
+    );
+    runtime.launch(repoRoot, {
+      promptFilePath: workspace.promptFilePath,
+      outputLogPath: workspace.outputLogPath,
+    });
+  }
 
   const issueSet = existsSync(workspace.issueSetFilePath)
     ? loadIssueDraftSet({
@@ -4527,15 +4815,17 @@ async function runIssueDraftCommand(): Promise<void> {
   }
 
   if (!existsSync(workspace.draftFilePath)) {
-    throw new Error(
-      `${runtime.displayName} did not write the issue draft to ${toRepoRelativePath(repoRoot, workspace.draftFilePath)}.`
+    throw buildMissingIssueDraftError(
+      repoRoot,
+      workspace,
+      runtimeDisplayName ?? "The issue draft caller"
     );
   }
 
   const draftContents = readFileSync(workspace.draftFilePath, "utf8").trim();
   if (!draftContents) {
     throw new Error(
-      `${runtime.displayName} wrote an empty issue draft at ${toRepoRelativePath(repoRoot, workspace.draftFilePath)}.`
+      `${runtimeDisplayName ?? "The issue draft caller"} wrote an empty issue draft at ${toRepoRelativePath(repoRoot, workspace.draftFilePath)}.`
     );
   }
   if (!forge.isAuthenticated()) {
@@ -5848,7 +6138,7 @@ async function runIssueCommand(): Promise<void> {
   const issueCommand = parseIssueCommandArgs(args);
 
   if (issueCommand.action === "draft") {
-    await runIssueDraftCommand();
+    await runIssueDraftCommand(issueCommand);
     return;
   }
 
