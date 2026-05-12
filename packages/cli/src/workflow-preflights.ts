@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { dirname, resolve } from "node:path";
 import { formatCommandForDisplay } from "./config";
 
 type SpawnResult = {
@@ -30,6 +31,11 @@ function runGitCommand(repoRoot: string, args: string[]): SpawnResult {
   return runCommand("git", args, repoRoot);
 }
 
+function runPnpmVersionFallback(repoRoot: string): SpawnResult | undefined {
+  const corepackCommand = resolve(dirname(process.execPath), "corepack");
+  return runCommand(corepackCommand, ["pnpm", "--version"], repoRoot);
+}
+
 function formatGitFailure(
   result: SpawnResult,
   fallbackMessage: string
@@ -47,6 +53,13 @@ export function ensureVerificationCommandAvailable(
   const result = runCommand(command, ["--version"], repoRoot);
   if (!result.error && result.status === 0) {
     return;
+  }
+
+  if (command === "pnpm") {
+    const fallbackResult = runPnpmVersionFallback(repoRoot);
+    if (fallbackResult && !fallbackResult.error && fallbackResult.status === 0) {
+      return;
+    }
   }
 
   throw new Error(

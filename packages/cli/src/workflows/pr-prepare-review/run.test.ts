@@ -34,7 +34,10 @@ vi.mock("../../runtime-change-review", () => ({
   generateDiffBasedCommitProposal: vi.fn(),
 }));
 
-import { runPrPrepareReviewCommand } from "./run";
+import {
+  preparePullRequestReviewTool,
+  runPrPrepareReviewCommand,
+} from "./run";
 import { fetchLinkedIssuesForPullRequest } from "./snapshot";
 import {
   appendPullRequestPrepareReviewWarning,
@@ -77,13 +80,19 @@ function createForge(): {
       type: "github",
       isAuthenticated: () => true,
       fetchIssueDetails: vi.fn(),
+      fetchIssueComments: vi.fn(),
       fetchIssuePlanComment: vi.fn(),
+      fetchAuditComment: vi.fn(),
       fetchPullRequestDetails,
+      listOpenPullRequestChanges: vi.fn(),
       fetchPullRequestIssueComments: vi.fn(),
       fetchPullRequestReviewComments: vi.fn(),
       createIssuePlanComment: vi.fn(),
+      createAuditComment: vi.fn(),
       updateIssuePlanComment: vi.fn(),
+      updateIssueComment: vi.fn(),
       createDraftIssue: vi.fn(),
+      updateIssue: vi.fn(),
       createOrReuseIssue: vi.fn(),
       createPullRequest: vi.fn(),
     },
@@ -167,6 +176,279 @@ describe("runPrPrepareReviewCommand", () => {
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
   });
 
+  it("prepares PR review without launching Codex when used as a tool", async () => {
+    const repoRoot = mkdtempSync(resolve(tmpdir(), "prs-pr-prepare-review-"));
+    cleanupTargets.add(repoRoot);
+
+    const workspace = createWorkspace(repoRoot);
+    const { forge, fetchPullRequestDetails } = createForge();
+    const ensureCleanWorkingTree = vi.fn();
+    const ensureVerificationCommandAvailable = vi.fn();
+
+    vi.mocked(fetchLinkedIssuesForPullRequest).mockResolvedValue([]);
+    vi.mocked(createPullRequestPrepareReviewWorkspace).mockReturnValue(workspace);
+    vi.mocked(initializePullRequestPrepareReviewOutputLog).mockImplementation(
+      () => undefined
+    );
+    vi.mocked(writePullRequestPrepareReviewWorkspaceFiles).mockImplementation(
+      () => undefined
+    );
+    vi.mocked(writePullRequestPrepareReviewMetadata).mockImplementation(() => undefined);
+    vi.mocked(spawnSync).mockImplementation((command, args) => {
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "-C" &&
+        args[1] === repoRoot &&
+        args[2] === "rev-parse" &&
+        args[3] === "--verify" &&
+        args[4] === `refs/heads/${createPullRequest().headRefName}`
+      ) {
+        return createCommandResult(0);
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "checkout" &&
+        args[1] === createPullRequest().headRefName
+      ) {
+        return createCommandResult(0);
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "fetch" &&
+        args[1] === "origin" &&
+        args[2] === createPullRequest().baseRefName
+      ) {
+        return createCommandResult(0);
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "rev-parse" &&
+        args[1] === `origin/${createPullRequest().baseRefName}`
+      ) {
+        return createCommandResult(0, { stdout: "abc123base\n" });
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "merge-base" &&
+        args[1] === "--is-ancestor" &&
+        args[2] === "abc123base" &&
+        args[3] === "HEAD"
+      ) {
+        return createCommandResult(0);
+      }
+
+      throw new Error(`Unexpected spawnSync call: ${command} ${String(args)}`);
+    });
+
+    const result = await preparePullRequestReviewTool({
+      ...createDefaultCommandOptions(repoRoot, forge),
+      ensureCleanWorkingTree,
+      ensureVerificationCommandAvailable,
+    });
+
+    expect(result).toEqual({
+      status: "ready",
+      prNumber: 206,
+      runDir: workspace.runDir,
+      snapshotFilePath: workspace.snapshotFilePath,
+      metadataFilePath: workspace.metadataFilePath,
+      checkout: {
+        source: "local-head",
+        branchName: createPullRequest().headRefName,
+      },
+      baseSync: expect.objectContaining({
+        status: "up-to-date",
+        conflictResolution: "not-needed",
+        remoteRef: "origin/main",
+        baseTip: "abc123base",
+      }),
+      nextAction: "review-current-checkout",
+    });
+    expect(fetchPullRequestDetails).toHaveBeenCalledWith(206);
+    expect(ensureCleanWorkingTree).toHaveBeenCalledWith(repoRoot);
+    expect(ensureVerificationCommandAvailable).toHaveBeenCalledWith(
+      repoRoot,
+      ["pnpm", "build"],
+      "prs tool pr prepare-review"
+    );
+    expect(writePullRequestPrepareReviewWorkspaceFiles).toHaveBeenCalledWith(
+      repoRoot,
+      workspace,
+      expect.objectContaining({
+        runtimePlan: { invocation: "new", warnings: [] },
+      }),
+      ["pnpm", "build"]
+    );
+    expect(writePullRequestPrepareReviewMetadata).toHaveBeenCalledWith(
+      repoRoot,
+      workspace,
+      expect.any(Object),
+      { invocation: "new", warnings: [] }
+    );
+    expect(getInteractiveRuntimeByType).not.toHaveBeenCalled();
+    expect(launchUnattendedRuntime).not.toHaveBeenCalled();
+  });
+
+  it("returns blocked conflict details without launching Codex when used as a tool", async () => {
+    const repoRoot = mkdtempSync(resolve(tmpdir(), "prs-pr-prepare-review-"));
+    cleanupTargets.add(repoRoot);
+
+    const workspace = createWorkspace(repoRoot);
+    const { forge } = createForge();
+
+    vi.mocked(fetchLinkedIssuesForPullRequest).mockResolvedValue([]);
+    vi.mocked(createPullRequestPrepareReviewWorkspace).mockReturnValue(workspace);
+    vi.mocked(initializePullRequestPrepareReviewOutputLog).mockImplementation(
+      () => undefined
+    );
+    vi.mocked(writePullRequestPrepareReviewWorkspaceFiles).mockImplementation(
+      () => undefined
+    );
+    vi.mocked(writePullRequestPrepareReviewMetadata).mockImplementation(() => undefined);
+    vi.mocked(writePullRequestPrepareReviewConflictPrompt).mockImplementation(
+      () => undefined
+    );
+    vi.mocked(spawnSync).mockImplementation((command, args) => {
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "-C" &&
+        args[1] === repoRoot &&
+        args[2] === "rev-parse" &&
+        args[3] === "--verify" &&
+        args[4] === `refs/heads/${createPullRequest().headRefName}`
+      ) {
+        return createCommandResult(0);
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "checkout" &&
+        args[1] === createPullRequest().headRefName
+      ) {
+        return createCommandResult(0);
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "fetch" &&
+        args[1] === "origin" &&
+        args[2] === createPullRequest().baseRefName
+      ) {
+        return createCommandResult(0);
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "rev-parse" &&
+        args[1] === `origin/${createPullRequest().baseRefName}`
+      ) {
+        return createCommandResult(0, { stdout: "abc123base\n" });
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "merge-base" &&
+        args[1] === "--is-ancestor" &&
+        args[2] === "abc123base" &&
+        args[3] === "HEAD"
+      ) {
+        return createCommandResult(1);
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "merge" &&
+        args[1] === "--no-edit" &&
+        args[2] === "--no-ff" &&
+        args[3] === "origin/main"
+      ) {
+        return createCommandResult(1, {
+          stderr: "CONFLICT (content): Merge conflict in src/conflict.ts\n",
+        });
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "rev-parse" &&
+        args[1] === "-q" &&
+        args[2] === "--verify" &&
+        args[3] === "MERGE_HEAD"
+      ) {
+        return createCommandResult(0);
+      }
+
+      if (
+        command === "git" &&
+        Array.isArray(args) &&
+        args[0] === "diff" &&
+        args[1] === "--name-only" &&
+        args[2] === "--diff-filter=U"
+      ) {
+        return createCommandResult(0, { stdout: "src/conflict.ts\n" });
+      }
+
+      throw new Error(`Unexpected spawnSync call: ${command} ${String(args)}`);
+    });
+
+    const result = await preparePullRequestReviewTool(
+      createDefaultCommandOptions(repoRoot, forge)
+    );
+
+    expect(result).toEqual({
+      status: "blocked",
+      reason: "merge-conflicts",
+      prNumber: 206,
+      runDir: workspace.runDir,
+      conflictPromptFilePath: workspace.conflictPromptFilePath,
+      metadataFilePath: workspace.metadataFilePath,
+      checkout: {
+        source: "local-head",
+        branchName: createPullRequest().headRefName,
+      },
+      baseSync: expect.objectContaining({
+        status: "blocked",
+        conflictResolution: "required",
+        remoteRef: "origin/main",
+        baseTip: "abc123base",
+      }),
+      nextAction: "resolve-conflicts-in-current-codex-session",
+    });
+    expect(writePullRequestPrepareReviewConflictPrompt).toHaveBeenCalledWith(
+      repoRoot,
+      workspace,
+      expect.objectContaining({
+        branchName: createPullRequest().headRefName,
+      })
+    );
+    expect(writePullRequestPrepareReviewWorkspaceFiles).toHaveBeenCalledWith(
+      repoRoot,
+      workspace,
+      expect.objectContaining({
+        baseSync: expect.objectContaining({ status: "blocked" }),
+        runtimePlan: { invocation: "new", warnings: [] },
+      }),
+      ["pnpm", "build"]
+    );
+    expect(getInteractiveRuntimeByType).not.toHaveBeenCalled();
+    expect(launchUnattendedRuntime).not.toHaveBeenCalled();
+  });
+
   it("passes a diff-based commit proposal into runtime finalization and pushes an accepted follow-up commit", async () => {
     const repoRoot = mkdtempSync(resolve(tmpdir(), "prs-pr-prepare-review-"));
     cleanupTargets.add(repoRoot);
@@ -233,7 +515,7 @@ describe("runPrPrepareReviewCommand", () => {
         args[0] === "-C" &&
         args[2] === "rev-parse" &&
         args[3] === "--verify" &&
-        args[4] === createPullRequest().headRefName
+        args[4] === `refs/heads/${createPullRequest().headRefName}`
       ) {
         return { status: 0 } as never;
       }
@@ -458,7 +740,7 @@ describe("runPrPrepareReviewCommand", () => {
         args[1] === repoRoot &&
         args[2] === "rev-parse" &&
         args[3] === "--verify" &&
-        args[4] === createPullRequest().headRefName
+        args[4] === `refs/heads/${createPullRequest().headRefName}`
       ) {
         return createCommandResult(0);
       }
@@ -590,7 +872,7 @@ describe("runPrPrepareReviewCommand", () => {
         args[1] === repoRoot &&
         args[2] === "rev-parse" &&
         args[3] === "--verify" &&
-        args[4] === createPullRequest().headRefName
+        args[4] === `refs/heads/${createPullRequest().headRefName}`
       ) {
         return createCommandResult(1);
       }
@@ -602,7 +884,7 @@ describe("runPrPrepareReviewCommand", () => {
         args[1] === repoRoot &&
         args[2] === "rev-parse" &&
         args[3] === "--verify" &&
-        args[4] === fetchedBranchName
+        args[4] === `refs/heads/${fetchedBranchName}`
       ) {
         return createCommandResult(1);
       }
@@ -713,8 +995,8 @@ describe("runPrPrepareReviewCommand", () => {
     await runPrPrepareReviewCommand(createDefaultCommandOptions(repoRoot, forge));
 
     expect(getGitCommandArgs()).toEqual([
-      ["-C", repoRoot, "rev-parse", "--verify", createPullRequest().headRefName],
-      ["-C", repoRoot, "rev-parse", "--verify", fetchedBranchName],
+      ["-C", repoRoot, "rev-parse", "--verify", `refs/heads/${createPullRequest().headRefName}`],
+      ["-C", repoRoot, "rev-parse", "--verify", `refs/heads/${fetchedBranchName}`],
       ["fetch", "origin", `pull/206/head:${fetchedBranchName}`],
       ["checkout", fetchedBranchName],
       ["fetch", "origin", "main"],
@@ -797,7 +1079,7 @@ describe("runPrPrepareReviewCommand", () => {
         args[1] === repoRoot &&
         args[2] === "rev-parse" &&
         args[3] === "--verify" &&
-        args[4] === createPullRequest().headRefName
+        args[4] === `refs/heads/${createPullRequest().headRefName}`
       ) {
         return createCommandResult(1);
       }
@@ -809,7 +1091,7 @@ describe("runPrPrepareReviewCommand", () => {
         args[1] === repoRoot &&
         args[2] === "rev-parse" &&
         args[3] === "--verify" &&
-        args[4] === fetchedBranchName
+        args[4] === `refs/heads/${fetchedBranchName}`
       ) {
         return createCommandResult(1);
       }
@@ -974,7 +1256,7 @@ describe("runPrPrepareReviewCommand", () => {
         args[1] === repoRoot &&
         args[2] === "rev-parse" &&
         args[3] === "--verify" &&
-        args[4] === createPullRequest().headRefName
+        args[4] === `refs/heads/${createPullRequest().headRefName}`
       ) {
         return createCommandResult(0);
       }
@@ -1071,7 +1353,7 @@ describe("runPrPrepareReviewCommand", () => {
         args[1] === repoRoot &&
         args[2] === "rev-parse" &&
         args[3] === "--verify" &&
-        args[4] === createPullRequest().headRefName
+        args[4] === `refs/heads/${createPullRequest().headRefName}`
       ) {
         return createCommandResult(0);
       }
@@ -1222,7 +1504,7 @@ describe("runPrPrepareReviewCommand", () => {
         args[1] === repoRoot &&
         args[2] === "rev-parse" &&
         args[3] === "--verify" &&
-        args[4] === createPullRequest().headRefName
+        args[4] === `refs/heads/${createPullRequest().headRefName}`
       ) {
         return createCommandResult(0);
       }
@@ -1438,7 +1720,7 @@ describe("runPrPrepareReviewCommand", () => {
         args[1] === repoRoot &&
         args[2] === "rev-parse" &&
         args[3] === "--verify" &&
-        args[4] === createPullRequest().headRefName
+        args[4] === `refs/heads/${createPullRequest().headRefName}`
       ) {
         return createCommandResult(0);
       }

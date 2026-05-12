@@ -132,7 +132,7 @@ afterEach(() => {
 describe("setup command", () => {
   it("runs setup with repo-aware defaults without creating AGENTS guidance by default", async () => {
     const repoRoot = createRepo("prs-setup-node-");
-    createCodexHome("prs-setup-codex-home-");
+    const codexHome = createCodexHome("prs-setup-codex-home-");
     mkdirSync(resolve(repoRoot, ".github", "workflows"), { recursive: true });
     mkdirSync(resolve(repoRoot, "coverage"), { recursive: true });
     writeFileSync(
@@ -170,6 +170,10 @@ describe("setup command", () => {
     });
 
     await runSetupCommand({
+      cliFallbackCommand: [
+        "/usr/local/bin/node",
+        "/Users/tester/Projects/prs/packages/cli/dist/index.js",
+      ],
       promptForLine: createPrompt(["", "", ""], prompts),
       repoRoot,
     });
@@ -211,23 +215,41 @@ describe("setup command", () => {
     );
     expect(testSuggestionsWorkflow).toContain("Find existing managed comment");
     expect(testSuggestionsWorkflow).toContain(
-      'core.setOutput("comment_id", existingComment?.id ? String(existingComment.id) : "")'
-    );
-    expect(testSuggestionsWorkflow).toContain(
       "existing_comment_file: ${{ steps.existing_comment.outputs.existing_comment_file }}"
     );
-    expect(testSuggestionsWorkflow).toContain(
-      "comment_id: Number(process.env.EXISTING_COMMENT_ID)"
+    expect(testSuggestionsWorkflow).toContain("comment_id:");
+    expect(testSuggestionsWorkflow).toContain("github-script");
+    expect(testSuggestionsWorkflow).toContain("updateComment");
+    expect(testSuggestionsWorkflow).toContain("createComment");
+    expect(messages.join("\n")).toContain("Installed prs Codex skills: 11");
+    expect(messages.join("\n")).toContain(
+      "Codex fallback CLI: /usr/local/bin/node /Users/tester/Projects/prs/packages/cli/dist/index.js"
     );
-    expect(testSuggestionsWorkflow).toContain(
-      "if (process.env.EXISTING_COMMENT_ID)"
+    expect(messages.join("\n")).toContain("Unified Codex entrypoint: /prs");
+    expect(messages.join("\n")).toContain(
+      "Use the managed `prs` Codex skill as the /prs router."
     );
-    expect(testSuggestionsWorkflow).toContain("github.rest.issues.createComment");
+    expect(messages.join("\n")).toContain(
+      "Workflow audit artifacts publish to GitHub; generated Superpowers docs are not committed."
+    );
+    expect(existsSync(resolve(codexHome, "skills", "prs-start-issue-work", "SKILL.md"))).toBe(
+      true
+    );
+    expect(existsSync(resolve(codexHome, "skills", "prs", "SKILL.md"))).toBe(true);
+    expect(readFileSync(resolve(codexHome, "skills", "prs", "SKILL.md"), "utf8")).toContain(
+      "/usr/local/bin/node /Users/tester/Projects/prs/packages/cli/dist/index.js <args>"
+    );
     expect(messages.join("\n")).toContain(
       "Recommended launch path: GitHub forge, OpenAI provider, and Codex runtime."
     );
     expect(messages.join("\n")).toContain(
-      "GitHub Actions in this repo are OpenAI-only today, and unattended issue runs plus `prs pr prepare-review` remain Codex-specific."
+      "Default workflow: Codex + Superpowers + GitHub audit"
+    );
+    expect(messages.join("\n")).toContain(
+      "Superpowers worktrees and agents handle execution isolation."
+    );
+    expect(messages.join("\n")).toContain(
+      "prs GitHub Actions are OpenAI-only today, and unattended issue runs plus `prs pr prepare-review` remain Codex-specific."
     );
     expect(existsSync(resolve(repoRoot, "AGENTS.md"))).toBe(false);
     expect(messages.join("\n")).toContain("Next step: create `.env`");
@@ -293,6 +315,44 @@ describe("setup command", () => {
       forge: {
         type: "none",
       },
+    });
+  });
+
+  it("writes detected DDEV readiness as generic local runtime config", async () => {
+    const repoRoot = createRepo("prs-setup-ddev-runtime-");
+    createCodexHome("prs-setup-codex-home-");
+    const binDir = resolve(repoRoot, "bin");
+    mkdirSync(resolve(repoRoot, ".ddev"), { recursive: true });
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(resolve(binDir, "ddev"), "");
+    writeFileSync(resolve(repoRoot, ".ddev", "config.yaml"), "name: fixture\n");
+
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${binDir}${originalPath ? `:${originalPath}` : ""}`;
+
+    mockChildProcess(repoRoot, {
+      "rev-parse --show-toplevel": `${repoRoot}\n`,
+      "symbolic-ref refs/remotes/origin/HEAD": "refs/remotes/origin/main\n",
+      "remote get-url origin": "git@gitlab.com:acme/drupal-site.git\n",
+    });
+
+    try {
+      await runSetupCommand({
+        promptForLine: createPrompt(["", ""]),
+        repoRoot,
+      });
+    } finally {
+      process.env.PATH = originalPath;
+    }
+
+    expect(
+      JSON.parse(readFileSync(resolve(repoRoot, ".prs", "config.json"), "utf8"))
+        .localRuntime
+    ).toEqual({
+      type: "command",
+      url: "https://fixture.ddev.site",
+      statusCommand: [resolve(binDir, "ddev"), "describe"],
+      startCommand: [resolve(binDir, "ddev"), "start"],
     });
   });
 

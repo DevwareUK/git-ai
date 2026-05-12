@@ -25,10 +25,10 @@ const LAUNCH_STAGE_NOTICE_DEFINITIONS: Record<
 > = {
   "feature-backlog": {
     tier: "beta",
-    command: "`prs feature-backlog`",
+    command: "`prs review features`",
     reason:
       "Repository-wide feature discovery is still a higher-variance workflow than the primary review and testing paths.",
-    recommendedFirst: "`prs test-backlog --top 5` or `prs review`.",
+    recommendedFirst: "`prs review tests --top 5` or `prs review`.",
     constraints:
       "Scans the target repository heuristically; optional issue creation uses the configured forge and needs issue-creation access.",
   },
@@ -38,7 +38,7 @@ const LAUNCH_STAGE_NOTICE_DEFINITIONS: Record<
     reason:
       "It fans out unattended issue-to-PR runs across separate worktrees and remains the widest automation path in the CLI today.",
     recommendedFirst:
-      "`prs review`, `prs pr fix-comments <pr-number>`, or a single `prs issue <number>` run.",
+      "Codex + Superpowers + GitHub audit for issue work, or `prs review` and PR fix workflows for narrower changes.",
     constraints:
       'Requires at least two issue numbers, authenticated GitHub access, and `ai.runtime.type: "codex"`; `prs issue batch ...` remains a compatibility alias.',
   },
@@ -48,7 +48,7 @@ const LAUNCH_STAGE_NOTICE_DEFINITIONS: Record<
     reason:
       "It depends on interactive runtime judgment and broader repository exploration to turn an idea into an implementation-ready issue.",
     recommendedFirst:
-      "`prs review`, `prs pr fix-comments <pr-number>`, or `prs test-backlog --top 5`.",
+      "`prs review`, `prs pr fix-comments <pr-number>`, or `prs review tests --top 5`.",
     constraints:
       "Requires an available interactive runtime CLI on PATH (configured runtime or Codex fallback) and writes draft artifacts under `.prs/`.",
   },
@@ -86,9 +86,9 @@ const LAUNCH_STAGE_NOTICE_DEFINITIONS: Record<
     tier: "advanced",
     command: "`prs issue <number>`",
     reason:
-      "It performs full issue-to-PR automation with branch switching, runtime execution, build verification, and optional PR creation.",
+      "This is the legacy issue automation path until it fully uses the Codex + Superpowers + GitHub audit contract.",
     recommendedFirst:
-      "`prs review`, `prs pr fix-comments <pr-number>`, or `prs pr fix-tests <pr-number>`.",
+      "Codex + Superpowers + GitHub audit for issue work, or `prs review`, `prs pr fix-comments <pr-number>`, and `prs pr fix-tests <pr-number>` for narrower PR work.",
     constraints:
       'Requires a clean working tree, issue access through the configured forge, and a usable text provider; interactive runs need an available runtime CLI, while `--mode unattended` also needs authenticated GitHub access and `ai.runtime.type: "codex"`.',
   },

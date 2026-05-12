@@ -65,6 +65,24 @@ describe("resolveRepositoryConfig", () => {
     });
   });
 
+  it("preserves configured local runtime readiness commands", () => {
+    const resolved = resolveRepositoryConfig({
+      localRuntime: {
+        type: "command",
+        url: "https://bos.ddev.site",
+        statusCommand: ["/opt/homebrew/bin/ddev", "describe"],
+        startCommand: ["/opt/homebrew/bin/ddev", "start"],
+      },
+    });
+
+    expect(resolved.localRuntime).toEqual({
+      type: "command",
+      url: "https://bos.ddev.site",
+      statusCommand: ["/opt/homebrew/bin/ddev", "describe"],
+      startCommand: ["/opt/homebrew/bin/ddev", "start"],
+    });
+  });
+
   it("defaults the missing ai selection while preserving the configured one", () => {
     expect(
       resolveRepositoryConfig({

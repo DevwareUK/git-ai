@@ -77,3 +77,26 @@ export type PullRequestPrepareReviewSnapshotInput = {
   runtimePlan: PullRequestPrepareReviewRuntimePlan;
   buildCommandDisplay: string;
 };
+
+export type PullRequestPrepareReviewToolResult =
+  | {
+      status: "ready";
+      prNumber: number;
+      runDir: string;
+      snapshotFilePath: string;
+      metadataFilePath: string;
+      checkout: PullRequestPrepareReviewCheckoutTarget;
+      baseSync: PullRequestPrepareReviewBaseSyncState;
+      nextAction: "review-current-checkout";
+    }
+  | {
+      status: "blocked";
+      reason: "merge-conflicts";
+      prNumber: number;
+      runDir: string;
+      conflictPromptFilePath: string;
+      metadataFilePath: string;
+      checkout: PullRequestPrepareReviewCheckoutTarget;
+      baseSync: PullRequestPrepareReviewBaseSyncState;
+      nextAction: "resolve-conflicts-in-current-codex-session";
+    };

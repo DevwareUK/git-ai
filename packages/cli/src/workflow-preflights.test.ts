@@ -49,6 +49,33 @@ describe("workflow preflights", () => {
     });
   });
 
+  it("accepts pnpm verification commands through the current Node corepack when pnpm is not on PATH", () => {
+    const repoRoot = "/tmp/example-repo";
+    spawnSyncMock
+      .mockReturnValueOnce(
+        createSpawnResult(0, { error: new Error("spawn pnpm ENOENT") })
+      )
+      .mockReturnValueOnce(createSpawnResult(0, { stdout: "10.24.0\n" }));
+
+    expect(() =>
+      ensureVerificationCommandAvailable(repoRoot, ["pnpm", "build"], "prs tool pr ready")
+    ).not.toThrow();
+
+    expect(spawnSyncMock).toHaveBeenNthCalledWith(1, "pnpm", ["--version"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
+    expect(spawnSyncMock).toHaveBeenNthCalledWith(
+      2,
+      expect.stringMatching(/corepack$/),
+      ["pnpm", "--version"],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+      }
+    );
+  });
+
   it("preflights a non-main issue base branch before checkout", () => {
     const repoRoot = "/tmp/example-repo";
     spawnSyncMock

@@ -1,0 +1,154 @@
+import type { AuditTarget, RepositoryComment, RepositoryForge } from "./forge";
+
+export const AUDIT_COMMENT_MARKER = "<!-- prs:audit -->";
+
+export type AuditSection = {
+  name: string;
+  content: string;
+};
+
+export type PublishAuditArtifactInput = {
+  target: AuditTarget;
+  sectionName: string;
+  content: string;
+  localRun?: string;
+};
+
+export type PublishAuditArtifactResult = {
+  status: "created" | "updated";
+  comment: RepositoryComment;
+};
+
+function targetTitle(target: AuditTarget): string {
+  return target.type === "issue"
+    ? `Issue #${target.number} audit`
+    : `Pull request #${target.number} audit`;
+}
+
+function normalizedSectionMarkerId(name: string): string {
+  const normalized = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+
+  if (!normalized) {
+    throw new Error("Audit section name must contain at least one alphanumeric character.");
+  }
+
+  return normalized;
+}
+
+function sectionMarkerFromId(id: string, position: "start" | "end"): string {
+  return `<!-- prs:audit:${id}:${position} -->`;
+}
+
+function sectionMarker(name: string, position: "start" | "end"): string {
+  const normalized = normalizedSectionMarkerId(name);
+  return `<!-- prs:audit:${normalized}:${position} -->`;
+}
+
+function assertUniqueSectionMarkerIds(sections: AuditSection[]): void {
+  const markerIds = new Set<string>();
+
+  for (const section of sections) {
+    const markerId = normalizedSectionMarkerId(section.name);
+    if (markerIds.has(markerId)) {
+      throw new Error(`Duplicate audit section marker ID "${markerId}".`);
+    }
+    markerIds.add(markerId);
+  }
+}
+
+export function renderAuditCommentBody(input: {
+  title: string;
+  sections: AuditSection[];
+  localRun?: string;
+}): string {
+  assertUniqueSectionMarkerIds(input.sections);
+
+  const lines = [AUDIT_COMMENT_MARKER, "", `# ${input.title}`, ""];
+
+  if (input.localRun) {
+    lines.push(`Local run: \`${input.localRun}\``, "");
+  }
+
+  for (const section of input.sections) {
+    lines.push(sectionMarker(section.name, "start"));
+    lines.push(`## ${section.name}`);
+    lines.push("");
+    lines.push(section.content.trim());
+    lines.push(sectionMarker(section.name, "end"));
+    lines.push("");
+  }
+
+  return `${lines.join("\n").trim()}\n`;
+}
+
+function replaceOrAppendSection(body: string, section: AuditSection): string {
+  const markerId = normalizedSectionMarkerId(section.name);
+  const start = sectionMarkerFromId(markerId, "start");
+  const end = sectionMarkerFromId(markerId, "end");
+  const replacement = [start, `## ${section.name}`, "", section.content.trim(), end].join("\n");
+  const pattern = new RegExp(`${start}[\\s\\S]*?${end}`);
+
+  if (pattern.test(body)) {
+    return `${body.replace(pattern, replacement).trim()}\n`;
+  }
+
+  return `${body.trim()}\n\n${replacement}\n`;
+}
+
+function replaceOrInsertLocalRun(body: string, localRun?: string): string {
+  if (!localRun) {
+    return body;
+  }
+
+  const localRunLine = `Local run: \`${localRun}\``;
+  const localRunPattern = /^Local run: `[^`\n]*`$/m;
+  if (localRunPattern.test(body)) {
+    return `${body.replace(localRunPattern, localRunLine).trim()}\n`;
+  }
+
+  const titlePattern = /^# .+$/m;
+  if (titlePattern.test(body)) {
+    return `${body.replace(titlePattern, `$&\n\n${localRunLine}`).trim()}\n`;
+  }
+
+  return `${body.trim()}\n\n${localRunLine}\n`;
+}
+
+export async function publishAuditArtifact(
+  forge: RepositoryForge,
+  input: PublishAuditArtifactInput
+): Promise<PublishAuditArtifactResult> {
+  if (!forge.isAuthenticated()) {
+    throw new Error("GitHub authentication is required to publish prs audit artifacts.");
+  }
+
+  const existing = await forge.fetchAuditComment(input.target);
+  const section = { name: input.sectionName, content: input.content };
+
+  if (!existing) {
+    const body = renderAuditCommentBody({
+      title: targetTitle(input.target),
+      sections: [section],
+      localRun: input.localRun,
+    });
+    return {
+      status: "created",
+      comment: await forge.createAuditComment(input.target, body),
+    };
+  }
+
+  return {
+    status: "updated",
+    comment: await forge.updateIssueComment(
+      existing.id,
+      replaceOrInsertLocalRun(
+        replaceOrAppendSection(existing.body, section),
+        input.localRun
+      )
+    ),
+  };
+}

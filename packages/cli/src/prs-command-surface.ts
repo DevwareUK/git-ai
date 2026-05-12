@@ -1,0 +1,375 @@
+import {
+  filterActionableIssuesForUser,
+  filterActionablePullRequestsForUser,
+  type ActionableIssue,
+  type ActionablePullRequest,
+} from "./actionable-github";
+
+export type PrsIssueAction = "work" | "refine" | "plan" | "finish";
+export type PrsReviewAction = "choose" | "diff" | "tests" | "features";
+export type PrsPrAction =
+  | "choose"
+  | "prepare-review"
+  | "resolve-conflicts"
+  | "fix-comments"
+  | "fix-failing-tests"
+  | "fix-tests";
+
+export type PrsCommandSurfaceAction =
+  | { kind: "root"; mode: "interactive" }
+  | { kind: "create"; target: "issue" }
+  | { kind: "review"; mode: "interactive" }
+  | {
+      kind: "review";
+      mode: "direct";
+      action: Exclude<PrsReviewAction, "choose">;
+      passthroughArgs: string[];
+    }
+  | { kind: "issue"; mode: "interactive" }
+  | { kind: "issue"; mode: "direct"; issueNumber: number; action: PrsIssueAction; all?: boolean }
+  | { kind: "pr"; mode: "interactive" }
+  | { kind: "pr"; mode: "direct"; prNumber: number; action: PrsPrAction; all?: boolean }
+  | { kind: "audit"; action: "publish"; passthroughArgs: string[] }
+  | { kind: "finish" };
+
+export type PrsCommandRoute = {
+  interaction: "interactive" | "direct";
+  skillName:
+    | "prs"
+    | "prs:review"
+    | "prs:start-issue-work"
+    | "prs:parallel-batch"
+    | "prs:publish-audit"
+    | "prs:finish-work";
+  cliArgs?: string[];
+  picker?: "actionable-issues" | "actionable-pull-requests" | "pr-actions";
+  target?:
+    | { type: "issue" | "pull-request"; number: number }
+    | { type: "create"; name: "issue" }
+    | { type: "review"; name: "diff" | "tests" | "features" };
+  toolOnly?: boolean;
+};
+
+export type PrsInteractivePickerModel =
+  | { kind: "issues"; items: ActionableIssue[] }
+  | { kind: "pull-requests"; items: ActionablePullRequest[] };
+
+const ISSUE_ACTIONS = new Set(["refine", "plan", "finish"]);
+const PR_ACTIONS = new Set([
+  "prepare-review",
+  "resolve-conflicts",
+  "fix-comments",
+  "fix-failing-tests",
+  "fix-tests",
+]);
+
+function parsePositiveNumber(rawValue: string | undefined, label: string): number {
+  if (!rawValue || !/^\d+$/.test(rawValue)) {
+    throw new Error(`Invalid /prs ${label} number: "${rawValue ?? ""}".`);
+  }
+
+  const parsed = Number.parseInt(rawValue, 10);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error(`Invalid /prs ${label} number: "${rawValue}".`);
+  }
+
+  return parsed;
+}
+
+export function renderPrsCommandSurfaceHelp(): string {
+  return [
+    "Usage:",
+    "  /prs",
+    "  /prs create [issue]",
+    "  /prs review",
+    "  /prs review diff [--base <git-ref>] [--head <git-ref>] [--format <markdown|json>]",
+    "  /prs review tests [--format <markdown|json>] [--top <count>] [--create-issues]",
+    "  /prs review features [repo-path] [--format <markdown|json>] [--top <count>] [--create-issues]",
+    "  /prs issue",
+    "  /prs issue <number> [--all|refine|plan|finish]",
+    "  /prs pr",
+    "  /prs pr <number> [--all|prepare-review|resolve-conflicts|fix-comments|fix-failing-tests|fix-tests]",
+    "  /prs audit publish [--issue <number>|--pr <number>] [--file <path>] [--section <name>] [--local-run <path>]",
+    "  /prs finish",
+  ].join("\n");
+}
+
+export function parsePrsCommandSurfaceArgs(args: string[]): PrsCommandSurfaceAction {
+  const [first, second, third, ...rest] = args;
+
+  if (!first) {
+    return { kind: "root", mode: "interactive" };
+  }
+
+  if (first === "create") {
+    if (!second || second === "issue") {
+      if (third || rest.length > 0) {
+        throw new Error(renderPrsCommandSurfaceHelp());
+      }
+
+    return { kind: "create", target: "issue" };
+    }
+
+    throw new Error(renderPrsCommandSurfaceHelp());
+  }
+
+  if (first === "review") {
+    if (!second) {
+      return { kind: "review", mode: "interactive" };
+    }
+
+    if (second === "diff" || second === "tests" || second === "features") {
+      return {
+        kind: "review",
+        mode: "direct",
+        action: second,
+        passthroughArgs: [third, ...rest].filter(
+          (value): value is string => value !== undefined
+        ),
+      };
+    }
+
+    throw new Error(renderPrsCommandSurfaceHelp());
+  }
+
+  if (first === "issue") {
+    if (!second) {
+      return { kind: "issue", mode: "interactive" };
+    }
+    if (rest.length > 0) {
+      throw new Error(renderPrsCommandSurfaceHelp());
+    }
+
+    const issueNumber = parsePositiveNumber(second, "issue");
+    if (third === "--all") {
+      return { kind: "issue", mode: "direct", issueNumber, action: "work", all: true };
+    }
+    if (!third) {
+      return { kind: "issue", mode: "direct", issueNumber, action: "work", all: false };
+    }
+    if (!ISSUE_ACTIONS.has(third)) {
+      throw new Error(renderPrsCommandSurfaceHelp());
+    }
+
+    return {
+      kind: "issue",
+      mode: "direct",
+      issueNumber,
+      action: third as PrsIssueAction,
+    };
+  }
+
+  if (first === "pr") {
+    if (!second) {
+      return { kind: "pr", mode: "interactive" };
+    }
+    if (rest.length > 0) {
+      throw new Error(renderPrsCommandSurfaceHelp());
+    }
+    if (PR_ACTIONS.has(second)) {
+      throw new Error(renderPrsCommandSurfaceHelp());
+    }
+
+    const prNumber = parsePositiveNumber(second, "pr");
+    if (third === "--all") {
+      return { kind: "pr", mode: "direct", prNumber, action: "choose", all: true };
+    }
+    if (!third) {
+      return { kind: "pr", mode: "direct", prNumber, action: "choose", all: false };
+    }
+    if (!PR_ACTIONS.has(third)) {
+      throw new Error(renderPrsCommandSurfaceHelp());
+    }
+
+    return {
+      kind: "pr",
+      mode: "direct",
+      prNumber,
+      action: third as PrsPrAction,
+    };
+  }
+
+  if (first === "audit" && second === "publish") {
+    return { kind: "audit", action: "publish", passthroughArgs: args.slice(2) };
+  }
+
+  if (first === "finish" && !second) {
+    return { kind: "finish" };
+  }
+
+  throw new Error(renderPrsCommandSurfaceHelp());
+}
+
+export function routePrsCommandSurfaceAction(action: PrsCommandSurfaceAction): PrsCommandRoute {
+  if (action.kind === "root") {
+    return { interaction: "interactive", skillName: "prs", cliArgs: undefined };
+  }
+
+  if (action.kind === "create") {
+    return {
+      interaction: "direct",
+      skillName: "prs:start-issue-work",
+      cliArgs: ["issue", "draft"],
+      target: { type: "create", name: "issue" },
+    };
+  }
+
+  if (action.kind === "review") {
+    if (action.mode === "interactive") {
+      return {
+        interaction: "interactive",
+        skillName: "prs:review",
+        cliArgs: undefined,
+        target: { type: "review", name: "tests" },
+      };
+    }
+
+    if (action.action === "tests") {
+      return {
+        interaction: "direct",
+        skillName: "prs:review",
+        cliArgs: ["test-backlog", ...action.passthroughArgs],
+        target: { type: "review", name: "tests" },
+      };
+    }
+
+    if (action.action === "features") {
+      return {
+        interaction: "direct",
+        skillName: "prs:review",
+        cliArgs: ["feature-backlog", ...action.passthroughArgs],
+        target: { type: "review", name: "features" },
+      };
+    }
+
+    return {
+      interaction: "direct",
+      skillName: "prs:review",
+      cliArgs: ["review", ...action.passthroughArgs],
+      target: { type: "review", name: "diff" },
+    };
+  }
+
+  if (action.kind === "issue") {
+    if (action.mode === "interactive") {
+      return {
+        interaction: "interactive",
+        skillName: "prs",
+        cliArgs: undefined,
+        picker: "actionable-issues",
+      };
+    }
+
+    if (action.action === "work") {
+      return {
+        interaction: "direct",
+        skillName: "prs",
+        cliArgs: action.all
+          ? ["tool", "issue", "ready", String(action.issueNumber), "--all", "--json"]
+          : ["tool", "issue", "ready", String(action.issueNumber), "--json"],
+        target: { type: "issue", number: action.issueNumber },
+        toolOnly: action.all ? undefined : true,
+      };
+    }
+
+    if (action.action === "refine") {
+      return {
+        interaction: "direct",
+        skillName: "prs:start-issue-work",
+        cliArgs: ["issue", "refine", String(action.issueNumber)],
+        target: { type: "issue", number: action.issueNumber },
+      };
+    }
+
+    if (action.action === "plan") {
+      return {
+        interaction: "direct",
+        skillName: "prs:start-issue-work",
+        cliArgs: ["issue", "plan", String(action.issueNumber)],
+        target: { type: "issue", number: action.issueNumber },
+      };
+    }
+
+    return {
+      interaction: "interactive",
+      skillName: "prs:finish-work",
+      cliArgs: undefined,
+      target: { type: "issue", number: action.issueNumber },
+    };
+  }
+
+  if (action.kind === "pr") {
+    if (action.mode === "interactive") {
+      return {
+        interaction: "interactive",
+        skillName: "prs",
+        cliArgs: undefined,
+        picker: "actionable-pull-requests",
+      };
+    }
+
+    if (action.action === "choose") {
+      return {
+        interaction: "direct",
+        skillName: "prs",
+        cliArgs: action.all
+          ? ["tool", "pr", "ready", String(action.prNumber), "--all", "--json"]
+          : ["tool", "pr", "ready", String(action.prNumber), "--json"],
+        target: { type: "pull-request", number: action.prNumber },
+        toolOnly: true,
+      };
+    }
+
+    if (action.action === "prepare-review") {
+      return {
+        interaction: "direct",
+        skillName: "prs",
+        cliArgs: ["tool", "pr", "prepare-review", String(action.prNumber), "--json"],
+        target: { type: "pull-request", number: action.prNumber },
+        toolOnly: true,
+      };
+    }
+
+    return {
+      interaction: "direct",
+      skillName: "prs",
+      cliArgs: ["pr", action.action, String(action.prNumber)],
+      target: { type: "pull-request", number: action.prNumber },
+    };
+  }
+
+  if (action.kind === "audit") {
+    return {
+      interaction: "direct",
+      skillName: "prs:publish-audit",
+      cliArgs: ["audit", "publish", ...action.passthroughArgs],
+    };
+  }
+
+  return { interaction: "interactive", skillName: "prs:finish-work", cliArgs: undefined };
+}
+
+export function buildPrsInteractivePickerModel(
+  action: PrsCommandSurfaceAction,
+  input: {
+    currentUser: string;
+    issues?: ActionableIssue[];
+    pullRequests?: ActionablePullRequest[];
+  }
+): PrsInteractivePickerModel | undefined {
+  if (action.kind === "issue" && action.mode === "interactive") {
+    return {
+      kind: "issues",
+      items: filterActionableIssuesForUser(input.issues ?? [], input.currentUser),
+    };
+  }
+
+  if (action.kind === "pr" && action.mode === "interactive") {
+    return {
+      kind: "pull-requests",
+      items: filterActionablePullRequestsForUser(input.pullRequests ?? [], input.currentUser),
+    };
+  }
+
+  return undefined;
+}

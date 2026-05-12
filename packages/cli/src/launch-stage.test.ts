@@ -29,6 +29,21 @@ describe("formatLaunchStageNotice", () => {
     expect(runNotice).toContain("authenticated GitHub access");
   });
 
+  it("frames issue automation around the Codex Superpowers audit workflow", () => {
+    const notice = formatLaunchStageNotice("issue-run");
+
+    expect(notice).toContain("Codex + Superpowers + GitHub audit");
+    expect(notice).toContain("legacy issue automation path");
+  });
+
+  it("frames issue batch as the widest beta automation path", () => {
+    const notice = formatLaunchStageNotice("issue-batch");
+
+    expect(notice).toContain("fans out unattended issue-to-PR runs");
+    expect(notice).toContain("widest automation path in the CLI today");
+    expect(notice).toContain("Codex + Superpowers + GitHub audit");
+  });
+
   it("describes resolve-conflicts as a Codex-specific beta PR workflow", () => {
     const notice = formatLaunchStageNotice("pr-resolve-conflicts");
 

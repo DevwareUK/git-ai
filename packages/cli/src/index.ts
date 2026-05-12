@@ -44,17 +44,28 @@ import {
   formatCommandForDisplay,
   loadResolvedRepositoryConfig,
 } from "./config";
+import { publishAuditArtifact } from "./audit-artifacts";
 import { buildDoneStateInstructions } from "./done-state";
+import { listIssuesTool } from "./issue-list-tool";
+import { readyIssueTool } from "./issue-ready-tool";
 import {
   formatLaunchStageNotice,
   type LaunchStageNoticeId,
 } from "./launch-stage";
 import {
+  parseCodexCommandArgs,
+  type CodexCommandOptions,
+} from "./commands/codex";
+import {
   parsePrCommandArgs as parsePrCommandArgsImpl,
   type PrCommandOptions,
 } from "./commands/pr";
+import { listPullRequestsTool } from "./pr-list-tool";
+import { readyPullRequestTool } from "./pr-ready-tool";
+import { parsePrsToolCommandArgs } from "./prs-tool-command";
 import {
   createRepositoryForge,
+  type AuditTarget,
   type CreatedIssueRecord,
   type IssueDetails,
   type IssuePlanComment,
@@ -110,7 +121,10 @@ import {
 import { runPrFixCommentsCommand } from "./workflows/pr-fix-comments/run";
 import { runPrFixFailingTestsCommand } from "./workflows/pr-fix-failing-tests/run";
 import type { VerificationFailure } from "./workflows/pr-fix-failing-tests/types";
-import { runPrPrepareReviewCommand } from "./workflows/pr-prepare-review/run";
+import {
+  preparePullRequestReviewTool,
+  runPrPrepareReviewCommand,
+} from "./workflows/pr-prepare-review/run";
 import { runPrResolveConflictsCommand } from "./workflows/pr-resolve-conflicts/run";
 import { runPrFixTestsCommand } from "./workflows/pr-fix-tests/run";
 
@@ -187,6 +201,14 @@ type ReviewCommandOptions = {
   head?: string;
   format: ReviewOutputFormat;
   issueNumber?: number;
+};
+
+export type AuditCommandOptions = {
+  action: "publish";
+  target: AuditTarget;
+  filePath: string;
+  sectionName: string;
+  localRun?: string;
 };
 
 type TestBacklogCommandOptions = {
@@ -372,6 +394,7 @@ const ISSUE_USAGE = [
 const TEST_BACKLOG_USAGE = [
   "Usage:",
   "  prs test-backlog [--format <markdown|json>] [--top <count>]",
+  "  prs review tests [--format <markdown|json>] [--top <count>]",
   "                       [--repo-root <path>] [--create-issues]",
   "                       [--max-issues <count>] [--label <name>] [--labels <a,b>]",
 ].join("\n");
@@ -379,6 +402,7 @@ const TEST_BACKLOG_USAGE = [
 const FEATURE_BACKLOG_USAGE = [
   "Usage:",
   "  prs feature-backlog [repo-path] [--format <markdown|json>] [--top <count>]",
+  "  prs review features [repo-path] [--format <markdown|json>] [--top <count>]",
   "                          [--create-issues] [--max-issues <count>]",
   "                          [--label <name>] [--labels <a,b>]",
 ].join("\n");
@@ -387,7 +411,14 @@ const REVIEW_USAGE = [
   "Usage:",
   "  prs review [--base <git-ref>] [--head <git-ref>] [--format <markdown|json>]",
   "                [--issue-number <number>]",
+  "  prs review diff [--base <git-ref>] [--head <git-ref>] [--format <markdown|json>]",
+  "                  [--issue-number <number>]",
+  "  prs review tests [test-backlog options]",
+  "  prs review features [feature-backlog options]",
 ].join("\n");
+
+const AUDIT_PUBLISH_USAGE =
+  "Usage: prs audit publish (--issue <number>|--pr <number>) --file <path> --section <name> [--local-run <path>]";
 
 const TOP_LEVEL_HELP = [
   "prs",
@@ -399,7 +430,7 @@ const TOP_LEVEL_HELP = [
   "  prs pr fix-comments <pr-number>",
   "  prs pr fix-failing-tests <pr-number>",
   "  prs pr fix-tests <pr-number>",
-  "  prs test-backlog [--top <count>]",
+  "  prs review tests [--top <count>]",
   "",
   "Advanced:",
   "  prs issue draft",
@@ -414,10 +445,24 @@ const TOP_LEVEL_HELP = [
   "  prs issue batch <number> <number> [...number] [--mode unattended]",
   "  prs pr prepare-review <pr-number>",
   "  prs pr resolve-conflicts <pr-number>",
-  "  prs feature-backlog [repo-path]",
+  "  prs review features [repo-path]",
+  "",
+  "Codex launchers:",
+  "  prs codex issue <number>",
+  "  prs codex issue batch <number> <number> [...number] [--mode unattended]",
+  "  prs codex pr prepare-review <pr-number>",
+  "  prs codex pr resolve-conflicts <pr-number>",
   "",
   "Supporting commands:",
   "  prs setup",
+  "  prs tool issue list [--actionable] --json",
+  "  prs tool issue ready <issue-number> [--all] --json",
+  "  prs tool pr list [--actionable] --json",
+  "  prs tool pr ready <pr-number> [--all] --json",
+  "  prs tool pr prepare-review <pr-number> --json",
+  "  prs test-backlog [--top <count>]",
+  "  prs feature-backlog [repo-path]",
+  "  prs audit publish (--issue <number>|--pr <number>) --file <path> --section <name> [--local-run <path>]",
   "  prs commit",
   "  prs diff",
   "",
@@ -1003,6 +1048,91 @@ export function parsePrCommandArgs(args: string[]): PrCommandOptions {
   return parsePrCommandArgsImpl(args, parseIssueNumber);
 }
 
+export function parseCodexCommand(args: string[]): CodexCommandOptions {
+  return parseCodexCommandArgs(args, parseIssueNumber);
+}
+
+export function parseAuditCommandArgs(args: string[]): AuditCommandOptions {
+  const auditArgs = args[0] === "audit" ? args.slice(1) : args;
+  const subcommand = auditArgs[0];
+
+  if (subcommand !== "publish") {
+    throw new Error(AUDIT_PUBLISH_USAGE);
+  }
+
+  const optionArgs = auditArgs.slice(1);
+  let target: AuditTarget | undefined;
+  let filePath: string | undefined;
+  let sectionName: string | undefined;
+  let localRun: string | undefined;
+
+  for (let index = 0; index < optionArgs.length; index += 1) {
+    const rawArg = optionArgs[index];
+
+    if (rawArg === "--issue" || rawArg === "--pr") {
+      if (target) {
+        throw new Error("`prs audit publish` requires exactly one of --issue or --pr.");
+      }
+
+      target = {
+        type: rawArg === "--issue" ? "issue" : "pull-request",
+        number: parseIssueNumber(optionArgs[index + 1]),
+      };
+      index += 1;
+      continue;
+    }
+
+    if (rawArg === "--file") {
+      filePath = optionArgs[index + 1];
+      if (!filePath) {
+        throw new Error(AUDIT_PUBLISH_USAGE);
+      }
+      index += 1;
+      continue;
+    }
+
+    if (rawArg === "--section") {
+      sectionName = optionArgs[index + 1];
+      if (!sectionName) {
+        throw new Error(AUDIT_PUBLISH_USAGE);
+      }
+      index += 1;
+      continue;
+    }
+
+    if (rawArg === "--local-run") {
+      localRun = optionArgs[index + 1];
+      if (!localRun) {
+        throw new Error(AUDIT_PUBLISH_USAGE);
+      }
+      index += 1;
+      continue;
+    }
+
+    throw new Error(`Unknown audit option "${rawArg}".`);
+  }
+
+  if (!target) {
+    throw new Error("`prs audit publish` requires exactly one of --issue or --pr.");
+  }
+
+  if (!filePath) {
+    throw new Error(AUDIT_PUBLISH_USAGE);
+  }
+
+  if (!sectionName) {
+    throw new Error(AUDIT_PUBLISH_USAGE);
+  }
+
+  return {
+    action: "publish",
+    target,
+    filePath,
+    sectionName,
+    localRun,
+  };
+}
+
 function parsePositiveInteger(value: string | undefined, flagName: string): number {
   if (!value || !/^\d+$/.test(value)) {
     throw new Error(`Invalid value for ${flagName}: "${value ?? ""}". Expected a positive integer.`);
@@ -1017,7 +1147,11 @@ function parsePositiveInteger(value: string | undefined, flagName: string): numb
 }
 
 export function parseTestBacklogCommandArgs(args: string[]): TestBacklogCommandOptions {
-  const optionArgs = args.slice(1);
+  const normalizedArgs =
+    args[0] === "review" && args[1] === "tests"
+      ? ["test-backlog", ...args.slice(2)]
+      : args;
+  const optionArgs = normalizedArgs.slice(1);
   let repoRoot = getDefaultRepoRoot();
   let format: BacklogOutputFormat = "markdown";
   let top = 5;
@@ -1145,7 +1279,11 @@ export function parseTestBacklogCommandArgs(args: string[]): TestBacklogCommandO
 }
 
 export function parseFeatureBacklogCommandArgs(args: string[]): FeatureBacklogCommandOptions {
-  const optionArgs = args.slice(1);
+  const normalizedArgs =
+    args[0] === "review" && args[1] === "features"
+      ? ["feature-backlog", ...args.slice(2)]
+      : args;
+  const optionArgs = normalizedArgs.slice(1);
   let repoRoot = getDefaultRepoRoot();
   let format: BacklogOutputFormat = "markdown";
   let top = 5;
@@ -1265,7 +1403,9 @@ export function parseFeatureBacklogCommandArgs(args: string[]): FeatureBacklogCo
 }
 
 export function parseReviewCommandArgs(args: string[]): ReviewCommandOptions {
-  const optionArgs = args.slice(1);
+  const normalizedArgs =
+    args[0] === "review" && args[1] === "diff" ? ["review", ...args.slice(2)] : args;
+  const optionArgs = normalizedArgs.slice(1);
   let base: string | undefined;
   let head: string | undefined;
   let format: ReviewOutputFormat = "markdown";
@@ -1360,6 +1500,10 @@ function resolveLaunchStageNoticeId(args: string[]): LaunchStageNoticeId | undef
     return "feature-backlog";
   }
 
+  if (command === "review" && args[1] === "features") {
+    return "feature-backlog";
+  }
+
   if (command === "issue") {
     const issueCommand = parseIssueCommandArgs(args);
 
@@ -1388,6 +1532,22 @@ function resolveLaunchStageNoticeId(args: string[]): LaunchStageNoticeId | undef
       return "pr-resolve-conflicts";
     }
     return undefined;
+  }
+
+  if (command === "codex") {
+    const codexCommand = parseCodexCommand(args);
+    if (codexCommand.action === "issue") {
+      return "issue-run";
+    }
+    if (codexCommand.action === "issue-batch") {
+      return "issue-batch";
+    }
+    if (codexCommand.action === "pr-prepare-review") {
+      return "pr-prepare-review";
+    }
+    if (codexCommand.action === "pr-resolve-conflicts") {
+      return "pr-resolve-conflicts";
+    }
   }
 
   return undefined;
@@ -3871,8 +4031,18 @@ async function createProvider(
   }
 }
 
-async function runReviewCommand(): Promise<void> {
-  const options = parseReviewCommandArgs(getCliArgs());
+async function runReviewCommand(args = getCliArgs()): Promise<void> {
+  if (args[1] === "tests") {
+    await runTestBacklogCommand(args);
+    return;
+  }
+
+  if (args[1] === "features") {
+    await runFeatureBacklogCommand(args);
+    return;
+  }
+
+  const options = parseReviewCommandArgs(args);
   const diff = readReviewDiff(options.base, options.head);
   const { provider } = await createProvider();
   const issue =
@@ -3911,41 +4081,45 @@ async function runReviewCommand(): Promise<void> {
   );
 }
 
+async function runAuditCommand(): Promise<void> {
+  const repoRoot = getDefaultRepoRoot();
+  const command = parseAuditCommandArgs(getCliArgs());
+  const artifactPath = isAbsolute(command.filePath)
+    ? command.filePath
+    : resolve(repoRoot, command.filePath);
+
+  if (!existsSync(artifactPath)) {
+    throw new Error(`Audit artifact file does not exist: ${command.filePath}`);
+  }
+
+  const forge = getRepositoryForge(repoRoot);
+  const content = readFileSync(artifactPath, "utf8").trim();
+  if (!content) {
+    throw new Error(`Audit artifact file is empty: ${command.filePath}`);
+  }
+
+  const result = await publishAuditArtifact(forge, {
+    target: command.target,
+    sectionName: command.sectionName,
+    content,
+    localRun: command.localRun,
+  });
+
+  console.log(`Audit artifact ${result.status}: ${result.comment.url}`);
+}
+
 async function runPrCommand(): Promise<void> {
   const repoRoot = getDefaultRepoRoot();
   const prCommand = parsePrCommandArgs(getCliArgs());
   const repositoryConfig = getRepositoryConfig(repoRoot);
 
   if (prCommand.action === "prepare-review") {
-    await runPrPrepareReviewCommand({
-      prNumber: prCommand.prNumber,
-      repoRoot,
-      buildCommand: repositoryConfig.buildCommand,
-      ensureVerificationCommandAvailable,
-      preflightBaseBranch: preflightRemoteBranch,
-      forge: getRepositoryForge(repoRoot),
-      ensureCleanWorkingTree,
-      promptForLine,
-      hasChanges,
-      verifyBuild,
-      commitGeneratedChanges,
-      readDiff: readIssueWorkflowDiff,
-      createProvider: async (providerRepoRoot) => createProvider(providerRepoRoot),
-    });
+    await runPrPrepareReviewCodexLauncher(prCommand.prNumber, repoRoot, repositoryConfig);
     return;
   }
 
   if (prCommand.action === "resolve-conflicts") {
-    await runPrResolveConflictsCommand({
-      prNumber: prCommand.prNumber,
-      repoRoot,
-      buildCommand: repositoryConfig.buildCommand,
-      ensureVerificationCommandAvailable,
-      preflightBaseBranch: preflightRemoteBranch,
-      forge: getRepositoryForge(repoRoot),
-      ensureCleanWorkingTree,
-      verifyBuild,
-    });
+    await runPrResolveConflictsCodexLauncher(prCommand.prNumber, repoRoot, repositoryConfig);
     return;
   }
 
@@ -4039,6 +4213,171 @@ async function runPrCommand(): Promise<void> {
     hasChanges,
     commitGeneratedChanges,
   });
+}
+
+async function runPrPrepareReviewCodexLauncher(
+  prNumber: number,
+  repoRoot: string,
+  repositoryConfig: ReturnType<typeof getRepositoryConfig>
+): Promise<void> {
+  await runPrPrepareReviewCommand({
+    prNumber,
+    repoRoot,
+    buildCommand: repositoryConfig.buildCommand,
+    ensureVerificationCommandAvailable,
+    preflightBaseBranch: preflightRemoteBranch,
+    forge: getRepositoryForge(repoRoot),
+    ensureCleanWorkingTree,
+    promptForLine,
+    hasChanges,
+    verifyBuild,
+    commitGeneratedChanges,
+    readDiff: readIssueWorkflowDiff,
+    createProvider: async (providerRepoRoot) => createProvider(providerRepoRoot),
+  });
+}
+
+async function runPrResolveConflictsCodexLauncher(
+  prNumber: number,
+  repoRoot: string,
+  repositoryConfig: ReturnType<typeof getRepositoryConfig>
+): Promise<void> {
+  await runPrResolveConflictsCommand({
+    prNumber,
+    repoRoot,
+    buildCommand: repositoryConfig.buildCommand,
+    ensureVerificationCommandAvailable,
+    preflightBaseBranch: preflightRemoteBranch,
+    forge: getRepositoryForge(repoRoot),
+    ensureCleanWorkingTree,
+    verifyBuild,
+  });
+}
+
+async function runCodexCommand(): Promise<void> {
+  const repoRoot = getDefaultRepoRoot();
+  const repositoryConfig = getRepositoryConfig(repoRoot);
+  const codexCommand = parseCodexCommand(getCliArgs());
+
+  if (codexCommand.action === "issue") {
+    await runUnattendedIssueCommand(codexCommand.issueNumber);
+    return;
+  }
+
+  if (codexCommand.action === "issue-batch") {
+    await runIssueBatchCommand(codexCommand.issueNumbers);
+    return;
+  }
+
+  if (codexCommand.action === "pr-prepare-review") {
+    await runPrPrepareReviewCodexLauncher(
+      codexCommand.prNumber,
+      repoRoot,
+      repositoryConfig
+    );
+    return;
+  }
+
+  await runPrResolveConflictsCodexLauncher(
+    codexCommand.prNumber,
+    repoRoot,
+    repositoryConfig
+  );
+}
+
+async function runToolCommand(): Promise<void> {
+  const repoRoot = getDefaultRepoRoot();
+  loadRepoEnv(repoRoot);
+  const toolCommand = parsePrsToolCommandArgs(getCliArgs().slice(1));
+  const repositoryConfig = getRepositoryConfig(repoRoot);
+
+  if (toolCommand.kind === "pr-list") {
+    const result = await listPullRequestsTool({
+      actionable: toolCommand.actionable,
+      repoRoot,
+    });
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+
+  if (toolCommand.kind === "issue-list") {
+    const result = await listIssuesTool({
+      actionable: toolCommand.actionable,
+      repoRoot,
+    });
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+
+  if (toolCommand.kind === "issue-ready") {
+    const result = await readyIssueTool({
+      all: toolCommand.all,
+      issueNumber: toolCommand.issueNumber,
+      repoRoot,
+      forge: getRepositoryForge(repoRoot),
+    });
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+
+  if (toolCommand.kind === "pr-prepare-review") {
+    const originalConsoleLog = console.log;
+    console.log = (...values: unknown[]) => {
+      process.stderr.write(`${values.map((value) => String(value)).join(" ")}\n`);
+    };
+
+    let result: Awaited<ReturnType<typeof preparePullRequestReviewTool>>;
+    try {
+      result = await preparePullRequestReviewTool({
+        prNumber: toolCommand.prNumber,
+        repoRoot,
+        buildCommand: repositoryConfig.buildCommand,
+        ensureVerificationCommandAvailable,
+        preflightBaseBranch: preflightRemoteBranch,
+        forge: getRepositoryForge(repoRoot),
+        ensureCleanWorkingTree,
+        promptForLine,
+        hasChanges,
+        verifyBuild,
+        commitGeneratedChanges,
+        readDiff: readIssueWorkflowDiff,
+        createProvider: async (providerRepoRoot) => createProvider(providerRepoRoot),
+      });
+    } finally {
+      console.log = originalConsoleLog;
+    }
+
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+
+  if (toolCommand.kind === "pr-ready") {
+    const originalConsoleLog = console.log;
+    console.log = (...values: unknown[]) => {
+      process.stderr.write(`${values.map((value) => String(value)).join(" ")}\n`);
+    };
+
+    let result: Awaited<ReturnType<typeof readyPullRequestTool>>;
+    try {
+      result = await readyPullRequestTool({
+        all: toolCommand.all,
+        prNumber: toolCommand.prNumber,
+        repoRoot,
+        buildCommand: repositoryConfig.buildCommand,
+        localRuntime: repositoryConfig.localRuntime,
+        ensureVerificationCommandAvailable,
+        forge: getRepositoryForge(repoRoot),
+        ensureCleanWorkingTree,
+      });
+    } finally {
+      console.log = originalConsoleLog;
+    }
+
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+
+  throw new Error("This prs tool command is not implemented yet.");
 }
 
 function formatTestBacklogMarkdown(
@@ -4398,8 +4737,8 @@ async function maybeCreateFeatureBacklogIssues(
   return createdIssues;
 }
 
-async function runTestBacklogCommand(): Promise<void> {
-  const options = parseTestBacklogCommandArgs(getCliArgs());
+async function runTestBacklogCommand(args = getCliArgs()): Promise<void> {
+  const options = parseTestBacklogCommandArgs(args);
   const repositoryConfig = getRepositoryConfig(options.repoRoot);
   const analysis = await analyzeTestBacklog({
     excludePaths: repositoryConfig.aiContext.excludePaths,
@@ -4430,8 +4769,8 @@ async function runTestBacklogCommand(): Promise<void> {
   }
 }
 
-async function runFeatureBacklogCommand(): Promise<void> {
-  const options = parseFeatureBacklogCommandArgs(getCliArgs());
+async function runFeatureBacklogCommand(args = getCliArgs()): Promise<void> {
+  const options = parseFeatureBacklogCommandArgs(args);
   const repositoryConfig = getRepositoryConfig(options.repoRoot);
   const analysis = await analyzeFeatureBacklog({
     excludePaths: repositoryConfig.aiContext.excludePaths,
@@ -6458,8 +6797,11 @@ export async function run(): Promise<void> {
     command !== "commit" &&
     command !== "diff" &&
     command !== "setup" &&
+    command !== "audit" &&
     command !== "issue" &&
     command !== "pr" &&
+    command !== "codex" &&
+    command !== "tool" &&
     command !== "review" &&
     command !== "test-backlog" &&
     command !== "feature-backlog"
@@ -6491,8 +6833,23 @@ export async function run(): Promise<void> {
     return;
   }
 
+  if (command === "audit") {
+    await runAuditCommand();
+    return;
+  }
+
   if (command === "pr") {
     await runPrCommand();
+    return;
+  }
+
+  if (command === "codex") {
+    await runCodexCommand();
+    return;
+  }
+
+  if (command === "tool") {
+    await runToolCommand();
     return;
   }
 

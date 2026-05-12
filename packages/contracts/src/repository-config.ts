@@ -92,12 +92,24 @@ export const RepositoryConfigCommand = z
   .array(z.string().trim().min(1, "command segments must be non-empty"))
   .min(1, "command must contain at least one segment");
 
+export const RepositoryLocalRuntimeConfig = z.object({
+  type: z.literal("command"),
+  url: z.string().trim().min(1, "localRuntime url must be non-empty").optional(),
+  statusCommand: RepositoryConfigCommand.optional(),
+  startCommand: RepositoryConfigCommand.optional(),
+});
+
+export type RepositoryLocalRuntimeConfigType = z.infer<
+  typeof RepositoryLocalRuntimeConfig
+>;
+
 export const RepositoryConfig = z.object({
   ai: RepositoryAiConfig.optional(),
   aiContext: RepositoryAiContextConfig.optional(),
   baseBranch: z.string().trim().min(1, "baseBranch must be non-empty").optional(),
   buildCommand: RepositoryConfigCommand.optional(),
   forge: RepositoryForgeConfig.optional(),
+  localRuntime: RepositoryLocalRuntimeConfig.optional(),
 });
 
 export type RepositoryConfigType = z.infer<typeof RepositoryConfig>;
@@ -121,6 +133,7 @@ export const ResolvedRepositoryConfig = z.object({
   forge: z.object({
     type: RepositoryForgeType,
   }),
+  localRuntime: RepositoryLocalRuntimeConfig.optional(),
 });
 
 export type ResolvedRepositoryConfigType = z.infer<typeof ResolvedRepositoryConfig>;

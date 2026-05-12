@@ -1,6 +1,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import type {
+  AuditTarget,
   CreatePullRequestInput,
   CreatedPullRequestRecord,
   CreatedIssueRecord,
@@ -12,6 +13,7 @@ import type {
   PullRequestReviewComment,
   RepositoryForge,
 } from "./forge";
+import { AUDIT_COMMENT_MARKER } from "./audit-artifacts";
 
 function runCommand(
   command: string,
@@ -243,37 +245,97 @@ async function listIssueComments(
     headers.Authorization = `Bearer ${token}`;
   }
 
+  const comments: RepositoryComment[] = [];
+  let page = 1;
+
+  while (true) {
+    const pageParameter = page === 1 ? "" : `&page=${page}`;
+    const response = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}/comments?per_page=100${pageParameter}`,
+      { headers }
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Failed to list comments for GitHub issue #${issueNumber} (${response.status} ${response.statusText}).`
+      );
+    }
+
+    const payload = (await response.json()) as Array<{
+      id?: number;
+      body?: string | null;
+      html_url?: string;
+      created_at?: string;
+      updated_at?: string;
+      user?: { login?: string; type?: string };
+    }>;
+
+    comments.push(
+      ...payload
+        .filter((comment) => comment.id && comment.body && comment.html_url && comment.updated_at)
+        .map((comment) => ({
+          id: comment.id as number,
+          body: comment.body as string,
+          url: comment.html_url as string,
+          createdAt: (comment.created_at ?? comment.updated_at) as string,
+          updatedAt: comment.updated_at as string,
+          author: comment.user?.login ?? "unknown",
+          isBot: comment.user?.type === "Bot",
+        }))
+    );
+
+    if (payload.length < 100) {
+      return comments;
+    }
+
+    page += 1;
+  }
+}
+
+async function assertAuditTargetMatchesType(
+  owner: string,
+  repo: string,
+  target: AuditTarget
+): Promise<void> {
+  const token = tryResolveGitHubApiToken();
+  const headers: Record<string, string> = {
+    Accept: "application/vnd.github+json",
+    "User-Agent": "prs-cli",
+  };
+
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  if (target.type === "pull-request") {
+    const response = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/pulls/${target.number}`,
+      { headers }
+    );
+    if (!response.ok) {
+      throw new Error(
+        `GitHub pull request #${target.number} could not be validated for audit publication (${response.status} ${response.statusText}).`
+      );
+    }
+    return;
+  }
+
   const response = await fetch(
-    `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}/comments?per_page=100`,
+    `https://api.github.com/repos/${owner}/${repo}/issues/${target.number}`,
     { headers }
   );
-
   if (!response.ok) {
     throw new Error(
-      `Failed to list comments for GitHub issue #${issueNumber} (${response.status} ${response.statusText}).`
+      `GitHub issue #${target.number} could not be validated for audit publication (${response.status} ${response.statusText}).`
     );
   }
 
-  const payload = (await response.json()) as Array<{
-    id?: number;
-    body?: string | null;
-    html_url?: string;
-    created_at?: string;
-    updated_at?: string;
-    user?: { login?: string; type?: string };
-  }>;
-
-  return payload
-    .filter((comment) => comment.id && comment.body && comment.html_url && comment.updated_at)
-    .map((comment) => ({
-      id: comment.id as number,
-      body: comment.body as string,
-      url: comment.html_url as string,
-      createdAt: (comment.created_at ?? comment.updated_at) as string,
-      updatedAt: comment.updated_at as string,
-      author: comment.user?.login ?? "unknown",
-      isBot: comment.user?.type === "Bot",
-    }));
+  const payload = (await response.json()) as { pull_request?: unknown };
+  if (payload.pull_request) {
+    throw new Error(
+      `GitHub issue #${target.number} is a pull request. Use --pr ${target.number} for audit publication.`
+    );
+  }
 }
 
 function tryFetchPullRequestWithGh(
@@ -721,6 +783,16 @@ class GitHubRepositoryForge implements RepositoryForge {
       .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
   }
 
+  async fetchAuditComment(target: AuditTarget): Promise<RepositoryComment | undefined> {
+    const { owner, repo } = parseGitHubRepoFromRemote(this.repoRoot);
+    await assertAuditTargetMatchesType(owner, repo, target);
+    const comments = await listIssueComments(owner, repo, target.number);
+
+    return comments
+      .filter((comment) => comment.body.includes(AUDIT_COMMENT_MARKER))
+      .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
+  }
+
   async fetchIssueComments(issueNumber: number): Promise<RepositoryComment[]> {
     const { owner, repo } = parseGitHubRepoFromRemote(this.repoRoot);
     return listIssueComments(owner, repo, issueNumber);
@@ -796,6 +868,48 @@ class GitHubRepositoryForge implements RepositoryForge {
     return parseIssuePlanCommentPayload(
       payload,
       `GitHub issue plan comment creation for #${issueNumber} returned an incomplete payload.`
+    );
+  }
+
+  async createAuditComment(
+    target: AuditTarget,
+    body: string
+  ): Promise<RepositoryComment> {
+    const { owner, repo } = parseGitHubRepoFromRemote(this.repoRoot);
+    await assertAuditTargetMatchesType(owner, repo, target);
+    const token = getGitHubApiToken(
+      "Publishing audit comments requires GH_TOKEN or GITHUB_TOKEN to be set, or gh to be installed and authenticated."
+    );
+    const response = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/issues/${target.number}/comments`,
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "User-Agent": "prs-cli",
+        },
+        body: JSON.stringify({ body }),
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Failed to publish the audit comment for ${target.type} #${target.number} (${response.status} ${response.statusText}).`
+      );
+    }
+
+    return parseRepositoryCommentPayload(
+      (await response.json()) as {
+        id?: number;
+        body?: string | null;
+        html_url?: string;
+        created_at?: string;
+        updated_at?: string;
+        user?: { login?: string; type?: string };
+      },
+      `GitHub audit comment publication for ${target.type} #${target.number} returned an incomplete payload.`
     );
   }
 

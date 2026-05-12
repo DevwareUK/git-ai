@@ -125,6 +125,16 @@ Beta commands:
 Supporting commands:
 
 - `prs setup`
+- `prs audit publish (--issue <number>|--pr <number>) --file <path> --section <name> [--local-run <path>]`
+- `prs codex issue <number>`
+- `prs codex issue batch <number> <number> [...number] [--mode unattended]`
+- `prs codex pr prepare-review <pr-number>`
+- `prs codex pr resolve-conflicts <pr-number>`
+- `prs tool issue list [--actionable] --json`
+- `prs tool issue ready <issue-number> [--all] --json`
+- `prs tool pr list [--actionable] --json`
+- `prs tool pr ready <pr-number> [--all] --json`
+- `prs tool pr prepare-review <pr-number> --json`
 - `prs commit`
 - `prs diff`
 

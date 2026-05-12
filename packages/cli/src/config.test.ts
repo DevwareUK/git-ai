@@ -150,6 +150,7 @@ describe("config helpers", () => {
       forge: {
         type: "github",
       },
+      localRuntime: undefined,
     });
   });
 
@@ -192,6 +193,28 @@ describe("config helpers", () => {
         model: "gpt-5-mini",
         baseUrl: "https://example.test/v1",
       },
+    });
+  });
+
+  it("loads local runtime readiness config from disk", () => {
+    const repoRoot = createRepoRoot();
+    writeRepositoryConfig(
+      repoRoot,
+      JSON.stringify({
+        localRuntime: {
+          type: "command",
+          url: "http://localhost:3000",
+          statusCommand: ["curl", "-fsS", "http://localhost:3000"],
+          startCommand: ["pnpm", "dev"],
+        },
+      })
+    );
+
+    expect(loadResolvedRepositoryConfig(repoRoot).localRuntime).toEqual({
+      type: "command",
+      url: "http://localhost:3000",
+      statusCommand: ["curl", "-fsS", "http://localhost:3000"],
+      startCommand: ["pnpm", "dev"],
     });
   });
 

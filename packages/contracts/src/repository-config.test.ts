@@ -2,6 +2,37 @@ import { describe, expect, it } from "vitest";
 import { RepositoryConfig, ResolvedRepositoryConfig } from "./repository-config";
 
 describe("repository config schema", () => {
+  it("accepts command-based local runtime readiness config", () => {
+    expect(
+      RepositoryConfig.parse({
+        localRuntime: {
+          type: "command",
+          url: "https://example.ddev.site",
+          statusCommand: ["ddev", "describe"],
+          startCommand: ["ddev", "start"],
+        },
+      })
+    ).toEqual({
+      localRuntime: {
+        type: "command",
+        url: "https://example.ddev.site",
+        statusCommand: ["ddev", "describe"],
+        startCommand: ["ddev", "start"],
+      },
+    });
+  });
+
+  it("rejects empty local runtime command segments", () => {
+    expect(() =>
+      RepositoryConfig.parse({
+        localRuntime: {
+          type: "command",
+          startCommand: ["ddev", ""],
+        },
+      })
+    ).toThrow();
+  });
+
   it("accepts ai.issue.useCodexSuperpowers as a boolean", () => {
     expect(
       RepositoryConfig.parse({

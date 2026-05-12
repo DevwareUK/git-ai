@@ -24,6 +24,11 @@ export type RepositoryComment = {
   isBot: boolean;
 };
 
+export type AuditTarget = {
+  type: "issue" | "pull-request";
+  number: number;
+};
+
 export type PullRequestDetails = {
   number: number;
   title: string;
@@ -85,11 +90,13 @@ export interface RepositoryForge {
   fetchIssueDetails(issueNumber: number): Promise<IssueDetails>;
   fetchIssueComments(issueNumber: number): Promise<RepositoryComment[]>;
   fetchIssuePlanComment(issueNumber: number): Promise<IssuePlanComment | undefined>;
+  fetchAuditComment(target: AuditTarget): Promise<RepositoryComment | undefined>;
   fetchPullRequestDetails(prNumber: number): Promise<PullRequestDetails>;
   listOpenPullRequestChanges(): Promise<OpenPullRequestChange[]>;
   fetchPullRequestIssueComments(prNumber: number): Promise<RepositoryComment[]>;
   fetchPullRequestReviewComments(prNumber: number): Promise<PullRequestReviewComment[]>;
   createIssuePlanComment(issueNumber: number, body: string): Promise<IssuePlanComment>;
+  createAuditComment(target: AuditTarget, body: string): Promise<RepositoryComment>;
   updateIssuePlanComment(commentId: number, body: string): Promise<IssuePlanComment>;
   updateIssueComment(commentId: number, body: string): Promise<RepositoryComment>;
   createDraftIssue(title: string, body: string): Promise<string>;
@@ -118,6 +125,12 @@ class NoopRepositoryForge implements RepositoryForge {
   async fetchIssuePlanComment(): Promise<IssuePlanComment | undefined> {
     throw new Error(
       "Repository forge support is disabled by .prs/config.json. Configure `forge.type` to enable issue workflows."
+    );
+  }
+
+  async fetchAuditComment(): Promise<RepositoryComment | undefined> {
+    throw new Error(
+      "Repository forge support is disabled by .prs/config.json. Configure `forge.type` to enable audit workflows."
     );
   }
 
@@ -154,6 +167,12 @@ class NoopRepositoryForge implements RepositoryForge {
   async createIssuePlanComment(): Promise<IssuePlanComment> {
     throw new Error(
       "Repository forge support is disabled by .prs/config.json. Configure `forge.type` to enable issue workflows."
+    );
+  }
+
+  async createAuditComment(): Promise<RepositoryComment> {
+    throw new Error(
+      "Repository forge support is disabled by .prs/config.json. Configure `forge.type` to enable audit workflows."
     );
   }
 

@@ -16158,6 +16158,7 @@ var require_dist = __commonJS({
       RepositoryFeatureSignals: () => RepositoryFeatureSignals,
       RepositoryForgeConfig: () => RepositoryForgeConfig,
       RepositoryForgeType: () => RepositoryForgeType,
+      RepositoryLocalRuntimeConfig: () => RepositoryLocalRuntimeConfig,
       RepositoryOpenAiProviderConfig: () => RepositoryOpenAiProviderConfig,
       ResolvedRepositoryConfig: () => ResolvedRepositoryConfig,
       ReviewSummaryInput: () => ReviewSummaryInput,
@@ -16550,12 +16551,19 @@ var require_dist = __commonJS({
       provider: RepositoryAiProviderConfig.optional()
     });
     var RepositoryConfigCommand = import_zod9.z.array(import_zod9.z.string().trim().min(1, "command segments must be non-empty")).min(1, "command must contain at least one segment");
+    var RepositoryLocalRuntimeConfig = import_zod9.z.object({
+      type: import_zod9.z.literal("command"),
+      url: import_zod9.z.string().trim().min(1, "localRuntime url must be non-empty").optional(),
+      statusCommand: RepositoryConfigCommand.optional(),
+      startCommand: RepositoryConfigCommand.optional()
+    });
     var RepositoryConfig = import_zod9.z.object({
       ai: RepositoryAiConfig.optional(),
       aiContext: RepositoryAiContextConfig.optional(),
       baseBranch: import_zod9.z.string().trim().min(1, "baseBranch must be non-empty").optional(),
       buildCommand: RepositoryConfigCommand.optional(),
-      forge: RepositoryForgeConfig.optional()
+      forge: RepositoryForgeConfig.optional(),
+      localRuntime: RepositoryLocalRuntimeConfig.optional()
     });
     var ResolvedRepositoryConfig = import_zod9.z.object({
       ai: import_zod9.z.object({
@@ -16575,7 +16583,8 @@ var require_dist = __commonJS({
       buildCommand: RepositoryConfigCommand,
       forge: import_zod9.z.object({
         type: RepositoryForgeType
-      })
+      }),
+      localRuntime: RepositoryLocalRuntimeConfig.optional()
     });
     var import_zod10 = require_zod();
     var ReviewSummaryItem = import_zod10.z.string().trim().min(1);
@@ -17111,7 +17120,8 @@ ${formatValidationIssues(validationIssues)}`,
         buildCommand: parsedConfig.buildCommand ?? [...DEFAULT_REPOSITORY_BUILD_COMMAND],
         forge: {
           type: parsedConfig.forge?.type ?? DEFAULT_REPOSITORY_FORGE_TYPE
-        }
+        },
+        localRuntime: parsedConfig.localRuntime
       });
     }
     var SKIP_DIRECTORIES = /* @__PURE__ */ new Set([

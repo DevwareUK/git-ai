@@ -28,6 +28,8 @@ const REPO_ROOT = resolve(__dirname, "../../..");
 const ORIGINAL_ARGV = [...process.argv];
 const cleanupTargets = new Set<string>();
 
+vi.setConfig({ testTimeout: 20000 });
+
 function getRepositoryIssueUrl(issueNumber: number): string {
   const gitEntryPath = resolve(REPO_ROOT, ".git");
   let gitConfigPath = resolve(gitEntryPath, "config");
@@ -996,6 +998,9 @@ async function loadCli(options: {
   prReviewResult?: ReturnType<typeof createPRReviewResult>;
   readlineAnswers?: string[];
   runtimeRepoRoot?: string;
+  dotenvConfigImpl?: (options?: { path?: string; quiet?: boolean }) => {
+    parsed?: Record<string, string>;
+  };
   execFileSyncImpl?: (command: string, args: string[]) => string;
   spawnSyncImpl?: (
     command: string,
@@ -1519,6 +1524,13 @@ async function loadCli(options: {
       awsDefaultRegion: process.env.AWS_DEFAULT_REGION?.trim() || undefined,
     })),
   }));
+  const dotenvConfig = options.dotenvConfigImpl ?? vi.fn(() => ({ parsed: {} }));
+  vi.doMock("dotenv", () => ({
+    default: {
+      config: dotenvConfig,
+    },
+    config: dotenvConfig,
+  }));
   vi.doMock("node:child_process", () => ({
     execFileSync,
     spawn,
@@ -1537,6 +1549,8 @@ async function loadCli(options: {
     findOverlappingPullRequests: module.findOverlappingPullRequests,
     recommendIssueBranchBase: module.recommendIssueBranchBase,
     parseFeatureBacklogCommandArgs: module.parseFeatureBacklogCommandArgs,
+    parseAuditCommandArgs: module.parseAuditCommandArgs,
+    parseCodexCommand: module.parseCodexCommand,
     parseIssueCommandArgs: module.parseIssueCommandArgs,
     parsePrCommandArgs: module.parsePrCommandArgs,
     parseReviewCommandArgs: module.parseReviewCommandArgs,
@@ -2688,6 +2702,155 @@ describe("CLI integration", () => {
     });
   });
 
+  it("parses explicit codex launcher commands", async () => {
+    process.env.GIT_AI_DISABLE_AUTO_RUN = "1";
+    const { parseCodexCommand } = await loadCli();
+
+    expect(parseCodexCommand(["codex", "issue", "77"])).toEqual({
+      action: "issue",
+      issueNumber: 77,
+    });
+    expect(parseCodexCommand(["codex", "issue", "batch", "77", "78"])).toEqual({
+      action: "issue-batch",
+      issueNumbers: [77, 78],
+    });
+    expect(parseCodexCommand(["codex", "pr", "prepare-review", "79"])).toEqual({
+      action: "pr-prepare-review",
+      prNumber: 79,
+    });
+    expect(parseCodexCommand(["codex", "pr", "resolve-conflicts", "80"])).toEqual({
+      action: "pr-resolve-conflicts",
+      prNumber: 80,
+    });
+  });
+
+  it("parses audit publish for issue artifacts", async () => {
+    process.env.GIT_AI_DISABLE_AUTO_RUN = "1";
+    const { parseAuditCommandArgs } = await loadCli();
+
+    expect(
+      parseAuditCommandArgs([
+        "audit",
+        "publish",
+        "--issue",
+        "42",
+        "--file",
+        ".prs/runs/example/design.md",
+        "--section",
+        "Spec",
+      ])
+    ).toEqual({
+      action: "publish",
+      target: { type: "issue", number: 42 },
+      filePath: ".prs/runs/example/design.md",
+      sectionName: "Spec",
+      localRun: undefined,
+    });
+  });
+
+  it("rejects audit publish without a target", async () => {
+    process.env.GIT_AI_DISABLE_AUTO_RUN = "1";
+    const { parseAuditCommandArgs } = await loadCli();
+
+    expect(() =>
+      parseAuditCommandArgs([
+        "audit",
+        "publish",
+        "--file",
+        ".prs/runs/example/design.md",
+        "--section",
+        "Spec",
+      ])
+    ).toThrow("`prs audit publish` requires exactly one of --issue or --pr.");
+  });
+
+  it("publishes audit publish artifacts to managed GitHub comments", async () => {
+    const repoRoot = createTempRepoRoot();
+    const artifactPath = resolve(repoRoot, ".prs", "runs", "example", "design.md");
+    mkdirSync(dirname(artifactPath), { recursive: true });
+    writeFileSync(artifactPath, "# Design\n\nShip the focused audit path.\n", "utf8");
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(createFetchResponse({ number: 42 }))
+      .mockResolvedValueOnce(createFetchResponse([]))
+      .mockResolvedValueOnce(createFetchResponse({ number: 42 }))
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          id: 4101,
+          body: "<!-- prs:audit -->\n# Issue #42 audit\n",
+          html_url: "https://github.com/DevwareUK/prs/issues/42#issuecomment-4101",
+          created_at: "2026-05-11T10:00:00Z",
+          updated_at: "2026-05-11T10:00:00Z",
+          user: {
+            login: "prs-bot",
+            type: "Bot",
+          },
+        })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "test-token";
+
+    const { run } = await loadCli({
+      runtimeRepoRoot: repoRoot,
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "remote" && args[1] === "get-url") {
+          return "git@github.com:DevwareUK/prs.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    process.argv = [
+      "node",
+      "prs",
+      "audit",
+      "publish",
+      "--issue",
+      "42",
+      "--file",
+      artifactPath,
+      "--section",
+      "Spec",
+      "--local-run",
+      ".prs/runs/example",
+    ];
+
+    await run();
+
+    expect(consoleLog).toHaveBeenCalledWith(
+      "Audit artifact created: https://github.com/DevwareUK/prs/issues/42#issuecomment-4101"
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "https://api.github.com/repos/DevwareUK/prs/issues/42",
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: "Bearer test-token",
+          "User-Agent": "prs-cli",
+        },
+      }
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "https://api.github.com/repos/DevwareUK/prs/issues/42",
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: "Bearer test-token",
+          "User-Agent": "prs-cli",
+        },
+      }
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body))).toMatchObject({
+      body: expect.stringContaining("## Spec"),
+    });
+  });
+
   it("parses repo-level test-backlog flags for the CLI", async () => {
     process.env.GIT_AI_DISABLE_AUTO_RUN = "1";
     const { parseTestBacklogCommandArgs } = await import("./index");
@@ -2715,6 +2878,16 @@ describe("CLI integration", () => {
     expect(options.maxIssues).toBe(4);
     expect(options.labels).toEqual(["tests", "cli", "smoke"]);
     expect(options.repoRoot).toMatch(/packages\/core$/);
+
+    const aliasOptions = parseTestBacklogCommandArgs([
+      "review",
+      "tests",
+      "--format=json",
+      "--top=2",
+    ]);
+
+    expect(aliasOptions.format).toBe("json");
+    expect(aliasOptions.top).toBe(2);
   });
 
   it("parses feature-backlog flags with an explicit repository path", async () => {
@@ -2740,6 +2913,16 @@ describe("CLI integration", () => {
     expect(options.maxIssues).toBe(4);
     expect(options.labels).toEqual(["product", "backlog", "discovery"]);
     expect(options.repoRoot).toMatch(/packages\/cli$/);
+
+    const aliasOptions = parseFeatureBacklogCommandArgs([
+      "review",
+      "features",
+      "packages/core",
+      "--top=2",
+    ]);
+
+    expect(aliasOptions.top).toBe(2);
+    expect(aliasOptions.repoRoot).toMatch(/packages\/core$/);
   });
 
   it("parses review flags for local PR review", async () => {
@@ -2763,6 +2946,15 @@ describe("CLI integration", () => {
       format: "json",
       issueNumber: 50,
     });
+
+    expect(
+      parseReviewCommandArgs(["review", "diff", "--base", "origin/main"])
+    ).toEqual({
+      base: "origin/main",
+      head: undefined,
+      format: "markdown",
+      issueNumber: undefined,
+    });
   });
 
   it("prints launch-stage command tiers for top-level help", async () => {
@@ -2775,13 +2967,18 @@ describe("CLI integration", () => {
 
     expect(stdout.output()).toContain("GitHub-first AI workflows");
     expect(stdout.output()).toContain("Start here:");
+    expect(stdout.output()).toContain("prs review tests [--top <count>]");
     expect(stdout.output()).toContain("prs pr fix-comments <pr-number>");
     expect(stdout.output()).toContain("Advanced:");
     expect(stdout.output()).toContain("Beta:");
     expect(stdout.output()).toContain("prs issue draft");
     expect(stdout.output()).toContain("prs issue refine <number>");
     expect(stdout.output()).toContain("prs pr prepare-review <pr-number>");
+    expect(stdout.output()).toContain("prs review features [repo-path]");
     expect(stdout.output()).toContain("prs pr resolve-conflicts <pr-number>");
+    expect(stdout.output()).toContain("Codex launchers:");
+    expect(stdout.output()).toContain("prs codex issue <number>");
+    expect(stdout.output()).toContain("prs codex pr prepare-review <pr-number>");
   });
 
   it("prints a deprecation notice when invoked through the legacy git-ai alias", async () => {
@@ -2811,7 +3008,7 @@ describe("CLI integration", () => {
 
     const output = stdout.output();
     expect(output).toContain("BETA WORKFLOW NOTICE");
-    expect(output).toContain("`prs feature-backlog`");
+    expect(output).toContain("`prs review features`");
     expect(output).toContain('"summary"');
     expect(output.indexOf("BETA WORKFLOW NOTICE")).toBeLessThan(
       output.indexOf('"summary"')
@@ -4927,6 +5124,329 @@ describe("CLI integration", () => {
         );
       }
     );
+  });
+
+  it("runs prs tool pr prepare-review as deterministic JSON without launching Codex", async () => {
+    const beforeRuns = listRunDirectories();
+    const branchName = "feat/tool-pr-review";
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      createFetchResponse({
+        number: 87,
+        title: "Prepare a review workspace",
+        body: "Set up a reviewer-ready local workspace for this pull request.",
+        html_url: "https://github.com/DevwareUK/prs/pull/87",
+        base: { ref: "main" },
+        head: { ref: branchName },
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { run, spawnSync } = await loadCli({
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "status") {
+          return "";
+        }
+
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/prs.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+      spawnSyncImpl: (command, args) => {
+        if (command === "gh" && args[0] === "--version") {
+          return { status: 1, error: new Error("gh is unavailable") };
+        }
+
+        if (command === "pnpm" && args[0] === "--version") {
+          return { status: 0, stdout: "9.0.0\n", stderr: "" };
+        }
+
+        if (
+          command === "git" &&
+          args[0] === "rev-parse" &&
+          args[1] === "--verify" &&
+          args[2] === `refs/heads/${branchName}`
+        ) {
+          return { status: 0, stdout: "", stderr: "" };
+        }
+
+        if (command === "git" && args[0] === "checkout" && args[1] === branchName) {
+          return { status: 0, stdout: "", stderr: "" };
+        }
+
+        if (command === "git" && args[0] === "fetch" && args[1] === "origin" && args[2] === "main") {
+          return { status: 0, stdout: "", stderr: "" };
+        }
+
+        if (
+          command === "git" &&
+          args[0] === "rev-parse" &&
+          ((args[1] === "origin/main") ||
+            (args[1] === "--verify" && args[2] === "refs/remotes/origin/main"))
+        ) {
+          return { status: 0, stdout: "base-tip-87\n", stderr: "" };
+        }
+
+        if (
+          command === "git" &&
+          args[0] === "merge-base" &&
+          args[1] === "--is-ancestor" &&
+          args[2] === "base-tip-87" &&
+          args[3] === "HEAD"
+        ) {
+          return { status: 0, stdout: "", stderr: "" };
+        }
+
+        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.env.GITHUB_TOKEN = "test-token";
+    process.argv = ["node", "prs", "tool", "pr", "prepare-review", "87", "--json"];
+    const stdout = captureStdout();
+
+    await run();
+
+    expect(stdout.output().trimStart()).toMatch(/^\{/);
+    const result = JSON.parse(stdout.output()) as {
+      status: string;
+      prNumber: number;
+      nextAction: string;
+      reviewBriefFilePath?: string;
+      snapshotFilePath?: string;
+      checkout: { source: string; branchName: string };
+    };
+    const createdRunDir = listRunDirectories().find((entry) => !beforeRuns.includes(entry));
+    if (createdRunDir) {
+      cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", createdRunDir));
+    }
+
+    expect(result).toMatchObject({
+      status: "ready",
+      prNumber: 87,
+      nextAction: "review-current-checkout",
+      checkout: {
+        source: "local-head",
+        branchName,
+      },
+    });
+    expect(result.reviewBriefFilePath).toBeUndefined();
+    expect(result.snapshotFilePath).toMatch(/pr-review-prepare\.md$/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(spawnSync).not.toHaveBeenCalledWith(
+      "codex",
+      expect.anything(),
+      expect.anything()
+    );
+  });
+
+  it("runs prs tool pr list actionable as deterministic JSON", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          login: "me",
+        })
+      )
+      .mockResolvedValueOnce(
+        createFetchResponse([
+          {
+            number: 115,
+            title: "Needs my review",
+            user: { login: "someone-else" },
+            assignees: [],
+            requested_reviewers: [{ login: "me" }],
+            head: { ref: "codex/review-me" },
+            labels: [{ name: "ready" }],
+            updated_at: "2026-05-11T10:00:00Z",
+            mergeable: true,
+          },
+          {
+            number: 116,
+            title: "Unrelated PR",
+            user: { login: "someone-else" },
+            assignees: [],
+            requested_reviewers: [],
+            head: { ref: "feature/unrelated" },
+            labels: [],
+            updated_at: "2026-05-11T11:00:00Z",
+            mergeable: true,
+          },
+        ])
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { run } = await loadCli({
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "rev-parse") {
+          return `${REPO_ROOT}\n`;
+        }
+
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/prs.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.env.GITHUB_TOKEN = "test-token";
+    process.argv = ["node", "prs", "tool", "pr", "list", "--actionable", "--json"];
+    const stdout = captureStdout();
+
+    await run();
+
+    expect(stdout.output().trimStart()).toMatch(/^\{/);
+    expect(JSON.parse(stdout.output())).toMatchObject({
+      status: "ready",
+      actionable: true,
+      currentUser: "me",
+      pullRequests: [
+        {
+          number: 115,
+          reviewRequestedFrom: ["me"],
+        },
+      ],
+      source: "github-api",
+    });
+  });
+
+  it("runs prs tool issue list actionable as deterministic JSON", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          login: "me",
+        })
+      )
+      .mockResolvedValueOnce(
+        createFetchResponse([
+          {
+            number: 151,
+            title: "Planned issue",
+            user: { login: "someone-else" },
+            assignees: [],
+            labels: [],
+            updated_at: "2026-05-12T10:00:00Z",
+          },
+          {
+            number: 152,
+            title: "Pull request returned by issues endpoint",
+            user: { login: "me" },
+            assignees: [],
+            labels: [],
+            updated_at: "2026-05-12T11:00:00Z",
+            pull_request: {},
+          },
+        ])
+      )
+      .mockResolvedValueOnce(createFetchResponse([]))
+      .mockResolvedValueOnce(
+        createFetchResponse([
+          {
+            body: "<!-- prs:issue-plan -->\nPlan",
+          },
+        ])
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { run } = await loadCli({
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "rev-parse") {
+          return `${REPO_ROOT}\n`;
+        }
+
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/prs.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.env.GITHUB_TOKEN = "test-token";
+    process.argv = ["node", "prs", "tool", "issue", "list", "--actionable", "--json"];
+    const stdout = captureStdout();
+
+    await run();
+
+    expect(stdout.output().trimStart()).toMatch(/^\{/);
+    expect(JSON.parse(stdout.output())).toMatchObject({
+      status: "ready",
+      actionable: true,
+      currentUser: "me",
+      issues: [
+        {
+          number: 151,
+          hasPrsPlan: true,
+        },
+      ],
+      source: "github-api",
+    });
+  });
+
+  it("loads repository .env before running prs tool pr list", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          login: "me",
+        })
+      )
+      .mockResolvedValueOnce(
+        createFetchResponse([
+          {
+            number: 117,
+            title: "Review me from env",
+            user: { login: "someone-else" },
+            assignees: [],
+            requested_reviewers: [{ login: "me" }],
+            head: { ref: "codex/env-token" },
+            labels: [],
+            updated_at: "2026-05-11T12:00:00Z",
+            mergeable: true,
+          },
+        ])
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const dotenvConfig = vi.fn((options?: { path?: string }) => {
+      expect(options?.path).toBe(resolve(REPO_ROOT, ".env"));
+      process.env.GITHUB_TOKEN = "test-token";
+      return { parsed: { GITHUB_TOKEN: "test-token" } };
+    });
+    const { run } = await loadCli({
+      dotenvConfigImpl: dotenvConfig,
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "rev-parse") {
+          return `${REPO_ROOT}\n`;
+        }
+
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/prs.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.argv = ["node", "prs", "tool", "pr", "list", "--actionable", "--json"];
+    const stdout = captureStdout();
+
+    await run();
+
+    expect(dotenvConfig).toHaveBeenCalledWith({ path: resolve(REPO_ROOT, ".env"), quiet: true });
+    expect(JSON.parse(stdout.output())).toMatchObject({
+      status: "ready",
+      actionable: true,
+      pullRequests: [
+        {
+          number: 117,
+          reviewRequestedFrom: ["me"],
+        },
+      ],
+    });
   });
 
   it("runs pr prepare-review, reuses the linked issue branch, and exits cleanly when follow-up makes no changes", async () => {
@@ -9964,6 +10484,272 @@ describe("CLI integration", () => {
         },
       }
     );
+  });
+
+  it("fetches audit comments through the GitHub repository forge adapter", async () => {
+    const issueNumber = 42;
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(createFetchResponse({ number: issueNumber }))
+      .mockResolvedValueOnce(
+        createFetchResponse([
+          {
+            id: 3101,
+            body: "Ordinary issue discussion.",
+            html_url: `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-3101`,
+            created_at: "2026-04-24T11:00:00Z",
+            updated_at: "2026-04-24T11:01:00Z",
+            user: {
+              login: "alice",
+              type: "User",
+            },
+          },
+          {
+            id: 3102,
+            body: "<!-- prs:audit -->\n# Issue #42 stale audit\n",
+            html_url: `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-3102`,
+            created_at: "2026-04-24T11:02:00Z",
+            updated_at: "2026-04-24T11:03:00Z",
+            user: {
+              login: "prs-bot",
+              type: "Bot",
+            },
+          },
+          {
+            id: 3103,
+            body: "<!-- prs:audit -->\n# Issue #42 newer audit\n",
+            html_url: `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-3103`,
+            created_at: "2026-04-24T10:02:00Z",
+            updated_at: "2026-04-24T11:04:00Z",
+            user: {
+              login: "prs-bot",
+              type: "Bot",
+            },
+          },
+        ])
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "test-token";
+
+    const { createGitHubRepositoryForge } = await loadGitHubForge();
+    const forge = createGitHubRepositoryForge(REPO_ROOT);
+
+    await expect(
+      (forge as any).fetchAuditComment({ type: "issue", number: issueNumber })
+    ).resolves.toEqual({
+      id: 3103,
+      body: "<!-- prs:audit -->\n# Issue #42 newer audit\n",
+      url: `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-3103`,
+      createdAt: "2026-04-24T10:02:00Z",
+      updatedAt: "2026-04-24T11:04:00Z",
+      author: "prs-bot",
+      isBot: true,
+    });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      `https://api.github.com/repos/DevwareUK/prs/issues/${issueNumber}`,
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: "Bearer test-token",
+          "User-Agent": "prs-cli",
+        },
+      }
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      `https://api.github.com/repos/DevwareUK/prs/issues/${issueNumber}/comments?per_page=100`,
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: "Bearer test-token",
+          "User-Agent": "prs-cli",
+        },
+      }
+    );
+  });
+
+  it("fetches audit comments from paginated GitHub issue comments", async () => {
+    const issueNumber = 43;
+    const ordinaryComments = Array.from({ length: 100 }, (_, index) => ({
+      id: 3300 + index,
+      body: `Ordinary comment ${index + 1}.`,
+      html_url: `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-${3300 + index}`,
+      created_at: "2026-04-24T11:00:00Z",
+      updated_at: "2026-04-24T11:00:00Z",
+      user: {
+        login: "alice",
+        type: "User",
+      },
+    }));
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(createFetchResponse({ number: issueNumber }))
+      .mockResolvedValueOnce(createFetchResponse(ordinaryComments))
+      .mockResolvedValueOnce(
+        createFetchResponse([
+          {
+            id: 3401,
+            body: "<!-- prs:audit -->\n# Issue #43 audit\n",
+            html_url: `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-3401`,
+            created_at: "2026-04-24T12:00:00Z",
+            updated_at: "2026-04-24T12:01:00Z",
+            user: {
+              login: "prs-bot",
+              type: "Bot",
+            },
+          },
+        ])
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "test-token";
+
+    const { createGitHubRepositoryForge } = await loadGitHubForge();
+    const forge = createGitHubRepositoryForge(REPO_ROOT);
+
+    await expect(
+      (forge as any).fetchAuditComment({ type: "pull-request", number: issueNumber })
+    ).resolves.toEqual({
+      id: 3401,
+      body: "<!-- prs:audit -->\n# Issue #43 audit\n",
+      url: `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-3401`,
+      createdAt: "2026-04-24T12:00:00Z",
+      updatedAt: "2026-04-24T12:01:00Z",
+      author: "prs-bot",
+      isBot: true,
+    });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      `https://api.github.com/repos/DevwareUK/prs/pulls/${issueNumber}`,
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: "Bearer test-token",
+          "User-Agent": "prs-cli",
+        },
+      }
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      `https://api.github.com/repos/DevwareUK/prs/issues/${issueNumber}/comments?per_page=100`,
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: "Bearer test-token",
+          "User-Agent": "prs-cli",
+        },
+      }
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      `https://api.github.com/repos/DevwareUK/prs/issues/${issueNumber}/comments?per_page=100&page=2`,
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: "Bearer test-token",
+          "User-Agent": "prs-cli",
+        },
+      }
+    );
+  });
+
+  it("creates audit comments through the GitHub repository forge adapter", async () => {
+    const prNumber = 88;
+    const body = "<!-- prs:audit -->\n# Pull request #88 audit\n";
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(createFetchResponse({ number: prNumber }))
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          id: 3201,
+          body,
+          html_url: `https://github.com/DevwareUK/prs/pull/${prNumber}#issuecomment-3201`,
+          created_at: "2026-04-24T12:00:00Z",
+          updated_at: "2026-04-24T12:00:00Z",
+          user: {
+            login: "prs-bot",
+            type: "Bot",
+          },
+        })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "test-token";
+
+    const { createGitHubRepositoryForge } = await loadGitHubForge();
+    const forge = createGitHubRepositoryForge(REPO_ROOT);
+
+    await expect(
+      (forge as any).createAuditComment({ type: "pull-request", number: prNumber }, body)
+    ).resolves.toEqual({
+      id: 3201,
+      body,
+      url: `https://github.com/DevwareUK/prs/pull/${prNumber}#issuecomment-3201`,
+      createdAt: "2026-04-24T12:00:00Z",
+      updatedAt: "2026-04-24T12:00:00Z",
+      author: "prs-bot",
+      isBot: true,
+    });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      `https://api.github.com/repos/DevwareUK/prs/pulls/${prNumber}`,
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: "Bearer test-token",
+          "User-Agent": "prs-cli",
+        },
+      }
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      `https://api.github.com/repos/DevwareUK/prs/issues/${prNumber}/comments`,
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          Accept: "application/vnd.github+json",
+          Authorization: "Bearer test-token",
+          "Content-Type": "application/json",
+          "User-Agent": "prs-cli",
+        }),
+      })
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
+      body,
+    });
+  });
+
+  it("rejects issue audit targets that resolve to pull requests", async () => {
+    const issueNumber = 88;
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      createFetchResponse({
+        number: issueNumber,
+        pull_request: {
+          url: `https://api.github.com/repos/DevwareUK/prs/pulls/${issueNumber}`,
+        },
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "test-token";
+
+    const { createGitHubRepositoryForge } = await loadGitHubForge();
+    const forge = createGitHubRepositoryForge(REPO_ROOT);
+
+    await expect(
+      (forge as any).fetchAuditComment({ type: "issue", number: issueNumber })
+    ).rejects.toThrow(`Use --pr ${issueNumber} for audit publication.`);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it("updates issue bodies through the GitHub repository forge adapter", async () => {
