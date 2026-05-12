@@ -1,4 +1,5 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import {
@@ -16,12 +17,31 @@ export type ManagedCodexSkill = {
 export type InstalledCodexSkillsResult = {
   root: string;
   installed: number;
+  updated: number;
+  unchanged: number;
+  skipped: {
+    filePath: string;
+    skillName: string;
+    reason: "custom-file";
+  }[];
   skillFiles: string[];
 };
 
 export type CodexSkillRenderOptions = {
   cliFallbackCommand?: string[];
 };
+
+export type ManagedCodexSkillStatus = {
+  filePath: string;
+  skillName: string;
+  status: "missing" | "current" | "stale" | "custom";
+  expectedHash: string;
+  installedHash?: string;
+};
+
+const MANAGED_SKILL_MARKER_VERSION = "1";
+const MANAGED_SKILL_MARKER_PATTERN =
+  /<!-- prs:managed-skill name="([^"]+)" version="([^"]+)" hash="([a-f0-9]+)" -->/;
 
 const SHARED_WORKFLOW_CONTRACT = [
   "## prs Workflow Contract",
@@ -94,6 +114,62 @@ function formatCliFallbackCommand(command: string[]): string | undefined {
   }
 
   return normalized.map(formatShellCommandSegment).join(" ");
+}
+
+function normalizeCliFallbackCommand(command: string[] | undefined): string[] {
+  return (command ?? []).map((segment) => segment.trim()).filter(Boolean);
+}
+
+function computeManagedSkillHash(
+  skill: ManagedCodexSkill,
+  options: CodexSkillRenderOptions
+): string {
+  const payload = JSON.stringify({
+    markerVersion: MANAGED_SKILL_MARKER_VERSION,
+    name: skill.name,
+    description: skill.description,
+    body: skill.body,
+    cliFallbackCommand: normalizeCliFallbackCommand(options.cliFallbackCommand),
+  });
+
+  return createHash("sha256").update(payload).digest("hex").slice(0, 16);
+}
+
+function renderManagedSkillMarker(
+  skill: ManagedCodexSkill,
+  options: CodexSkillRenderOptions
+): string {
+  return `<!-- prs:managed-skill name="${skill.name}" version="${MANAGED_SKILL_MARKER_VERSION}" hash="${computeManagedSkillHash(
+    skill,
+    options
+  )}" -->`;
+}
+
+function readManagedSkillMarker(content: string):
+  | {
+      name: string;
+      version: string;
+      hash: string;
+    }
+  | undefined {
+  const match = content.match(MANAGED_SKILL_MARKER_PATTERN);
+  if (!match?.[1] || !match[2] || !match[3]) {
+    return undefined;
+  }
+
+  return {
+    name: match[1],
+    version: match[2],
+    hash: match[3],
+  };
+}
+
+function isLegacyManagedSkillContent(content: string, skill: ManagedCodexSkill): boolean {
+  return (
+    content.includes(`name: ${skill.name}`) &&
+    content.includes("## prs Workflow Contract") &&
+    content.includes("prs audit publish")
+  );
 }
 
 function renderSetupCapturedCliGuidance(options: CodexSkillRenderOptions): string[] {
@@ -399,9 +475,64 @@ export function renderCodexSkillMarkdown(
     `description: ${JSON.stringify(skill.description)}`,
     "---",
     "",
+    renderManagedSkillMarker(skill, options),
+    "",
     body.trim(),
     "",
   ].join("\n");
+}
+
+export function inspectManagedCodexSkills(
+  env: { CODEX_HOME?: string } = process.env,
+  home = homedir(),
+  options: CodexSkillRenderOptions = {}
+): ManagedCodexSkillStatus[] {
+  const root = resolveCodexSkillsRoot(env, home);
+
+  return PRS_CODEX_SKILLS.map((skill) => {
+    const skillFile = resolve(root, skill.folderName, "SKILL.md");
+    const expectedHash = computeManagedSkillHash(skill, options);
+
+    if (!existsSync(skillFile)) {
+      return {
+        filePath: skillFile,
+        skillName: skill.name,
+        status: "missing",
+        expectedHash,
+      };
+    }
+
+    const content = readFileSync(skillFile, "utf8");
+    const marker = readManagedSkillMarker(content);
+    if (marker?.name === skill.name) {
+      return {
+        filePath: skillFile,
+        skillName: skill.name,
+        status:
+          marker.version === MANAGED_SKILL_MARKER_VERSION && marker.hash === expectedHash
+            ? "current"
+            : "stale",
+        expectedHash,
+        installedHash: marker.hash,
+      };
+    }
+
+    if (isLegacyManagedSkillContent(content, skill)) {
+      return {
+        filePath: skillFile,
+        skillName: skill.name,
+        status: "stale",
+        expectedHash,
+      };
+    }
+
+    return {
+      filePath: skillFile,
+      skillName: skill.name,
+      status: "custom",
+      expectedHash,
+    };
+  });
 }
 
 export function installManagedCodexSkills(
@@ -411,18 +542,48 @@ export function installManagedCodexSkills(
 ): InstalledCodexSkillsResult {
   const root = resolveCodexSkillsRoot(env, home);
   const skillFiles: string[] = [];
+  const skipped: InstalledCodexSkillsResult["skipped"] = [];
+  let installed = 0;
+  let updated = 0;
+  let unchanged = 0;
+  const statuses = inspectManagedCodexSkills(env, home, options);
 
-  for (const skill of PRS_CODEX_SKILLS) {
+  for (const [index, skill] of PRS_CODEX_SKILLS.entries()) {
     const skillDir = resolve(root, skill.folderName);
     const skillFile = resolve(skillDir, "SKILL.md");
+    const status = statuses[index];
+
+    if (status?.status === "custom") {
+      skipped.push({
+        filePath: skillFile,
+        skillName: skill.name,
+        reason: "custom-file",
+      });
+      continue;
+    }
+
+    if (status?.status === "current") {
+      unchanged += 1;
+      skillFiles.push(skillFile);
+      continue;
+    }
+
     mkdirSync(skillDir, { recursive: true });
     writeFileSync(skillFile, renderCodexSkillMarkdown(skill, options), "utf8");
+    if (status?.status === "stale") {
+      updated += 1;
+    } else {
+      installed += 1;
+    }
     skillFiles.push(skillFile);
   }
 
   return {
     root,
-    installed: skillFiles.length,
+    installed,
+    updated,
+    unchanged,
+    skipped,
     skillFiles,
   };
 }

@@ -1555,6 +1555,7 @@ async function loadCli(options: {
     parsePrCommandArgs: module.parsePrCommandArgs,
     parseReviewCommandArgs: module.parseReviewCommandArgs,
     parseSetupCommandArgs: module.parseSetupCommandArgs,
+    parseUpdateCommandArgs: module.parseUpdateCommandArgs,
     analyzeFeatureBacklog,
     analyzeTestBacklog,
     generateCommitMessage,
@@ -4702,8 +4703,16 @@ describe("CLI integration", () => {
     const { parseSetupCommandArgs } = await loadCli();
 
     expect(() => parseSetupCommandArgs(["setup", "--force"])).toThrow(
-      'Unknown setup option "--force". Usage:\n  prs setup'
+      'Unknown setup option "--force". Usage:\n  prs setup\n  prs setup --update-skills'
     );
+  });
+
+  it("parses update skills command", async () => {
+    process.env.GIT_AI_DISABLE_AUTO_RUN = "1";
+    const { parseUpdateCommandArgs } = await loadCli();
+
+    expect(parseUpdateCommandArgs(["update", "skills"])).toEqual({ action: "skills" });
+    expect(() => parseUpdateCommandArgs(["update"])).toThrow("Usage:\n  prs update skills");
   });
 
   it("filters excluded paths from commit diffs", async () => {

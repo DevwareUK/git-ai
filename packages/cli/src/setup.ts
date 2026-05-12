@@ -31,10 +31,13 @@ import {
   getRepositoryConfigPath,
   loadRepositoryConfig,
 } from "./config";
-import { installManagedCodexSkills } from "./codex-skills";
+import {
+  installManagedCodexSkills,
+  type InstalledCodexSkillsResult,
+} from "./codex-skills";
 import { getInteractiveRuntimeByType, isCodexSuperpowersAvailable } from "./runtime";
 
-const SETUP_USAGE = ["Usage:", "  prs setup"].join("\n");
+const SETUP_USAGE = ["Usage:", "  prs setup", "  prs setup --update-skills"].join("\n");
 const AGENTS_SECTION_START = SETUP_SECTION_START;
 const AGENTS_SECTION_END = SETUP_SECTION_END;
 const GIT_AI_WORKFLOW_MARKER = GENERATED_BY_SETUP_HEADER;
@@ -1866,13 +1869,24 @@ async function collectSetupAnswers(
   };
 }
 
-export function parseSetupCommandArgs(args: string[]): void {
-  if (args.length > 1) {
-    throw new Error(`Unknown setup option "${args[1]}". ${SETUP_USAGE}`);
+export type SetupCommandOptions = {
+  updateSkills: boolean;
+};
+
+export function parseSetupCommandArgs(args: string[]): SetupCommandOptions {
+  const optionArgs = args[0] === "setup" ? args.slice(1) : args;
+  if (optionArgs.length === 0) {
+    return { updateSkills: false };
   }
+
+  if (optionArgs.length === 1 && optionArgs[0] === "--update-skills") {
+    return { updateSkills: true };
+  }
+
+  throw new Error(`Unknown setup option "${optionArgs[0] ?? ""}". ${SETUP_USAGE}`);
 }
 
-function resolveCurrentCliFallbackCommand(): string[] | undefined {
+export function resolveCurrentCliFallbackCommand(): string[] | undefined {
   const rawEntrypoint = process.argv[1]?.trim();
   if (!rawEntrypoint) {
     return undefined;
@@ -1890,6 +1904,29 @@ function resolveCurrentCliFallbackCommand(): string[] | undefined {
   }
 
   return [process.execPath, entrypoint];
+}
+
+export function refreshManagedCodexSkills(options: {
+  cliFallbackCommand?: string[];
+} = {}): InstalledCodexSkillsResult {
+  return installManagedCodexSkills(undefined, undefined, {
+    cliFallbackCommand: options.cliFallbackCommand ?? resolveCurrentCliFallbackCommand(),
+  });
+}
+
+export function logManagedCodexSkillsRefreshResult(
+  result: InstalledCodexSkillsResult
+): void {
+  console.log(
+    `Refreshed prs Codex skills: ${result.installed} installed, ${result.updated} updated, ${result.unchanged} unchanged, ${result.skipped.length} skipped.`
+  );
+  console.log(`Codex skills root: ${result.root}`);
+
+  for (const skipped of result.skipped) {
+    console.log(
+      `Skipped ${skipped.filePath} because it does not look like a prs-managed skill.`
+    );
+  }
 }
 
 export async function runSetupCommand(options: {
@@ -1939,9 +1976,7 @@ export async function runSetupCommand(options: {
   }
 
   const cliFallbackCommand = options.cliFallbackCommand ?? resolveCurrentCliFallbackCommand();
-  const installedSkills = installManagedCodexSkills(undefined, undefined, {
-    cliFallbackCommand,
-  });
+  const installedSkills = refreshManagedCodexSkills({ cliFallbackCommand });
 
   console.log("");
   console.log(`Wrote ${getRepositoryConfigPath(options.repoRoot)}.`);
@@ -1983,7 +2018,9 @@ export async function runSetupCommand(options: {
     console.log(`Updated ${resolve(options.repoRoot, "AGENTS.md")}.`);
   }
 
-  console.log(`Installed prs Codex skills: ${installedSkills.installed}`);
+  console.log(
+    `Installed prs Codex skills: ${installedSkills.installed}; updated: ${installedSkills.updated}; unchanged: ${installedSkills.unchanged}; skipped: ${installedSkills.skipped.length}`
+  );
   if (cliFallbackCommand && cliFallbackCommand.length > 0) {
     console.log(`Codex fallback CLI: ${formatCommandForDisplay(cliFallbackCommand)}`);
   }

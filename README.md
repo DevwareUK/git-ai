@@ -74,6 +74,12 @@ cd /path/to/your-repo
 prs setup
 ```
 
+After upgrading the CLI, refresh the managed Codex `/prs` skills without rerunning repository setup:
+
+```bash
+prs update skills
+```
+
 For the recommended OpenAI provider path, create a `.env` file in the target repository with `OPENAI_API_KEY`. `OPENAI_MODEL` and `OPENAI_BASE_URL` are optional.
 
 Then try the safest local CLI workflows:
@@ -124,6 +130,8 @@ Beta commands:
 Supporting commands:
 
 - `prs setup`
+- `prs setup --update-skills`
+- `prs update skills`
 - `prs audit publish (--issue <number>|--pr <number>) --file <path> --section <name> [--local-run <path>]`
 - `prs codex issue <number>`
 - `prs codex issue batch <number> <number> [...number] [--mode unattended]`
