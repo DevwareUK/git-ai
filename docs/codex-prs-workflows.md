@@ -13,7 +13,7 @@ Runtime-specific behavior:
 - `prs pr prepare-review <pr-number>` always requires `codex` on `PATH`.
 - `prs pr resolve-conflicts <pr-number>` always requires `codex` on `PATH` for guided merge-conflict resolution, even though Codex only opens when the base merge conflicts.
 - `prs issue <number> --mode unattended`, multi-issue `prs issue <number> <number> ...`, and `prs issue batch ...` require `ai.runtime.type` to be `codex`.
-- Interactive local workflows such as `prs issue draft`, `prs issue refine <number>`, `prs issue <number>`, `prs pr fix-comments <pr-number>`, `prs pr fix-failing-tests <pr-number>`, and `prs pr fix-tests <pr-number>` use the configured runtime, with fallback to Codex when a configured non-default runtime is unavailable.
+- Interactive local workflows such as `prs issue refine <number>`, `prs issue <number>`, `prs pr fix-comments <pr-number>`, `prs pr fix-failing-tests <pr-number>`, and `prs pr fix-tests <pr-number>` use the configured runtime, with fallback to Codex when a configured non-default runtime is unavailable. `prs issue draft --draft-file <path>` ingests a draft from the active Codex skill context and does not launch another runtime.
 - Structured-text workflows such as `prs commit`, `prs diff`, `prs review`, issue-plan generation, commit-message generation, and PR text generation use the configured provider, defaulting to OpenAI.
 
 GitHub Actions in this repository are OpenAI-only today. They do not expose Bedrock Claude or runtime-selection inputs.
@@ -23,7 +23,7 @@ GitHub Actions in this repository are OpenAI-only today. They do not expose Bedr
 Use the local `prs` skill aliases as workflow routing, not as a separate command surface. The CLI command surface remains the source of truth:
 
 ```bash
-prs issue draft
+prs issue draft --draft-file <path>
 prs issue refine <number>
 prs issue plan <number> [--refresh]
 prs issue <number> [--mode <interactive|unattended>]
@@ -31,6 +31,8 @@ prs issue <number> <number> [...number] [--mode unattended]
 prs issue prepare <number> [--mode <local|github-action>]
 prs issue finalize <number>
 ```
+
+For `/prs create` and `/prs create issue`, keep drafting in the active Codex conversation. The skill should inspect the repository, ask any necessary clarifying questions, write the issue draft or issue-set manifest itself, and call `prs issue draft --draft-file <path>` or `prs issue draft --issue-set-file <path>` only to persist artifacts, preview the result, and create GitHub issues after approval. Use `prs issue draft --runtime` only when a human explicitly wants a separate drafting session with prompt-file context.
 
 When the Codex skill alias `/prs issue <number> --all` is requested, treat it as an operator workflow rather than a literal CLI flag. The intended end-to-end path is:
 
@@ -45,11 +47,11 @@ For one issue, the built-in `prs issue <number> --mode unattended` path prepares
 
 ## Superpowers-backed issue planning
 
-`ai.issue.useCodexSuperpowers` controls Superpowers-backed issue draft, refine, and plan workflows.
+`ai.issue.useCodexSuperpowers` controls Superpowers-backed issue refine and plan workflows, plus any explicit legacy `prs issue draft --runtime` run.
 
 When it is enabled and the selected runtime is Codex:
 
-- `prs issue draft` can use Codex Superpowers-specific instructions while keeping final drafts under `.prs/issues/` or the current draft run directory.
+- `prs issue draft --runtime` can use Codex Superpowers-specific instructions while keeping final drafts under `.prs/issues/` or the current draft run directory.
 - `prs issue refine <number>` can use Superpowers-specific instructions while keeping refined drafts and optional issue sets under `.prs/runs/<timestamp>-issue-refine-<number>/`.
 - `prs issue plan <number> [--refresh]` reserves `superpowers-spec.md` and `superpowers-plan.md` under `.prs/runs/<timestamp>-issue-plan-<number>/` and publishes a non-empty plan artifact to the managed `<!-- prs:issue-plan -->` issue comment.
 

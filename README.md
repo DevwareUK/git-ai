@@ -107,7 +107,7 @@ Primary offer commands:
 
 Advanced commands:
 
-- `prs issue draft`
+- `prs issue draft --draft-file <path>`
 - `prs issue refine <number>`
 - `prs issue plan <number> [--refresh]`
 - `prs issue <number>`
