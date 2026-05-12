@@ -31,6 +31,7 @@ Beta commands:
 Supporting commands:
 
 - `prs setup`: guided repository onboarding for `prs`
+- `prs tool issue create (--draft-file <path>|--issue-set <path>) --json`: deterministically create GitHub issues from approved local issue draft artifacts
 - `prs commit`: generate a commit message from staged changes
 - `prs diff`: summarize `git diff HEAD`
 
