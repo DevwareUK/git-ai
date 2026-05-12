@@ -1,6 +1,6 @@
 # Launch Demo Guide
 
-Use this guide when you need to show the first-offer `prs` workflows to a consulting buyer without dragging them through the full technical README.
+Use this guide when you need to show the first-offer `prs` workflows to a consulting buyer without dragging them through the full technical docs.
 
 The goal is not to prove that every automation path exists. The goal is to show a tight GitHub-first loop that earns trust in stages:
 

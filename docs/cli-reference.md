@@ -1,0 +1,367 @@
+# CLI Reference
+
+## Command tiers
+
+Run `prs help` or `prs --help` for the same tiered overview in the terminal.
+
+Primary offer commands:
+
+- `prs review`: review the current diff or a branch comparison
+- `prs pr fix-comments <pr-number>`: fix selected PR review comments with the configured interactive runtime
+- `prs pr fix-failing-tests <pr-number>`: capture failing local verification output, open the configured interactive runtime with that context, then rerun verification before commit review and safe push
+- `prs pr fix-tests <pr-number>`: implement selected AI PR test suggestions with the configured interactive runtime and their preserved task details
+- `prs test-backlog`: find high-value automated testing gaps
+
+Advanced commands:
+
+- `prs issue draft`: turn a rough idea into a structured issue draft
+- `prs issue refine <number>`: refine an existing GitHub issue into an implementation-ready specification
+- `prs issue plan <number> [--refresh]`: maintain an issue-resolution plan comment as secondary execution support
+- `prs issue <number>`: run the full local issue-to-PR workflow
+- `prs issue prepare <number>` and `prs issue finalize <number>`: split issue setup from local completion
+
+Beta commands:
+
+- `prs issue <number> <number> ...`: fan out unattended issue-to-PR runs in parallel worktrees
+- `prs issue batch ...`: compatibility alias for multi-issue unattended runs
+- `prs pr prepare-review <pr-number>`: prepare a reviewer workspace and review brief before a live Codex session
+- `prs pr resolve-conflicts <pr-number>`: sync a PR branch with its base branch and resolve conflicts in a focused Codex session
+- `prs feature-backlog`: find high-value feature opportunities
+
+Supporting commands:
+
+- `prs setup`: guided repository onboarding for `prs`
+- `prs commit`: generate a commit message from staged changes
+- `prs diff`: summarize `git diff HEAD`
+
+## CLI command reference
+
+All diff-driven and repository-analysis commands respect `.prs/config.json` `aiContext.excludePaths`.
+
+### `prs commit`
+
+```bash
+prs commit
+```
+
+Generates a commit message from the staged diff.
+
+Requirements:
+
+- staged changes must exist
+- the configured provider must be usable; with the default configuration that means `OPENAI_API_KEY`
+
+### `prs diff`
+
+```bash
+prs diff
+```
+
+Summarizes the current `git diff HEAD`.
+
+Requirements:
+
+- the repository must already have at least one commit
+- there must be changes in `git diff HEAD`
+- the configured provider must be usable; with the default configuration that means `OPENAI_API_KEY`
+
+### `prs setup`
+
+```bash
+prs setup
+```
+
+Runs a guided repository setup flow for the current Git repository. The command inspects the repo, suggests defaults for `baseBranch`, `forge.type`, `ai.runtime.type`, `ai.issue.useCodexSuperpowers`, `buildCommand`, and extra `aiContext.excludePaths`, prints the detection source for each suggestion, warns when it had to fall back because signals were missing or conflicting, and first offers a one-confirmation "use the recommended setup" path before dropping into per-field prompts when you want to customize values. It writes `.prs/config.json`, preserves any existing `ai.provider` settings already present in that file, preserves an existing explicit `ai.issue.useCodexSuperpowers` value on reruns, treats legacy `ai.issueDraft.useCodexSuperpowers` as a backward-compatible input, ensures `.prs/` is gitignored, and only touches `AGENTS.md` when you explicitly opt in to a minimal scaffold for non-obvious repository guidance.
+
+When Codex is available locally, setup also checks whether the Superpowers plugin is present under the active `CODEX_HOME` and reports whether Codex Superpowers-backed issue workflows were enabled or disabled. Setup does not install Codex plugins for you.
+
+When `forge.type` is `github`, setup can also install the recommended pull-request workflows into the target repository:
+
+- `.github/workflows/prs-pr-review.yml`
+- `.github/workflows/prs-pr-assistant.yml`
+- `.github/workflows/prs-test-suggestions.yml`
+
+Those installed workflows reference `DevwareUK/prs/actions/...@main` and require a GitHub repository secret named `OPENAI_API_KEY`. Optional repository variables: `GIT_AI_OPENAI_MODEL` and `GIT_AI_OPENAI_BASE_URL`.
+
+When you opt into the `AGENTS.md` scaffold, setup adds only placeholder prompts such as protected paths, generated files, deployment caveats, and domain rules. It intentionally does not copy repository config values like branch names or build commands into `AGENTS.md`.
+
+The setup flow still expects you to create `.env` yourself because it cannot safely write secrets like `OPENAI_API_KEY`. It also calls out the recommended GitHub/OpenAI/Codex launch path and points advanced users to `bedrock-claude` and `claude-code` as customization paths rather than parity guarantees.
+
+### `prs issue`
+
+Usage:
+
+```bash
+prs issue <number> [--mode <interactive|unattended>]
+prs issue <number> <number> [...number] [--mode unattended]
+prs issue batch <number> <number> [...number] [--mode unattended]
+prs issue draft
+prs issue refine <number>
+prs issue plan <number> [--refresh]
+prs issue prepare <number> [--mode <local|github-action>]
+prs issue finalize <number>
+```
+
+Available subcommands:
+
+| Command | What it does |
+| --- | --- |
+| `prs issue <number>` | Full local issue-to-PR flow in interactive mode. Preflights the configured forge, verification command, and `baseBranch`, fetches the configured forge issue, creates a missing managed issue plan comment before writing the runtime snapshot, checks the plan's `### Likely files` against files changed by open pull requests, then either prompts you to review or merge overlapping PRs first, branches from the recommended overlapping PR head, or continues from the configured base. It creates the issue branch, writes `.prs/` workspace files, opens the configured interactive runtime, runs the configured build command after that runtime exits, generates a proposed commit message from the completed diff for review, and then either creates the commit plus an AI-authored PR title/body or leaves the branch uncommitted. The completed diff includes tracked changes and included untracked files. Before runtime launch it prints the prepared branch and run artifact directory, reports when the runtime exits back to `prs`, and ends with a branch, commit, PR URL, manual-PR, or skipped-PR summary. Creating the pull request pushes the reviewed issue branch first. Generated PR bodies use a concise change narrative plus issue-closing references, include an `Open PR File Overlap` note when overlap was detected and the run continued, and keep reviewer-operational detail in the managed PR assistant section. |
+| `prs issue <number> --mode unattended` | Full local issue-to-PR flow in unattended mode. Requires `ai.runtime.type` to be `codex`, creates a missing managed issue plan comment before writing the runtime snapshot, checks open PR file overlap without prompting, automatically uses the recommended base branch or overlapping PR head, reuses the same per-issue branch and session state as interactive runs, launches Codex non-interactively, includes tracked changes and included untracked files in the generated commit and PR diff, commits with the generated commit message automatically, pushes the issue branch through the pull-request creation path, and then opens the pull request without prompting. If Codex and verification succeed but no included tracked or untracked files changed, the run records a skipped `no-changes` outcome instead of committing or opening a pull request. |
+| `prs issue <number> <number> [...number]` | Parallel unattended issue fan-out. Defaults to `--mode unattended`, requires at least two unique issue numbers, creates one isolated worktree per issue from the configured updated `baseBranch`, and launches each issue through the same unattended single-issue path. Parent progress stays under `.prs/batches/` and `.prs/runs/`, while each issue keeps its own `.prs/issues/<number>/session.json` and run artifacts inside its worktree. Completed no-change issues are recorded as completed/skipped `no-changes`; failed child runs are recorded independently, and the parent exits non-zero after all launched issues finish. |
+| `prs issue batch <number> <number> [...number]` | Compatibility alias for `prs issue <number> <number> [...number]`. It routes through the same parallel worktree fan-out implementation and keeps the same `.prs/batches/` state key for the ordered issue set. |
+| `prs issue draft` | Interactive issue drafting flow. Prompts for a rough idea, creates `.prs/` draft-run artifacts, launches the configured runtime so it can inspect the repository and ask targeted follow-up questions itself, and supports either one Markdown draft under `.prs/issues/` or a multi-issue set described by `.prs/runs/<timestamp>-issue-draft/issue-set.json` with draft files under that run directory. Single drafts are previewed and can be created as-is, modified in `$VISUAL`, `$EDITOR`, or `vim`, or kept on disk. Multi-issue sets are validated before any GitHub writes, previewed as a set, and after approval are created first and then updated with `## Linked Issues` sections that use the real sibling issue numbers. When `ai.issue.useCodexSuperpowers` is active, Superpowers spec/plan artifacts stay in the run directory; if a plan exists after creation, prs publishes it to the created issue or the first created issue in a set. |
+| `prs issue refine <number>` | Interactive existing-issue refinement flow. Fetches the current issue body plus comments, resumes the saved runtime session when that session is still tracked locally, otherwise asks whether to specify changes to the original requirements, defaults to no, only asks for change text when you answer yes, and starts a fresh refinement run, writes resumable state to `.prs/issues/<number>/refine-session.json` plus run artifacts to `.prs/runs/<timestamp>-issue-refine-<number>/`. The runtime may write one refined Markdown draft or a multi-issue set in `.prs/runs/<timestamp>-issue-refine-<number>/issue-set.json`. Single drafts keep the existing behavior: update a PRS-managed source issue or create one linked PRS-managed issue from a non-managed source. Multi-issue refinements are validated and reviewed as a set, then created as PRS-managed linked issues with sibling links and `Source issue: #<number>` entries; the source issue body is not overwritten. If GitHub authentication is unavailable, the refined draft or set is kept on disk instead of being applied. |
+| `prs issue plan <number> [--refresh]` | Secondary issue-execution support. By default it creates the managed implementation plan comment once and safely reuses the latest edited managed comment on later runs. Pass `--refresh` or `--update` to regenerate and update the managed comment when the issue context has changed. When `ai.issue.useCodexSuperpowers` is active, the selected runtime is Codex, and local Codex Superpowers is available, the command launches a plan-only Codex run and publishes the resulting `.prs/runs/<timestamp>-issue-plan-<number>/superpowers-plan.md` as the managed `<!-- prs:issue-plan -->` comment. If Superpowers is disabled, unavailable, or produces no plan artifact, `prs` falls back to the structured provider-generated plan. |
+| `prs issue prepare <number>` | Preflights the configured forge, verification command, and `baseBranch`, creates a missing managed issue plan comment before writing the runtime snapshot, checks the plan's `### Likely files` against files changed by open pull requests, prompts in interactive terminals when overlap remains, prepares the issue branch from the selected base, and then prints machine-readable JSON describing the run. |
+| `prs issue prepare <number> --mode github-action` | Same preparation flow, including missing-plan creation, but writes prompt instructions tailored for non-interactive GitHub Actions runs. |
+| `prs issue finalize <number>` | Generates a proposed commit message from the current repository diff, including included untracked files, lets you preview, edit, or skip it, and creates the commit only after confirmation. It does not push or open a pull request. |
+
+Important behavior:
+
+- `prs issue draft`, `prs issue plan <number> [--refresh]`, `prs issue prepare <number>`, `prs issue finalize <number>`, and full `prs issue <number>` runs print an advanced workflow notice before execution
+- `prs issue <number> <number> ...` and `prs issue batch ...` print a beta workflow notice before execution
+- `prs issue` requires a clean working tree before it starts
+- `prs issue <number>` and `prs issue prepare <number>` fail before checkout if the configured verification command cannot run from the repository root
+- `prs issue <number>` and `prs issue prepare <number>` fail before checkout if the configured base branch is missing locally, missing on `origin`, or cannot be fast-forwarded cleanly
+- multi-issue runs require at least two unique issue numbers and reject duplicate issue numbers
+- `prs issue draft` previews the generated draft in the terminal and only opens `$VISUAL`, `$EDITOR`, or `vim` when you explicitly choose modify
+- `prs issue draft` and `prs issue refine <number>` require an available interactive runtime CLI on `PATH`; if the configured non-default runtime is unavailable, `prs` falls back to `codex` when possible
+- `prs issue draft` and `prs issue refine <number>` reserve `.prs/runs/<timestamp>-.../issue-set.json`; when present, it must point only to draft files inside the same run directory and all referenced drafts must parse as issue Markdown before prs creates or updates anything remotely
+- approved multi-issue sets are created before links are injected, then each created issue is updated with a deterministic `## Linked Issues` section containing real GitHub issue numbers for `dependsOn`, `blocks`, `related`, the set `linkingStrategy`, and the source issue for refinements
+- `prs issue <number>`, `prs issue <number> --mode unattended`, `prs issue prepare <number>`, and each child of a multi-issue run create a missing managed issue plan comment before the issue snapshot is written; if a managed plan comment already exists, the latest edited comment is used unchanged
+- fresh `prs issue <number>`, `prs issue <number> --mode unattended`, `prs issue prepare <number>`, and each child of a multi-issue run compare the managed plan's concrete `### Likely files` entries with changed files from open pull requests before creating the issue branch; the check is skipped with a concise log message when the plan has no concrete likely files
+- interactive local issue runs default to reviewing or merging overlapping pull requests first; if the overlapping PRs are still open after that prompt, `prs` exits before creating the issue branch, and if you continue instead it offers the recommended branch base with an override prompt
+- unattended issue runs, multi-issue child runs, and GitHub Action prepare mode never prompt for open PR file overlap; they automatically use the recommended base and add an `Open PR File Overlap` section to generated PR bodies when overlap was detected and the run continued
+- full local and unattended issue runs record their final branch, commit, and pull request outcome in the run `metadata.json` and print a final summary with the PR URL, manual PR commands, or the reason PR creation was skipped
+- issue finalization includes untracked, non-ignored files that are not excluded by `aiContext.excludePaths` when generating commit and pull request text; excluded tracked or untracked paths do not make a run count as changed
+- true no-change unattended issue runs record `pullRequest.reason: "no-changes"` in run metadata, print the standard final issue summary, and skip `git commit`, `git push`, and pull request creation
+- when `prs issue <number>` or unattended issue execution opens a pull request for a PRS-created linked issue from `prs issue refine <source-number>`, the generated PR body includes closing references for both the linked implementation issue and the original source issue
+- `ai.issue.useCodexSuperpowers` affects `prs issue draft`, `prs issue refine <number>`, and `prs issue plan <number>` and is ignored unless the launched or selected runtime is Codex; legacy `ai.issueDraft.useCodexSuperpowers` is still accepted when the broader setting is absent
+- when `ai.issue.useCodexSuperpowers` is active, draft runs keep the final single draft at `.prs/issues/issue-draft-<timestamp>.md` or multi-issue drafts under `.prs/runs/<timestamp>-issue-draft/`, and record reserved Superpowers spec/plan artifact paths under the run directory
+- when `ai.issue.useCodexSuperpowers` is active, refine runs keep the refined single draft or multi-issue draft set under `.prs/runs/<timestamp>-issue-refine-<number>/` and record reserved Superpowers spec/plan artifact paths in the same run directory
+- when `ai.issue.useCodexSuperpowers` is active, plan runs reserve `superpowers-spec.md` and `superpowers-plan.md` under `.prs/runs/<timestamp>-issue-plan-<number>/` and publish the non-empty plan artifact to the managed issue plan comment
+- if Superpowers-backed issue workflows are enabled but local Codex Superpowers is no longer available, `prs issue draft`, `prs issue refine <number>`, and `prs issue plan <number>` print a fallback notice and continue with the standard prompt or structured provider-generated plan
+- `prs issue refine <number>` stores resumable state at `.prs/issues/<number>/refine-session.json` and keeps run-local prompt, metadata, log, and draft artifacts under `.prs/runs/<timestamp>-issue-refine-<number>/`
+- `prs issue refine <number>` resumes a saved tracked runtime session only when the saved runtime still matches, the session is still tracked, and the saved run workspace still exists; otherwise it warns and starts a fresh refinement run
+- fresh `prs issue refine <number>` runs ask whether to specify changes to the original requirements, default that prompt to no, and only include requested change text in run prompts and metadata when you answer yes
+- `prs issue refine <number>` treats the issue body as the execution source of truth and uses issue comments as refinement context only
+- approving a single refined draft updates the source issue only when that issue is already PRS-managed; otherwise `prs issue refine <number>` creates a linked PRS-managed issue and leaves the original issue body untouched
+- approving a multi-issue refinement creates linked PRS-managed implementation issues and leaves the source issue body untouched
+- declining the apply step, or running without usable GitHub authentication, keeps the refined draft on disk and records the refine session as completed without applying it remotely
+- after an approved Superpowers-backed draft or refinement, a non-empty `superpowers-plan.md` creates or updates the managed `<!-- prs:issue-plan -->` issue plan comment; missing or empty plan artifacts are logged and do not block issue creation or refinement
+- `prs issue plan <number> [--refresh]` requires issue access through the configured forge; creating or refreshing a managed plan comment also requires the configured provider plus GitHub authentication
+- `prs issue finalize <number>` requires local file changes plus a usable configured provider so it can draft the proposed commit message
+- local full issue runs require an available interactive runtime CLI on `PATH`
+- local full issue runs require the configured provider for commit and PR text generation
+- full local issue runs execute the configured `buildCommand`, defaulting to `pnpm build`
+- local full issue runs preview the proposed commit message and let you edit or skip it before committing
+- local interactive runtime prompts end with an explicit done-state summary, a short note about how to see the result or what was verified, and plain-language next steps
+- for local full issue runs, `prs` resumes the build, commit, and PR steps after you exit the runtime
+- unattended issue runs require `ai.runtime.type` to be `codex`
+- unattended single-issue and multi-issue child runs keep per-issue resume state in `.prs/issues/<number>/session.json`
+- multi-issue runs reject `--mode interactive`
+- multi-issue runs keep parent progress separately in `.prs/batches/`, record skipped `no-changes` outcomes in the batch state and summary, and skip issues already marked completed on later reruns of the same ordered issue set
+- issue preparation checks out the selected branch base and fast-forwards it from `origin`; this is the configured `baseBranch` by default, or an overlapping PR head branch when the overlap recommendation chooses a stacked issue branch
+- PR creation uses the selected issue branch base, defaulting to the configured `baseBranch` and using the overlapping PR head branch when the issue branch was prepared from that PR
+- GitHub-backed PR creation requires `gh` to be installed and authenticated
+- GitHub-backed issue plan comments require `GH_TOKEN` or `GITHUB_TOKEN`, or an authenticated `gh` session, when they are created or refreshed
+- if an issue resolution plan comment exists, `prs issue prepare <number>` and full `prs issue <number>` runs copy the latest edited plan into the generated issue snapshot
+- when `forge.type` is `github`, issue fetching uses `gh issue view` when available, otherwise the GitHub API
+- when `forge.type` is `github`, GitHub API access for issue fetching, plan comments, or issue creation uses `GH_TOKEN` or `GITHUB_TOKEN` when present
+- when `forge.type` is `github`, `prs issue draft` can create issues and `prs issue refine <number>` can create linked issues or update PRS-managed issues with either `gh`, `GH_TOKEN`, or `GITHUB_TOKEN`
+- when `forge.type` is `none`, issue and PR creation features are disabled for the repository
+
+### `prs pr`
+
+Usage:
+
+```bash
+prs pr prepare-review <pr-number>
+prs pr resolve-conflicts <pr-number>
+prs pr fix-comments <pr-number>
+prs pr fix-failing-tests <pr-number>
+prs pr fix-tests <pr-number>
+```
+
+Available subcommands:
+
+| Command | What it does |
+| --- | --- |
+| `prs pr prepare-review <pr-number>` | Fetches pull request metadata and linked issues, requires a clean working tree, preflights the configured verification command plus the live PR base branch on `origin`, checks out the best available local review branch for the PR, fetches the latest `origin/<base-branch>` tip, skips merging when the checked-out branch already contains that tip, otherwise merges the base branch into the review branch before brief generation, routes merge conflicts through an interactive Codex conflict-resolution session when needed, writes `.prs/` run artifacts, generates `review-brief.md`, prints the saved brief path plus a terminal preview, and then leaves you in an interactive Codex session on that branch for follow-up review questions or requested fixes. After that session exits, `prs` exits cleanly if there are no new reviewed commits to sync, or else runs the configured build command when there are follow-up file changes, offers the same reviewed commit-message flow used by the other local fix workflows, and pushes any new reviewed commits back to `origin/<pr-head-branch>`. |
+| `prs pr resolve-conflicts <pr-number>` | Requires a clean working tree, requires `codex` on `PATH`, preflights the configured verification command plus the live PR base branch on `origin`, checks out the PR head branch, fetches the latest `origin/<base-branch>` tip, exits without build or push when the checked-out branch already contains that tip, otherwise merges the base branch into the PR head branch, opens a focused Codex conflict-resolution session when the merge conflicts, verifies that the final branch has no in-progress merge or unmerged paths and contains the fetched base tip, runs the configured build command after a completed merge, writes `prompt.md`, `conflict-resolution-prompt.md`, `metadata.json`, and `output.log` under `.prs/runs/<timestamp>-pr-<number>-resolve-conflicts/`, and pushes the resolved branch back to `origin/<pr-head-branch>` only when `HEAD` is ahead and not behind. |
+| `prs pr fix-comments <pr-number>` | Requires a clean working tree, preflights the configured verification command, fetches pull request metadata and review comments from the configured forge, filters out obviously non-actionable comments, groups nearby threads into selectable review tasks, preserves non-trivial replies as thread context, writes richer `.prs/` run artifacts, opens the configured interactive runtime, runs the configured build command, previews a proposed commit message that you can edit, accept, or skip, and then pushes the reviewed commit back to `origin/<pr-head-branch>` when `HEAD` is ahead and not behind after fetching the latest remote head. |
+| `prs pr fix-failing-tests <pr-number>` | Requires a clean working tree, preflights the configured verification command, fetches pull request metadata and linked issues from the configured forge, runs the configured verification command before launching the runtime, exits with `Configured verification command passed. No failing test output was captured.` when it already passes, otherwise writes `.prs/runs/<timestamp>-pr-<number>-fix-failing-tests` artifacts with captured stdout and stderr, opens the configured interactive runtime with that focused context, reruns verification afterward, previews a proposed commit message that you can edit, accept, or skip, and then pushes the reviewed commit back to `origin/<pr-head-branch>` when `HEAD` is ahead and not behind after fetching the latest remote head. |
+| `prs pr fix-tests <pr-number>` | Requires a clean working tree, preflights the configured verification command, fetches pull request metadata and PR issue comments from the configured forge, finds the managed AI Test Suggestions comment, parses unchecked structured suggestion tasks including behavior, regression risk, protected paths, likely locations, edge cases, and implementation notes, writes focused `.prs/` run artifacts, opens the configured interactive runtime, runs the configured build command, previews a proposed commit message that you can edit, accept, or skip, records accepted selected suggestions as addressed in the managed PR comment, and then pushes the reviewed commit back to `origin/<pr-head-branch>` when `HEAD` is ahead and not behind after fetching the latest remote head. |
+
+Important behavior:
+
+- `prs pr prepare-review <pr-number>` prints a beta workflow notice before execution
+- `prs pr resolve-conflicts <pr-number>` prints a beta workflow notice before execution
+- `prs pr prepare-review <pr-number>` requires a clean working tree before it starts
+- `prs pr resolve-conflicts <pr-number>` requires a clean working tree before it starts
+- `prs pr fix-comments <pr-number>` requires a clean working tree before it starts
+- `prs pr fix-failing-tests <pr-number>` requires a clean working tree before it starts
+- `prs pr fix-tests <pr-number>` requires a clean working tree before it starts
+- `prs pr prepare-review <pr-number>`, `prs pr resolve-conflicts <pr-number>`, `prs pr fix-comments <pr-number>`, `prs pr fix-failing-tests <pr-number>`, and `prs pr fix-tests <pr-number>` fail early when the configured verification command cannot run from the repository root
+- `prs pr prepare-review <pr-number>` requires `codex` on `PATH`
+- `prs pr resolve-conflicts <pr-number>` requires `codex` on `PATH` for the guided conflict-resolution session
+- `prs pr prepare-review <pr-number>` validates that the live PR base branch still exists on `origin` before it checks out or fetches a review branch
+- `prs pr resolve-conflicts <pr-number>` validates that the live PR base branch still exists on `origin` before it checks out or fetches the PR head branch
+- `prs pr resolve-conflicts <pr-number>` checks out the local PR head branch when it already exists, or fetches the PR head from `origin` into a same-named local branch so it can be pushed back to `origin/<pr-head-branch>`
+- `prs pr prepare-review <pr-number>` reuses a linked issue branch when exactly one linked issue has saved local state and that branch still exists locally
+- otherwise `prs pr prepare-review <pr-number>` checks out the local PR head branch when it already exists, or fetches the PR head into a dedicated `review/pr-<pr-number>-<slug>` branch
+- after checkout, `prs pr prepare-review <pr-number>` fetches the latest `origin/<pr-base-branch>` tip and records whether the branch was already current or had to be merged with the latest base branch
+- after checkout, `prs pr resolve-conflicts <pr-number>` fetches the latest `origin/<pr-base-branch>` tip and records whether the PR branch was already current, cleanly merged, or blocked by conflicts
+- if that base-branch merge conflicts, `prs pr prepare-review <pr-number>` opens a focused Codex conflict-resolution session and only continues to review-brief generation after the merge is fully resolved
+- if the resolve-conflicts base merge conflicts, `prs pr resolve-conflicts <pr-number>` writes `conflict-resolution-prompt.md`, opens a focused Codex conflict-resolution session, and fails with recovery guidance if a merge is still in progress, unmerged paths remain, or `HEAD` does not contain the fetched base tip after Codex exits
+- `prs pr prepare-review <pr-number>` writes `prompt.md`, `metadata.json`, `output.log`, and `review-brief.md` under a timestamped `.prs/runs/` directory and may also write supporting workflow artifacts there
+- `prs pr resolve-conflicts <pr-number>` writes `prompt.md`, `conflict-resolution-prompt.md`, `metadata.json`, and `output.log` under `.prs/runs/<timestamp>-pr-<number>-resolve-conflicts/`
+- after generating the brief, `prs pr prepare-review <pr-number>` drops you into an interactive Codex shell so you can ask follow-up questions or request fixes before exiting Codex
+- after that interactive session exits, `prs pr prepare-review <pr-number>` skips build and commit review if there are no follow-up file changes, but still pushes any new reviewed commits created by the workflow, such as a base-sync merge
+- after a clean or Codex-resolved resolve-conflicts merge, `prs pr resolve-conflicts <pr-number>` runs the configured build command before pushing
+- if the follow-up session changed files, `prs pr prepare-review <pr-number>` runs the configured build command, previews a proposed commit message that you can accept, edit, or skip, and then pushes the resulting reviewed branch state back to the PR head branch when it is ahead of `origin/<pr-head-branch>`
+- after a completed resolve-conflicts merge, `prs pr resolve-conflicts <pr-number>` fetches `origin/<pr-head-branch>` and only pushes when `HEAD` is ahead and not behind; if the branch diverged or the remote head cannot be resolved, the command fails clearly and keeps the local branch state
+- when a linked issue has a live saved Codex session, `prs pr prepare-review <pr-number>` reuses it for brief generation and the follow-up interactive session; stale sessions are warned about and fall back to a fresh run
+- local PR comment-fix runs require the configured runtime CLI on `PATH`
+- local PR failing-test-fix runs require the configured runtime CLI on `PATH` only when the initial verification command fails
+- local PR test-fix runs require the configured runtime CLI on `PATH`
+- PR comment-fix and test-fix runs execute the configured `buildCommand`, defaulting to `pnpm build`; failing-test-fix runs execute it before and after the runtime when the initial run fails
+- `prs pr fix-failing-tests <pr-number>` writes `failing-tests.md`, `prompt.md`, `metadata.json`, and `output.log` under `.prs/runs/<timestamp>-pr-<number>-fix-failing-tests` after an initial verification failure; passing initial verification does not create a no-op run directory
+- `prs pr fix-tests <pr-number>` offers only unchecked AI Test Suggestions checklist items; if every managed suggestion is already checked, it exits with `All managed AI test suggestions are already addressed.`
+- after an accepted reviewed commit, `prs pr fix-tests <pr-number>` writes a hidden addressed-suggestion ledger into the managed AI Test Suggestions PR comment using the new local `HEAD` commit SHA before it pushes
+- after an accepted reviewed commit, `prs pr fix-comments <pr-number>`, `prs pr fix-failing-tests <pr-number>`, and `prs pr fix-tests <pr-number>` fetch `origin/<pr-head-branch>` and only push when `HEAD` is ahead and not behind; if the branch diverged or the remote head cannot be resolved, the command fails clearly and keeps the local commit
+- if `prs pr fix-tests <pr-number>` creates the local commit but cannot update the managed PR comment with addressed-suggestion state, it fails before pushing and keeps the local commit
+- if you decline the reviewed commit message, `prs pr fix-comments <pr-number>`, `prs pr fix-failing-tests <pr-number>`, and `prs pr fix-tests <pr-number>` leave the changes uncommitted and do not attempt a push
+- local interactive runtime prompts end with an explicit done-state summary, a short note about how to see the result or what was verified, and plain-language next steps
+- the command expects the relevant PR branch to already be checked out locally before the runtime starts editing
+- the interactive comment selector accepts numbered thread choices, grouped task choices like `g1` when available, `all`, `none`, and blank input; pressing Enter selects every individual thread
+- `prs pr fix-tests <pr-number>` accepts `all`, `none`, blank input, or a comma-separated suggestion list like `1,2`; pressing Enter selects every suggestion
+- managed AI test suggestions now carry behavior covered, regression risk, suggested test type, protected paths, suggestion-level edge cases, and a short implementation note so the selected snapshot can be used directly as implementation guidance
+- when `forge.type` is `github`, PR fetching uses `gh pr view` when available, otherwise the GitHub API
+- when `forge.type` is `github`, GitHub API access for PR metadata, review comments, and PR issue comments uses `GH_TOKEN` or `GITHUB_TOKEN` when present
+- when `forge.type` is `none`, pull request workflows are disabled for the repository
+
+### `prs review`
+
+Usage:
+
+```bash
+prs review [--base <git-ref>] [--head <git-ref>] [--format <markdown|json>]
+              [--issue-number <number>]
+```
+
+Flags:
+
+| Flag | What it does |
+| --- | --- |
+| `--base <git-ref>` | Reviews the diff from `<git-ref>...HEAD` by default, or `<git-ref>...<head>` when `--head` is also provided. Without `--base`, `prs review` uses `git diff HEAD`. |
+| `--head <git-ref>` | Optional comparison head revision. Requires `--base`. |
+| `--format markdown` | Prints a readable Markdown pre-review signal for a human reviewer, capped to the strongest reviewer-ready risks. This is the default. |
+| `--format json` | Prints the structured review payload, including higher-level findings and line-linked comments, with the combined risk set trimmed to the strongest few items. |
+| `--issue-number <number>` | Fetches the linked issue from the configured forge and includes it as review context. |
+
+Examples:
+
+```bash
+prs review
+prs review --base origin/main
+prs review --base origin/main --head HEAD --format json
+GITHUB_TOKEN=... prs review --issue-number 50
+```
+
+Important behavior:
+
+- `prs review` requires the configured provider to be usable; with the default configuration that means `OPENAI_API_KEY`
+- without `--base`, it reviews the current `git diff HEAD`
+- with `--issue-number`, the CLI fetches the issue title and body from the configured forge and grounds the review in that context
+- markdown output is optimized as a compact pre-review checklist that highlights only the top 3 to 5 reviewer-ready risks when the diff supports that many, and fewer when the diff is low risk
+- JSON output keeps the same `summary` / `findings` / `comments` structure for automation, with severity, confidence, affected file, why-this-matters context, optional suggested fixes, and right-side line numbers taken from the diff
+
+### `prs test-backlog`
+
+Usage:
+
+```bash
+prs test-backlog [--format <markdown|json>] [--top <count>]
+                     [--repo-root <path>] [--create-issues]
+                     [--max-issues <count>] [--label <name>] [--labels <a,b>]
+```
+
+Flags:
+
+| Flag | What it does |
+| --- | --- |
+| `--format markdown` | Prints a Markdown backlog report. This is the default. |
+| `--format json` | Prints a JSON payload suitable for scripting. |
+| `--top <count>` | Limits how many findings are returned. Default: `5`. |
+| `--repo-root <path>` | Analyzes a different repository root relative to the current working directory. The default is the current Git repository root. |
+| `--create-issues` | Creates or reuses issues for the highest-priority findings through the configured forge without the interactive prompt. |
+| `--max-issues <count>` | Limits how many issues are offered or created. Default: `3`, capped to `--top`. |
+| `--label <name>` | Adds a single GitHub label to created issues. Repeatable. |
+| `--labels <a,b>` | Adds a comma-separated list of GitHub labels to created issues. |
+
+Examples:
+
+```bash
+prs test-backlog
+prs test-backlog --format json --top 5
+GITHUB_TOKEN=... prs test-backlog --create-issues --max-issues 3
+prs test-backlog --label testing --label backlog
+prs test-backlog --labels testing,backlog
+```
+
+Important behavior:
+
+- reports include the current testing setup, detected frameworks, CI test integration status, and supporting evidence where available
+- when no suitable unit or integration framework is detected, the report recommends a default framework with repository-specific rationale and concise alternatives
+- CI assessment distinguishes missing, partial, and established test integration so local-only or manual-only test commands do not look fully enforced
+- mature or unsupported repository shapes can return an empty findings list instead of forcing a placeholder issue
+- Drupal repositories with custom themes or custom modules receive focused findings for repository-owned behavior even when broad theme or module tests already exist elsewhere
+- in interactive Markdown mode, after printing findings, `prs` asks whether to create GitHub issues and which numbered findings to create
+- when `--create-issues` is enabled, generated issue bodies include implementation steps, first tests to add, target paths, and acceptance criteria for focused backlog items
+- when `--create-issues` is enabled, `prs` checks for matching open issue titles first so it can reuse existing backlog items instead of creating duplicates
+- if `forge.type` is `none`, backlog issue creation is disabled for that repository
+
+### `prs feature-backlog`
+
+Usage:
+
+```bash
+prs feature-backlog [repo-path] [--format <markdown|json>] [--top <count>]
+                        [--create-issues] [--max-issues <count>]
+                        [--label <name>] [--labels <a,b>]
+```
+
+Flags:
+
+| Flag | What it does |
+| --- | --- |
+| `repo-path` | Optional repository path to analyze. Defaults to the current Git repository root. |
+| `--format markdown` | Prints a Markdown feature backlog report. This is the default. |
+| `--format json` | Prints a JSON payload suitable for scripting when issue creation is not being prompted interactively. |
+| `--top <count>` | Limits how many feature suggestions are returned. Default: `5`. |
+| `--create-issues` | Prompts you to choose one or more suggestions, then asks for issue title, extra description, and labels before creating or reusing issues through the configured forge. |
+| `--max-issues <count>` | Limits how many selected suggestions are converted into issues. Default: `3`, capped to `--top`. |
+| `--label <name>` | Adds a single default GitHub label to created issues. Repeatable. |
+| `--labels <a,b>` | Adds a comma-separated list of default GitHub labels to created issues. |
+
+Examples:
+
+```bash
+prs feature-backlog
+prs feature-backlog ../other-repo --top 3
+GITHUB_TOKEN=... prs feature-backlog . --create-issues --label product
+prs feature-backlog . --format json
+```
+
+Important behavior:
+
+- `prs feature-backlog` prints a beta workflow notice before execution
+- the repository analysis is heuristic and based on the repository structure, current product surface, and automation signals
+- with the default GitHub forge integration, `--create-issues` requires `GH_TOKEN` or `GITHUB_TOKEN`
+- feature backlog issue creation uses the analyzed repository's configured forge, so the required credentials follow that forge's issue-creation path
+- with the default GitHub forge integration, issue creation targets the analyzed repository's `origin` remote, not just the current working directory
+- before each issue is created, `prs` prompts for the final title, optional extra description, and labels
+- if an open GitHub issue already exists with the chosen title, `prs` reuses it instead of creating a duplicate
+- if `forge.type` is `none`, feature backlog issue creation is disabled for that repository
