@@ -44,13 +44,13 @@ const LAUNCH_STAGE_NOTICE_DEFINITIONS: Record<
   },
   "issue-draft": {
     tier: "advanced",
-    command: "`prs issue draft`",
+    command: "`prs issue draft --draft-file <path>`",
     reason:
-      "It depends on interactive runtime judgment and broader repository exploration to turn an idea into an implementation-ready issue.",
+      "It creates GitHub issues from skill-produced drafts and can write durable `.prs/` artifacts plus forge changes.",
     recommendedFirst:
       "`prs review`, `prs pr fix-comments <pr-number>`, or `prs review tests --top 5`.",
     constraints:
-      "Requires an available interactive runtime CLI on PATH (configured runtime or Codex fallback) and writes draft artifacts under `.prs/`.",
+      "Requires a completed issue draft from the active skill flow; `--runtime` is an explicit legacy escape hatch for opening a separate drafting session.",
   },
   "issue-finalize": {
     tier: "advanced",
