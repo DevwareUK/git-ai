@@ -192,7 +192,7 @@ The recommended Codex entrypoint is `/prs`. It is the unified workflow router ov
 - `/prs issue <number> finish`: finish work with the issue context preserved
 - `/prs pr`: interactive "actionable for me" PR picker backed by `prs tool pr list --actionable --json`
 - `/prs pr <number>`: prepare the PR in the current checkout used by the normal local runtime with `prs tool pr ready <number> --json`; if the PR head branch is locked in another worktree, the tool uses a local `review/pr-<number>` branch in the current checkout instead of moving review into that worktree
-- `/prs pr <number> --all`: take all sensible readiness steps with `prs tool pr ready <number> --all --json`; this may sync the base branch and ensure detected DDEV is running from the current checkout, but does not push, review, fix, approve, merge, or switch to an existing PR worktree
+- `/prs pr <number> --all`: take all sensible readiness steps with `prs tool pr ready <number> --all --json`; this may sync the base branch and ensure the configured local app runtime is running from the current checkout, but does not push, review, fix, approve, merge, or switch to an existing PR worktree
 - `/prs pr <number> resolve-conflicts`: resolve PR conflicts
 - `/prs pr <number> prepare-review`: run `prs tool pr prepare-review <number> --json`, leave the prepared PR branch checked out in the current repository, use the returned `snapshotFilePath` for context when useful, and continue review in the current Codex session without launching nested Codex; this deterministic tool does not generate `review-brief.md`
 - `/prs pr <number> fix-comments`: fix selected PR review comments
@@ -248,7 +248,7 @@ Supporting commands:
 - `prs tool issue list [--actionable] --json`: deterministic Codex-safe issue discovery; returns JSON and structured blocked results when GitHub auth is unavailable
 - `prs tool issue ready <issue-number> [--all] --json`: deterministic Codex-safe issue readiness; fetches issue context, writes readiness metadata, suggests a Superpowers worktree branch, and never launches Codex, commits, pushes, or opens a PR
 - `prs tool pr list [--actionable] --json`: deterministic Codex-safe PR discovery; returns JSON and structured blocked results when GitHub auth is unavailable
-- `prs tool pr ready <pr-number> [--all] --json`: deterministic Codex-safe local functional test readiness; checks out the PR in the current repository checkout, falls back to a local `review/pr-<number>` branch when the PR head branch is already checked out in another worktree, reruns safely when that review branch is already checked out, reports base freshness, optionally syncs the base branch, checks whether detected DDEV is already running before starting it with `--all`, resolves DDEV from `PATH` plus common Homebrew locations, writes metadata, and returns JSON
+- `prs tool pr ready <pr-number> [--all] --json`: deterministic Codex-safe local functional test readiness; checks out the PR in the current repository checkout, falls back to a local `review/pr-<number>` branch when the PR head branch is already checked out in another worktree, reruns safely when that review branch is already checked out, reports base freshness, optionally syncs the base branch, uses the configured `localRuntime` status/start commands to ensure the app is running with `--all`, writes metadata, and returns JSON
 - `prs tool pr prepare-review <pr-number> --json`: deterministic Codex-safe PR review preparation; checks out the PR branch in the current repository, syncs it with the latest PR base branch when possible, writes snapshot and metadata artifacts, returns JSON, sends progress logs to stderr, and never launches Codex or generates `review-brief.md`
 - `prs commit`: generate a commit message from staged changes
 - `prs diff`: summarize `git diff HEAD`
@@ -298,6 +298,12 @@ Optional repository-specific defaults live in `.prs/config.json`. `prs setup` ca
   "buildCommand": ["pnpm", "build"],
   "forge": {
     "type": "github"
+  },
+  "localRuntime": {
+    "type": "command",
+    "url": "https://example.ddev.site",
+    "statusCommand": ["ddev", "describe"],
+    "startCommand": ["ddev", "start"]
   }
 }
 ```
@@ -317,6 +323,7 @@ Supported fields:
 - `baseBranch`: base branch used by `prs issue <number>` and `prs issue prepare <number>` when switching, syncing from `origin`, and opening pull requests. If unset, the resolved default is `main`, but `prs setup` first tries the remote default branch and then prints an explicit fallback warning when it has to guess.
 - `buildCommand`: command run after the interactive runtime exits during full local `prs issue <number>`, `prs pr fix-comments <pr-number>`, and `prs pr fix-tests <pr-number>` flows, and after a clean or Codex-resolved merge during `prs pr resolve-conflicts <pr-number>`. `prs pr fix-failing-tests <pr-number>` runs it once before launching the runtime and exits without a run directory if it already passes, then reruns it after the runtime when a failure was captured. If unset, the resolved default is `["pnpm", "build"]`, but `prs setup` first tries repository-local `verify`, `build`, or `test` commands from `package.json`, `composer.json`, or PHPUnit signals and warns before falling back.
 - `forge.type`: forge integration. Use `"github"` for GitHub-backed issue and PR flows or `"none"` to disable forge-backed issue and PR features for the repository.
+- `localRuntime`: optional command-based local app readiness contract used by `prs tool pr ready <pr-number> [--all] --json`. Use `{ "type": "command", "url": "...", "statusCommand": [...], "startCommand": [...] }`. `statusCommand` should exit `0` when the app is already running; `startCommand` is run only by `--all` when the status command does not pass. `prs setup` can infer this from `.ddev/config.yaml`, but the PR readiness tool itself only consumes the generic config.
 
 Runtime and provider fallback behavior:
 

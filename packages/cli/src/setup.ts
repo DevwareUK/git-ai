@@ -8,7 +8,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { delimiter, isAbsolute, resolve } from "node:path";
 import {
   GENERATED_BY_SETUP_HEADER,
   LEGACY_ACTION_REPOSITORY,
@@ -17,6 +17,7 @@ import {
   LEGACY_SETUP_SECTION_START,
   SETUP_SECTION_END,
   SETUP_SECTION_START,
+  type RepositoryLocalRuntimeConfigType,
   type RepositoryConfigType,
 } from "@prs/contracts";
 import {
@@ -70,6 +71,8 @@ type RepositoryInspection = {
   suggestedBuildCommandSource: string;
   suggestedIssueUseCodexSuperpowers: boolean;
   suggestedIssueUseCodexSuperpowersSource: string;
+  suggestedLocalRuntime: RepositoryLocalRuntimeConfigType | undefined;
+  suggestedLocalRuntimeSource: string;
   suggestedForgeTypeSource: string;
   suggestedRuntimeType: RuntimeType;
   suggestedRuntimeTypeSource: string;
@@ -88,6 +91,7 @@ type SetupAnswers = {
   excludePaths: string[];
   forgeType: ForgeType;
   issueUseCodexSuperpowers: boolean;
+  localRuntime: RepositoryLocalRuntimeConfigType | undefined;
   runtimeType: RuntimeType;
   installGitHubWorkflows: boolean;
   updateAgents: boolean;
@@ -441,6 +445,60 @@ function detectRuntimeType(
         ? "Codex is not available on PATH yet, so interactive prs workflows would fail until you install it. Claude Code is available if you prefer to switch the runtime explicitly."
         : "Codex is not available on PATH yet, so interactive prs workflows would fail until you install it.",
     ],
+  };
+}
+
+function findCommandPath(commandName: string): string | undefined {
+  const pathEntries = [
+    ...(process.env.PATH ?? "").split(delimiter).filter(Boolean),
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+  ];
+
+  for (const pathEntry of pathEntries) {
+    const candidate = resolve(pathEntry, commandName);
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return undefined;
+}
+
+function detectLocalRuntime(
+  repoRoot: string,
+  existingConfig?: RepositoryConfigType
+): DetectionResult<RepositoryLocalRuntimeConfigType | undefined> {
+  if (existingConfig?.localRuntime) {
+    return {
+      value: existingConfig.localRuntime,
+      source: "existing .prs/config.json",
+      warnings: [],
+    };
+  }
+
+  const ddevConfigPath = resolve(repoRoot, ".ddev", "config.yaml");
+  if (!existsSync(ddevConfigPath)) {
+    return {
+      value: undefined,
+      source: "no local runtime readiness signal detected",
+      warnings: [],
+    };
+  }
+
+  const config = readFileSync(ddevConfigPath, "utf8");
+  const name = config.match(/^name:\s*([A-Za-z0-9_.-]+)/m)?.[1];
+  const ddevCommand = findCommandPath("ddev") ?? "ddev";
+
+  return {
+    value: {
+      type: "command",
+      ...(name ? { url: `https://${name}.ddev.site` } : {}),
+      statusCommand: [ddevCommand, "describe"],
+      startCommand: [ddevCommand, "start"],
+    },
+    source: ".ddev/config.yaml",
+    warnings: [],
   };
 }
 
@@ -1310,6 +1368,7 @@ function inspectRepository(
   const forgeType = detectForgeType(repoRoot, existingConfig);
   const issueUseCodexSuperpowers = detectIssueUseCodexSuperpowers(existingConfig);
   const runtimeType = detectRuntimeType(existingConfig);
+  const localRuntime = detectLocalRuntime(repoRoot, existingConfig);
   const actionableGitHubWorkflowIds = findActionableGitHubWorkflowIds(repoRoot);
   const missingGitHubWorkflowIds = findMissingGitHubWorkflowIds(repoRoot);
 
@@ -1332,6 +1391,7 @@ function inspectRepository(
     ...buildCommand.warnings,
     ...forgeType.warnings,
     ...runtimeType.warnings,
+    ...localRuntime.warnings,
   ];
 
   return {
@@ -1343,6 +1403,8 @@ function inspectRepository(
     suggestedBuildCommandSource: buildCommand.source,
     suggestedIssueUseCodexSuperpowers: issueUseCodexSuperpowers.value,
     suggestedIssueUseCodexSuperpowersSource: issueUseCodexSuperpowers.source,
+    suggestedLocalRuntime: localRuntime.value,
+    suggestedLocalRuntimeSource: localRuntime.source,
     suggestedForgeTypeSource: forgeType.source,
     suggestedRuntimeType: runtimeType.value,
     suggestedRuntimeTypeSource: runtimeType.source,
@@ -1358,6 +1420,22 @@ function inspectRepository(
 
 function renderList(values: string[]): string {
   return values.length > 0 ? values.join(", ") : "(none)";
+}
+
+function formatLocalRuntimeForDisplay(
+  localRuntime: RepositoryLocalRuntimeConfigType
+): string {
+  const parts = [
+    localRuntime.url ? `url ${localRuntime.url}` : undefined,
+    localRuntime.statusCommand
+      ? `status ${formatCommandForDisplay(localRuntime.statusCommand)}`
+      : undefined,
+    localRuntime.startCommand
+      ? `start ${formatCommandForDisplay(localRuntime.startCommand)}`
+      : undefined,
+  ].filter((part): part is string => part !== undefined);
+
+  return parts.length > 0 ? parts.join("; ") : localRuntime.type;
 }
 
 function parseCommandString(value: string): string[] {
@@ -1581,6 +1659,10 @@ function buildRepositoryConfig(
     };
   }
 
+  if (answers.localRuntime) {
+    config.localRuntime = answers.localRuntime;
+  }
+
   return config;
 }
 
@@ -1659,6 +1741,13 @@ function logInspection(repoRoot: string, inspection: RepositoryInspection): void
     `Suggested interactive runtime: ${inspection.suggestedRuntimeType} (${inspection.suggestedRuntimeTypeSource})`
   );
   console.log(
+    `Suggested local app runtime readiness: ${
+      inspection.suggestedLocalRuntime
+        ? formatLocalRuntimeForDisplay(inspection.suggestedLocalRuntime)
+        : "none"
+    } (${inspection.suggestedLocalRuntimeSource})`
+  );
+  console.log(
     `Suggested Codex Superpowers-backed issue workflows: ${
       inspection.suggestedIssueUseCodexSuperpowers ? "enabled" : "disabled"
     } (${inspection.suggestedIssueUseCodexSuperpowersSource})`
@@ -1692,6 +1781,7 @@ function buildRecommendedAnswers(inspection: RepositoryInspection): Omit<
     excludePaths: inspection.suggestedExcludePaths,
     forgeType: inspection.suggestedForgeType,
     issueUseCodexSuperpowers: inspection.suggestedIssueUseCodexSuperpowers,
+    localRuntime: inspection.suggestedLocalRuntime,
     runtimeType: inspection.suggestedRuntimeType,
   };
 }
@@ -1730,6 +1820,7 @@ async function collectCustomSetupAnswers(
     forgeType,
     issueUseCodexSuperpowers: inspection.suggestedIssueUseCodexSuperpowers,
     runtimeType,
+    localRuntime: inspection.suggestedLocalRuntime,
   };
 }
 
@@ -1862,6 +1953,11 @@ export async function runSetupCommand(options: {
   console.log(
     `Configured Codex Superpowers-backed issue workflows: ${
       answers.issueUseCodexSuperpowers ? "enabled" : "disabled"
+    }`
+  );
+  console.log(
+    `Configured local app runtime readiness: ${
+      answers.localRuntime ? formatLocalRuntimeForDisplay(answers.localRuntime) : "none"
     }`
   );
   console.log(`Configured forge integration: ${answers.forgeType}`);

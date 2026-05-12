@@ -4304,6 +4304,7 @@ async function runToolCommand(): Promise<void> {
         prNumber: toolCommand.prNumber,
         repoRoot,
         buildCommand: repositoryConfig.buildCommand,
+        localRuntime: repositoryConfig.localRuntime,
         ensureVerificationCommandAvailable,
         forge: getRepositoryForge(repoRoot),
         ensureCleanWorkingTree,

@@ -58,5 +58,6 @@ export function resolveRepositoryConfig(
     forge: {
       type: parsedConfig.forge?.type ?? DEFAULT_REPOSITORY_FORGE_TYPE,
     },
+    localRuntime: parsedConfig.localRuntime,
   });
 }

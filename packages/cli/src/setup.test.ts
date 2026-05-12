@@ -318,6 +318,44 @@ describe("setup command", () => {
     });
   });
 
+  it("writes detected DDEV readiness as generic local runtime config", async () => {
+    const repoRoot = createRepo("prs-setup-ddev-runtime-");
+    createCodexHome("prs-setup-codex-home-");
+    const binDir = resolve(repoRoot, "bin");
+    mkdirSync(resolve(repoRoot, ".ddev"), { recursive: true });
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(resolve(binDir, "ddev"), "");
+    writeFileSync(resolve(repoRoot, ".ddev", "config.yaml"), "name: fixture\n");
+
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${binDir}${originalPath ? `:${originalPath}` : ""}`;
+
+    mockChildProcess(repoRoot, {
+      "rev-parse --show-toplevel": `${repoRoot}\n`,
+      "symbolic-ref refs/remotes/origin/HEAD": "refs/remotes/origin/main\n",
+      "remote get-url origin": "git@gitlab.com:acme/drupal-site.git\n",
+    });
+
+    try {
+      await runSetupCommand({
+        promptForLine: createPrompt(["", ""]),
+        repoRoot,
+      });
+    } finally {
+      process.env.PATH = originalPath;
+    }
+
+    expect(
+      JSON.parse(readFileSync(resolve(repoRoot, ".prs", "config.json"), "utf8"))
+        .localRuntime
+    ).toEqual({
+      type: "command",
+      url: "https://fixture.ddev.site",
+      statusCommand: [resolve(binDir, "ddev"), "describe"],
+      startCommand: [resolve(binDir, "ddev"), "start"],
+    });
+  });
+
   it("rejects unexpected setup arguments", () => {
     expect(() => parseSetupCommandArgs(["setup", "--force"])).toThrow(
       'Unknown setup option "--force". Usage:\n  prs setup'

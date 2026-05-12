@@ -74,6 +74,9 @@ describe("managed prs Codex skills", () => {
       "/prs pr <number> --all`: run `prs tool pr ready <number> --all --json`"
     );
     expect(markdown).toContain(
+      "ensuring the configured local app runtime is running"
+    );
+    expect(markdown).toContain(
       "Do not push, review, fix, approve, merge, or switch to an existing PR worktree."
     );
     expect(markdown).toContain(

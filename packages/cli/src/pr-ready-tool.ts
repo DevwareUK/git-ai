@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { delimiter, resolve } from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import type { RepositoryLocalRuntimeConfigType } from "@prs/contracts";
 import { formatRunTimestamp, toRepoRelativePath } from "./run-artifacts";
 import type { PullRequestDetails, RepositoryForge } from "./forge";
 
@@ -12,9 +13,10 @@ export type PrReadyRunCommandResult = {
 
 export type PrReadyRuntime =
   | {
-      kind: "ddev";
-      status: "detected" | "not-started" | "running" | "failed";
-      startCommand: string[];
+      kind: "command";
+      status: "configured" | "not-started" | "running" | "failed";
+      startCommand?: string[];
+      statusCommand?: string[];
       url?: string;
       message?: string;
     }
@@ -106,7 +108,7 @@ type PrReadyToolOptions = {
   prNumber: number;
   repoRoot: string;
   runCommand?: (command: string, args: string[]) => PrReadyRunCommandResult;
-  runtimeCommandCandidates?: string[];
+  localRuntime?: RepositoryLocalRuntimeConfigType;
 };
 
 function defaultRunCommand(command: string, args: string[]): PrReadyRunCommandResult {
@@ -216,59 +218,22 @@ function checkoutPullRequestBranch(
   return pullRequest.headRefName;
 }
 
-function unique(values: string[]): string[] {
-  return Array.from(new Set(values));
-}
-
-function defaultDdevCommandCandidates(): string[] {
-  const pathCandidates = (process.env.PATH ?? "")
-    .split(delimiter)
-    .filter(Boolean)
-    .map((entry) => resolve(entry, "ddev"));
-
-  return unique([
-    ...pathCandidates,
-    "/opt/homebrew/bin/ddev",
-    "/usr/local/bin/ddev",
-    "ddev",
-  ]);
-}
-
-function resolveDdevCommand(candidates: string[]): string {
-  for (const candidate of candidates) {
-    if (candidate === "ddev") {
-      continue;
-    }
-    if (existsSync(candidate)) {
-      return candidate;
-    }
-  }
-
-  return "ddev";
-}
-
-function detectRuntime(
-  repoRoot: string,
-  ddevCommandCandidates = defaultDdevCommandCandidates()
-): PrReadyRuntime {
-  const ddevConfigPath = resolve(repoRoot, ".ddev", "config.yaml");
-  if (!existsSync(ddevConfigPath)) {
+function detectRuntime(localRuntime?: RepositoryLocalRuntimeConfigType): PrReadyRuntime {
+  if (!localRuntime) {
     return {
       kind: "unknown",
       status: "not-detected",
       message:
-        "No DDEV runtime was detected. Start the app with the repository's normal local runtime.",
+        "No local runtime readiness config is set. Start the app with the repository's normal local runtime.",
     };
   }
 
-  const config = readFileSync(ddevConfigPath, "utf8");
-  const name = config.match(/^name:\s*([A-Za-z0-9_.-]+)/m)?.[1];
-  const ddevCommand = resolveDdevCommand(ddevCommandCandidates);
   return {
-    kind: "ddev",
-    status: "detected",
-    startCommand: [ddevCommand, "start"],
-    url: name ? `https://${name}.ddev.site` : undefined,
+    kind: "command",
+    status: "configured",
+    startCommand: localRuntime.startCommand,
+    statusCommand: localRuntime.statusCommand,
+    url: localRuntime.url,
   };
 }
 
@@ -276,21 +241,33 @@ function startRuntime(
   runCommand: (command: string, args: string[]) => PrReadyRunCommandResult,
   runtime: PrReadyRuntime
 ): PrReadyRuntime {
-  if (runtime.kind !== "ddev") {
+  if (runtime.kind !== "command") {
     return runtime;
   }
 
-  const command = runtime.startCommand[0] ?? "ddev";
-  const statusResult = runCommand(command, ["describe"]);
-  if (statusResult.status === 0) {
+  if (runtime.statusCommand) {
+    const [command, ...args] = runtime.statusCommand;
+    const statusResult = runCommand(command, args);
+    if (statusResult.status === 0) {
+      return {
+        ...runtime,
+        status: "running",
+        message: "Local runtime is already running.",
+      };
+    }
+  }
+
+  if (!runtime.startCommand) {
     return {
       ...runtime,
-      status: "running",
-      message: "DDEV is already running.",
+      status: "failed",
+      message:
+        "Local runtime status check did not pass, and no startCommand is configured.",
     };
   }
 
-  const result = runCommand(command, ["start"]);
+  const [command, ...args] = runtime.startCommand;
+  const result = runCommand(command, args);
   if (result.status !== 0) {
     return {
       ...runtime,
@@ -410,7 +387,7 @@ export async function readyPullRequestTool(
   const runDir = createRunDir(options.repoRoot, pullRequest.number);
   const metadataFilePath = resolve(runDir, "metadata.json");
   const branchName = checkoutPullRequestBranch(runCommand, options.repoRoot, pullRequest);
-  const runtime = detectRuntime(options.repoRoot, options.runtimeCommandCandidates);
+  const runtime = detectRuntime(options.localRuntime);
   const baseSync = fetchBaseState(
     runCommand,
     options.repoRoot,
@@ -432,7 +409,7 @@ export async function readyPullRequestTool(
       metadataFilePath,
       baseSync,
       runtime:
-        runtime.kind === "ddev" ? { ...runtime, status: "not-started" } : runtime,
+        runtime.kind === "command" ? { ...runtime, status: "not-started" } : runtime,
       nextAction: "resolve-conflicts",
     };
     writeMetadata(options.repoRoot, metadataFilePath, result);
@@ -457,7 +434,7 @@ export async function readyPullRequestTool(
   }
 
   const startedRuntime = options.all ? startRuntime(runCommand, runtime) : runtime;
-  if (startedRuntime.kind === "ddev" && startedRuntime.status === "failed") {
+  if (startedRuntime.kind === "command" && startedRuntime.status === "failed") {
     result = {
       status: "blocked",
       reason: "runtime-start-failed",
@@ -475,7 +452,7 @@ export async function readyPullRequestTool(
     return result;
   }
 
-  if (!options.all && startedRuntime.kind === "ddev") {
+  if (!options.all && startedRuntime.kind === "command") {
     result = {
       status: "needs-action",
       prNumber: pullRequest.number,

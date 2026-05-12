@@ -142,7 +142,6 @@ describe("PR ready tool", () => {
       ensureCleanWorkingTree: vi.fn(),
       ensureVerificationCommandAvailable: vi.fn(),
       buildCommand: ["pnpm", "build"],
-      runtimeCommandCandidates: ["ddev"],
     });
 
     expect(result).toMatchObject({
@@ -161,10 +160,8 @@ describe("PR ready tool", () => {
     expect(calls.some((call) => call.command === "ddev")).toBe(false);
   });
 
-  it("syncs base and starts DDEV when --all is set", async () => {
+  it("syncs base and starts the configured local runtime when --all is set", async () => {
     const repoRoot = createRepo();
-    mkdirSync(resolve(repoRoot, ".ddev"), { recursive: true });
-    writeFileSync(resolve(repoRoot, ".ddev", "config.yaml"), "name: bos\n", "utf8");
     const { calls, runCommand } = createCommandRecorder({ containsBase: false });
 
     const result = await readyPullRequestTool({
@@ -176,7 +173,12 @@ describe("PR ready tool", () => {
       ensureCleanWorkingTree: vi.fn(),
       ensureVerificationCommandAvailable: vi.fn(),
       buildCommand: ["pnpm", "build"],
-      runtimeCommandCandidates: ["ddev"],
+      localRuntime: {
+        type: "command",
+        url: "https://bos.ddev.site",
+        statusCommand: ["ddev", "describe"],
+        startCommand: ["ddev", "start"],
+      },
     });
 
     expect(result).toMatchObject({
@@ -186,7 +188,7 @@ describe("PR ready tool", () => {
         status: "merged",
       },
       runtime: {
-        kind: "ddev",
+        kind: "command",
         status: "running",
         url: "https://bos.ddev.site",
         startCommand: ["ddev", "start"],
@@ -198,8 +200,6 @@ describe("PR ready tool", () => {
 
   it("uses a current-checkout review branch when the PR head branch is locked in another worktree", async () => {
     const repoRoot = createRepo();
-    mkdirSync(resolve(repoRoot, ".ddev"), { recursive: true });
-    writeFileSync(resolve(repoRoot, ".ddev", "config.yaml"), "name: bos\n", "utf8");
     const { calls, runCommand } = createCommandRecorder({
       containsBase: true,
       lockedHeadBranch: true,
@@ -214,7 +214,12 @@ describe("PR ready tool", () => {
       ensureCleanWorkingTree: vi.fn(),
       ensureVerificationCommandAvailable: vi.fn(),
       buildCommand: ["pnpm", "build"],
-      runtimeCommandCandidates: ["ddev"],
+      localRuntime: {
+        type: "command",
+        url: "https://bos.ddev.site",
+        statusCommand: ["ddev", "describe"],
+        startCommand: ["ddev", "start"],
+      },
     });
 
     expect(result).toMatchObject({
@@ -222,7 +227,7 @@ describe("PR ready tool", () => {
       branchName: "review/pr-115",
       nextAction: "browse-local-app",
       runtime: {
-        kind: "ddev",
+        kind: "command",
         status: "running",
         url: "https://bos.ddev.site",
       },
@@ -237,8 +242,6 @@ describe("PR ready tool", () => {
 
   it("reruns on the current review branch without fetching into the checked-out branch", async () => {
     const repoRoot = createRepo();
-    mkdirSync(resolve(repoRoot, ".ddev"), { recursive: true });
-    writeFileSync(resolve(repoRoot, ".ddev", "config.yaml"), "name: bos\n", "utf8");
     const { calls, runCommand } = createCommandRecorder({
       containsBase: true,
       currentBranch: "review/pr-115",
@@ -255,7 +258,12 @@ describe("PR ready tool", () => {
       ensureCleanWorkingTree: vi.fn(),
       ensureVerificationCommandAvailable: vi.fn(),
       buildCommand: ["pnpm", "build"],
-      runtimeCommandCandidates: ["ddev"],
+      localRuntime: {
+        type: "command",
+        url: "https://bos.ddev.site",
+        statusCommand: ["ddev", "describe"],
+        startCommand: ["ddev", "start"],
+      },
     });
 
     expect(result).toMatchObject({
@@ -270,10 +278,8 @@ describe("PR ready tool", () => {
     ]);
   });
 
-  it("reports an already-running DDEV runtime without starting it again", async () => {
+  it("reports an already-running local runtime without starting it again", async () => {
     const repoRoot = createRepo();
-    mkdirSync(resolve(repoRoot, ".ddev"), { recursive: true });
-    writeFileSync(resolve(repoRoot, ".ddev", "config.yaml"), "name: bos\n", "utf8");
     const { calls, runCommand } = createCommandRecorder({
       containsBase: true,
       ddevDescribeStatus: 0,
@@ -288,27 +294,30 @@ describe("PR ready tool", () => {
       ensureCleanWorkingTree: vi.fn(),
       ensureVerificationCommandAvailable: vi.fn(),
       buildCommand: ["pnpm", "build"],
-      runtimeCommandCandidates: ["ddev"],
+      localRuntime: {
+        type: "command",
+        url: "https://bos.ddev.site",
+        statusCommand: ["ddev", "describe"],
+        startCommand: ["ddev", "start"],
+      },
     });
 
     expect(result).toMatchObject({
       status: "ready",
       runtime: {
-        kind: "ddev",
+        kind: "command",
         status: "running",
-        message: "DDEV is already running.",
+        message: "Local runtime is already running.",
       },
     });
     expect(calls.some((call) => call.command.endsWith("ddev") && call.args[0] === "describe")).toBe(true);
     expect(calls.some((call) => call.command.endsWith("ddev") && call.args[0] === "start")).toBe(false);
   });
 
-  it("uses an available DDEV executable outside PATH", async () => {
+  it("runs the configured local runtime start command", async () => {
     const repoRoot = createRepo();
-    mkdirSync(resolve(repoRoot, ".ddev"), { recursive: true });
     mkdirSync(resolve(repoRoot, "bin"), { recursive: true });
     const ddevPath = resolve(repoRoot, "bin", "ddev");
-    writeFileSync(resolve(repoRoot, ".ddev", "config.yaml"), "name: bos\n", "utf8");
     writeFileSync(ddevPath, "", "utf8");
     const { calls, runCommand } = createCommandRecorder({ containsBase: true });
 
@@ -321,13 +330,18 @@ describe("PR ready tool", () => {
       ensureCleanWorkingTree: vi.fn(),
       ensureVerificationCommandAvailable: vi.fn(),
       buildCommand: ["pnpm", "build"],
-      runtimeCommandCandidates: [ddevPath],
+      localRuntime: {
+        type: "command",
+        url: "https://bos.ddev.site",
+        statusCommand: [ddevPath, "describe"],
+        startCommand: [ddevPath, "start"],
+      },
     });
 
     expect(result).toMatchObject({
       status: "ready",
       runtime: {
-        kind: "ddev",
+        kind: "command",
         status: "running",
         startCommand: [ddevPath, "start"],
       },
@@ -337,8 +351,6 @@ describe("PR ready tool", () => {
 
   it("blocks when --all base sync hits merge conflicts", async () => {
     const repoRoot = createRepo();
-    mkdirSync(resolve(repoRoot, ".ddev"), { recursive: true });
-    writeFileSync(resolve(repoRoot, ".ddev", "config.yaml"), "name: bos\n", "utf8");
     const { calls, runCommand } = createCommandRecorder({
       containsBase: false,
       mergeStatus: 1,
@@ -353,7 +365,12 @@ describe("PR ready tool", () => {
       ensureCleanWorkingTree: vi.fn(),
       ensureVerificationCommandAvailable: vi.fn(),
       buildCommand: ["pnpm", "build"],
-      runtimeCommandCandidates: ["ddev"],
+      localRuntime: {
+        type: "command",
+        url: "https://bos.ddev.site",
+        statusCommand: ["ddev", "describe"],
+        startCommand: ["ddev", "start"],
+      },
     });
 
     expect(result).toMatchObject({
@@ -361,7 +378,7 @@ describe("PR ready tool", () => {
       reason: "merge-conflicts",
       nextAction: "resolve-conflicts",
       runtime: {
-        kind: "ddev",
+        kind: "command",
         status: "not-started",
       },
     });
