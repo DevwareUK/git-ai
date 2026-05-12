@@ -427,7 +427,7 @@ describe("analyzeTestBacklog", () => {
     expect(ids).not.toContain("cli");
     expect(ids).not.toContain("core");
     expect(result.findings.find((finding) => finding.id === "prs-test-backlog-cli")?.issueTitle).toContain(
-      "prs test-backlog"
+      "prs review tests"
     );
   });
 

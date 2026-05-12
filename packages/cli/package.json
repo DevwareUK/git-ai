@@ -14,7 +14,9 @@
     "diff": "pnpm --filter @prs/cli... build && node dist/index.js diff",
     "feature-backlog": "pnpm --filter @prs/cli... build && node dist/index.js feature-backlog",
     "issue": "pnpm --filter @prs/cli... build && node dist/index.js",
-    "review": "pnpm --filter @prs/cli... build && node dist/index.js review"
+    "review": "pnpm --filter @prs/cli... build && node dist/index.js review",
+    "review-features": "pnpm --filter @prs/cli... build && node dist/index.js review features",
+    "review-tests": "pnpm --filter @prs/cli... build && node dist/index.js review tests"
   },
   "dependencies": {
     "@prs/contracts": "workspace:*",

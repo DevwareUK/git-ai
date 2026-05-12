@@ -166,7 +166,7 @@ function createTestBacklogAnalysis() {
         suggestedTestTypes: ["integration", "cli"] as const,
         relatedPaths: ["packages/cli/src/index.ts", "package.json"],
         existingCoverage: "Core backlog analysis is covered separately.",
-        issueTitle: "Add CLI integration coverage for prs test-backlog",
+        issueTitle: "Add CLI integration coverage for prs review tests",
         issueBody: "Verify JSON and markdown output plus duplicate issue reuse logic.",
       },
       {
@@ -2688,12 +2688,13 @@ describe("CLI integration", () => {
     });
   });
 
-  it("parses repo-level test-backlog flags for the CLI", async () => {
+  it("parses repo-level review tests flags for the CLI", async () => {
     process.env.GIT_AI_DISABLE_AUTO_RUN = "1";
-    const { parseTestBacklogCommandArgs } = await import("./index");
+    const { parseReviewCommandArgs } = await import("./index");
 
-    const options = parseTestBacklogCommandArgs([
-      "test-backlog",
+    const options = parseReviewCommandArgs([
+      "review",
+      "tests",
       "--format",
       "json",
       "--top",
@@ -2709,20 +2710,24 @@ describe("CLI integration", () => {
       "packages/core",
     ]);
 
-    expect(options.format).toBe("json");
-    expect(options.top).toBe(4);
-    expect(options.createIssues).toBe(true);
-    expect(options.maxIssues).toBe(4);
-    expect(options.labels).toEqual(["tests", "cli", "smoke"]);
-    expect(options.repoRoot).toMatch(/packages\/core$/);
+    expect(options).toMatchObject({
+      action: "tests",
+      format: "json",
+      top: 4,
+      createIssues: true,
+      maxIssues: 4,
+      labels: ["tests", "cli", "smoke"],
+    });
+    expect(options.action === "tests" ? options.repoRoot : "").toMatch(/packages\/core$/);
   });
 
-  it("parses feature-backlog flags with an explicit repository path", async () => {
+  it("parses review features flags with an explicit repository path", async () => {
     process.env.GIT_AI_DISABLE_AUTO_RUN = "1";
-    const { parseFeatureBacklogCommandArgs } = await loadCli();
+    const { parseReviewCommandArgs } = await loadCli();
 
-    const options = parseFeatureBacklogCommandArgs([
-      "feature-backlog",
+    const options = parseReviewCommandArgs([
+      "review",
+      "features",
       "packages/cli",
       "--format=json",
       "--top=4",
@@ -2734,12 +2739,29 @@ describe("CLI integration", () => {
       "backlog, discovery",
     ]);
 
-    expect(options.format).toBe("json");
-    expect(options.top).toBe(4);
-    expect(options.createIssues).toBe(true);
-    expect(options.maxIssues).toBe(4);
-    expect(options.labels).toEqual(["product", "backlog", "discovery"]);
-    expect(options.repoRoot).toMatch(/packages\/cli$/);
+    expect(options).toMatchObject({
+      action: "features",
+      format: "json",
+      top: 4,
+      createIssues: true,
+      maxIssues: 4,
+      labels: ["product", "backlog", "discovery"],
+    });
+    expect(options.action === "features" ? options.repoRoot : "").toMatch(/packages\/cli$/);
+  });
+
+  it("keeps legacy backlog command parsers as compatibility aliases", async () => {
+    process.env.GIT_AI_DISABLE_AUTO_RUN = "1";
+    const { parseTestBacklogCommandArgs, parseFeatureBacklogCommandArgs } = await import("./index");
+
+    expect(parseTestBacklogCommandArgs(["test-backlog", "--top", "2"])).toMatchObject({
+      action: "tests",
+      top: 2,
+    });
+    expect(parseFeatureBacklogCommandArgs(["feature-backlog", ".", "--top", "3"])).toMatchObject({
+      action: "features",
+      top: 3,
+    });
   });
 
   it("parses review flags for local PR review", async () => {
@@ -2758,6 +2780,7 @@ describe("CLI integration", () => {
     ]);
 
     expect(options).toEqual({
+      action: "pull-request",
       base: "origin/main",
       head: "HEAD",
       format: "json",
@@ -2799,19 +2822,19 @@ describe("CLI integration", () => {
     expect(stdout.output()).toContain("prs pr fix-comments <pr-number>");
   });
 
-  it("prints a beta workflow notice before feature-backlog output", async () => {
+  it("prints a beta workflow notice before review features output", async () => {
     const { run } = await loadCli({
       featureAnalysisResult: createFeatureBacklogAnalysis(),
     });
 
-    process.argv = ["node", "prs", "feature-backlog", ".", "--format", "json"];
+    process.argv = ["node", "prs", "review", "features", ".", "--format", "json"];
 
     const stdout = captureStdout();
     await run();
 
     const output = stdout.output();
     expect(output).toContain("BETA WORKFLOW NOTICE");
-    expect(output).toContain("`prs feature-backlog`");
+    expect(output).toContain("`prs review features`");
     expect(output).toContain('"summary"');
     expect(output.indexOf("BETA WORKFLOW NOTICE")).toBeLessThan(
       output.indexOf('"summary"')
@@ -4452,12 +4475,12 @@ describe("CLI integration", () => {
     });
   });
 
-  it("does not print a launch-stage notice for primary-offer test-backlog runs", async () => {
+  it("does not print a launch-stage notice for primary-offer review tests runs", async () => {
     const { run } = await loadCli({
       analysisResult: createTestBacklogAnalysis(),
     });
 
-    process.argv = ["node", "prs", "test-backlog", "--format", "json"];
+    process.argv = ["node", "prs", "review", "tests", "--format", "json"];
 
     const stdout = captureStdout();
     await run();
@@ -4612,7 +4635,7 @@ describe("CLI integration", () => {
     );
   });
 
-  it("runs test-backlog in JSON mode and reuses duplicate GitHub issues", async () => {
+  it("runs review tests in JSON mode and reuses duplicate GitHub issues", async () => {
     const analysis = createTestBacklogAnalysis();
     const fetchMock = vi
       .fn()
@@ -4657,7 +4680,8 @@ describe("CLI integration", () => {
       process.argv = [
         "node",
         "prs",
-        "test-backlog",
+        "review",
+        "tests",
         "--format",
         "json",
         "--top",
@@ -4710,14 +4734,14 @@ describe("CLI integration", () => {
     });
   });
 
-  it("renders test-backlog markdown output", async () => {
+  it("renders review tests markdown output", async () => {
     const analysis = createTestBacklogAnalysis();
     const { run, analyzeTestBacklog } = await loadCli({
       analysisResult: analysis,
     });
 
     await withoutRepositoryConfig(async () => {
-      process.argv = ["node", "prs", "test-backlog", "--top", "2"];
+      process.argv = ["node", "prs", "review", "tests", "--top", "2"];
 
       const stdout = captureStdout();
       await run();
@@ -4742,7 +4766,7 @@ describe("CLI integration", () => {
     });
   });
 
-  it("prompts to create selected test-backlog issues after interactive markdown output", async () => {
+  it("prompts to create selected review tests issues after interactive markdown output", async () => {
     const analysis = createTestBacklogAnalysis();
     const originalIsTTY = process.stdin.isTTY;
     Object.defineProperty(process.stdin, "isTTY", {
@@ -4783,7 +4807,7 @@ describe("CLI integration", () => {
 
       await withoutRepositoryConfig(async () => {
         process.env.GITHUB_TOKEN = "test-token";
-        process.argv = ["node", "prs", "test-backlog", "--top", "3"];
+        process.argv = ["node", "prs", "review", "tests", "--top", "3"];
 
         const stdout = captureStdout();
         await run();
@@ -4812,7 +4836,7 @@ describe("CLI integration", () => {
     }
   });
 
-  it("renders test-backlog markdown output when no findings are detected", async () => {
+  it("renders review tests markdown output when no findings are detected", async () => {
     const analysis = {
       ...createTestBacklogAnalysis(),
       summary: "No prioritized testing backlog gaps were detected.",
@@ -4824,7 +4848,7 @@ describe("CLI integration", () => {
     });
 
     await withoutRepositoryConfig(async () => {
-      process.argv = ["node", "prs", "test-backlog"];
+      process.argv = ["node", "prs", "review", "tests"];
 
       const stdout = captureStdout();
       await run();
@@ -7867,7 +7891,7 @@ describe("CLI integration", () => {
     );
   });
 
-  it("passes configured excludePaths into test-backlog analysis", async () => {
+  it("passes configured excludePaths into review tests analysis", async () => {
     await withRepositoryConfig(
       JSON.stringify(
         {
@@ -7884,7 +7908,7 @@ describe("CLI integration", () => {
           analysisResult: analysis,
         });
 
-        process.argv = ["node", "prs", "test-backlog", "--top", "1"];
+        process.argv = ["node", "prs", "review", "tests", "--top", "1"];
 
         const stdout = captureStdout();
         await run();
@@ -7906,21 +7930,21 @@ describe("CLI integration", () => {
     );
   });
 
-  it("fails test-backlog issue creation clearly when no GitHub token is configured", async () => {
+  it("fails review tests issue creation clearly when no GitHub token is configured", async () => {
     const { run } = await loadCli({
       analysisResult: createTestBacklogAnalysis(),
     });
 
     process.env.GITHUB_TOKEN = "";
     process.env.GH_TOKEN = "";
-    process.argv = ["node", "prs", "test-backlog", "--create-issues"];
+    process.argv = ["node", "prs", "review", "tests", "--create-issues"];
 
     await expect(run()).rejects.toThrow(
       "Creating GitHub issues requires GH_TOKEN or GITHUB_TOKEN to be set."
     );
   });
 
-  it("runs feature-backlog in JSON mode and prompts for issue details before creating issues", async () => {
+  it("runs review features in JSON mode and prompts for issue details before creating issues", async () => {
     const analysis = createFeatureBacklogAnalysis();
     const fetchMock = vi
       .fn()
@@ -7970,7 +7994,8 @@ describe("CLI integration", () => {
       process.argv = [
         "node",
         "prs",
-        "feature-backlog",
+        "review",
+        "features",
         ".",
         "--format",
         "json",
@@ -8016,14 +8041,14 @@ describe("CLI integration", () => {
     });
   });
 
-  it("renders feature-backlog markdown output", async () => {
+  it("renders review features markdown output", async () => {
     const analysis = createFeatureBacklogAnalysis();
     const { run, analyzeFeatureBacklog } = await loadCli({
       featureAnalysisResult: analysis,
     });
 
     await withoutRepositoryConfig(async () => {
-      process.argv = ["node", "prs", "feature-backlog", ".", "--top", "2"];
+      process.argv = ["node", "prs", "review", "features", ".", "--top", "2"];
 
       const stdout = captureStdout();
       await run();
@@ -14664,7 +14689,7 @@ describe("CLI integration", () => {
         analysisResult: createTestBacklogAnalysis(),
       });
 
-      process.argv = ["node", "prs", "test-backlog", "--create-issues"];
+      process.argv = ["node", "prs", "review", "tests", "--create-issues"];
 
       await expect(run()).rejects.toThrow("Failed to parse .prs/config.json");
     });
@@ -14678,7 +14703,7 @@ describe("CLI integration", () => {
           analysisResult: createTestBacklogAnalysis(),
         });
 
-        process.argv = ["node", "prs", "test-backlog", "--create-issues"];
+        process.argv = ["node", "prs", "review", "tests", "--create-issues"];
 
         await expect(run()).rejects.toThrow("Invalid .prs/config.json");
       }
@@ -14693,7 +14718,7 @@ describe("CLI integration", () => {
           analysisResult: createTestBacklogAnalysis(),
         });
 
-        process.argv = ["node", "prs", "test-backlog", "--create-issues"];
+        process.argv = ["node", "prs", "review", "tests", "--create-issues"];
 
         await expect(run()).rejects.toThrow("Invalid .prs/config.json");
       }
@@ -14738,7 +14763,7 @@ describe("CLI integration", () => {
           analysisResult: createTestBacklogAnalysis(),
         });
 
-        process.argv = ["node", "prs", "test-backlog", "--create-issues"];
+        process.argv = ["node", "prs", "review", "tests", "--create-issues"];
 
         await expect(run()).rejects.toThrow(
           "Repository forge support is disabled by .prs/config.json"

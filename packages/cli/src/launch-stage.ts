@@ -1,5 +1,6 @@
 export type LaunchStageNoticeId =
   | "feature-backlog"
+  | "review-features"
   | "issue-batch"
   | "issue-draft"
   | "issue-finalize"
@@ -27,8 +28,17 @@ const LAUNCH_STAGE_NOTICE_DEFINITIONS: Record<
     tier: "beta",
     command: "`prs feature-backlog`",
     reason:
+      "Legacy alias for repository-wide feature discovery; `prs review features` is the canonical command.",
+    recommendedFirst: "`prs review features`, `prs review tests --top 5`, or `prs review`.",
+    constraints:
+      "Scans the target repository heuristically; optional issue creation uses the configured forge and needs issue-creation access.",
+  },
+  "review-features": {
+    tier: "beta",
+    command: "`prs review features`",
+    reason:
       "Repository-wide feature discovery is still a higher-variance workflow than the primary review and testing paths.",
-    recommendedFirst: "`prs test-backlog --top 5` or `prs review`.",
+    recommendedFirst: "`prs review tests --top 5` or `prs review`.",
     constraints:
       "Scans the target repository heuristically; optional issue creation uses the configured forge and needs issue-creation access.",
   },
@@ -48,7 +58,7 @@ const LAUNCH_STAGE_NOTICE_DEFINITIONS: Record<
     reason:
       "It depends on interactive runtime judgment and broader repository exploration to turn an idea into an implementation-ready issue.",
     recommendedFirst:
-      "`prs review`, `prs pr fix-comments <pr-number>`, or `prs test-backlog --top 5`.",
+      "`prs review`, `prs pr fix-comments <pr-number>`, or `prs review tests --top 5`.",
     constraints:
       "Requires an available interactive runtime CLI on PATH (configured runtime or Codex fallback) and writes draft artifacts under `.prs/`.",
   },

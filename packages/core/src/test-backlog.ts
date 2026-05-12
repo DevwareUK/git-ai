@@ -557,8 +557,8 @@ function buildComponents(snapshot: RepositorySnapshot, setup: LocalTestingSetup)
   if (snapshot.packageDirs.includes("packages/cli") || snapshot.rootHasCli) {
     components.push({
       id: "prs-test-backlog-cli",
-      title: "CLI coverage for `prs test-backlog` output and issue creation",
-      issueTitle: "Add CLI coverage for `prs test-backlog` output and issue creation",
+      title: "CLI coverage for `prs review tests` output and issue creation",
+      issueTitle: "Add CLI coverage for `prs review tests` output and issue creation",
       kind: "cli",
       relatedPaths: existingPaths(snapshot, [
         "packages/cli/src/index.ts",
@@ -569,21 +569,21 @@ function buildComponents(snapshot: RepositorySnapshot, setup: LocalTestingSetup)
         "packages/cli/src/index.test",
       ]),
       rationale:
-        "`prs test-backlog` is a user-facing command whose markdown, JSON, and GitHub issue creation output must stay stable as the analyzer becomes more opinionated.",
+        "`prs review tests` is a user-facing command whose markdown, JSON, and GitHub issue creation output must stay stable as the analyzer becomes more opinionated.",
       repoFit:
         "This repository exposes the backlog analyzer through the CLI and can test formatting and duplicate issue reuse at the command boundary without live GitHub calls.",
       implementationPlan: [
         `Use ${unitFramework} to exercise the CLI against fixture repositories and mocked environment variables instead of relying on broad end-to-end tests first.`,
-        "Cover `test-backlog` option parsing, markdown/json formatting, and duplicate-issue reuse logic with GitHub API calls mocked at the boundary.",
+        "Cover `prs review tests` option parsing, markdown/json formatting, and duplicate-issue reuse logic with GitHub API calls mocked at the boundary.",
       ],
       starterTests: [
-        "`prs test-backlog --format json --top 3` returns stable JSON and preserves the generated issue titles and issue bodies.",
-        "`prs test-backlog` markdown prints setup status, CI status, recommendations, and draft issue titles.",
-        "`prs test-backlog --create-issues` reuses matching open issues before creating new ones.",
+        "`prs review tests --format json --top 3` returns stable JSON and preserves the generated issue titles and issue bodies.",
+        "`prs review tests` markdown prints setup status, CI status, recommendations, and draft issue titles.",
+        "`prs review tests --create-issues` reuses matching open issues before creating new ones.",
       ],
       acceptanceCriteria: [
         "CLI coverage runs in-process or via lightweight child-process wrappers without requiring live GitHub or OpenAI calls.",
-        "The tests assert success and failure paths for `test-backlog` argument parsing, output rendering, and issue creation.",
+        "The tests assert success and failure paths for `prs review tests` argument parsing, output rendering, and issue creation.",
         "The suite is wired into the repo-level test command.",
       ],
       suggestedTestTypes: ["cli", "integration"],
@@ -607,7 +607,7 @@ function buildComponents(snapshot: RepositorySnapshot, setup: LocalTestingSetup)
       rationale:
         "`prs issue` prepares and finalizes branch, artifact, and workflow state. Regressions here can block the handoff from an issue snapshot to an implementation branch.",
       repoFit:
-        "The repository already separates issue workflow helpers under `packages/cli/src/workflows`, so a focused CLI suite can cover orchestration without mixing in test-backlog behavior.",
+        "The repository already separates issue workflow helpers under `packages/cli/src/workflows`, so a focused CLI suite can cover orchestration without mixing in review tests behavior.",
       implementationPlan: [
         `Use ${unitFramework} fixtures to exercise \`prs issue prepare\` and \`prs issue finalize\` with mocked git and GitHub boundaries.`,
         "Assert run artifact creation, branch naming, prompt file paths, and clear failure messages for incomplete state.",
@@ -621,7 +621,7 @@ function buildComponents(snapshot: RepositorySnapshot, setup: LocalTestingSetup)
       acceptanceCriteria: [
         "Tests cover at least one success path and one failure path for issue preparation.",
         "Tests cover finalize preflight failures without requiring live GitHub or model calls.",
-        "`prs issue` coverage is separate from `prs test-backlog` coverage.",
+        "`prs issue` coverage is separate from `prs review tests` coverage.",
       ],
       suggestedTestTypes: ["cli", "integration"],
     });
@@ -857,7 +857,7 @@ function buildComponents(snapshot: RepositorySnapshot, setup: LocalTestingSetup)
       ],
       starterTests: [
         "The issue-to-pr workflow still builds the CLI before invoking `prs issue prepare`.",
-        "The test-backlog workflow still publishes the generated report after running the CLI.",
+        "The review tests workflow still publishes the generated report after running the CLI.",
       ],
       acceptanceCriteria: [
         "Workflow coverage focuses on protecting critical shell orchestration, not generic YAML snapshots.",
@@ -1025,7 +1025,7 @@ function buildInitialFrameworkFinding(
     acceptanceCriteria: [
       "The repository has a single documented default test framework and a root-level test command.",
       "At least one fast baseline test runs successfully in CI and locally.",
-      "New findings generated by `prs test-backlog` no longer describe the repo as lacking a test framework.",
+      "New findings generated by `prs review tests` no longer describe the repo as lacking a test framework.",
     ],
     alternatives: recommendation?.alternatives,
   };
