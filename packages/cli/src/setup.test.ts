@@ -221,7 +221,7 @@ describe("setup command", () => {
     expect(testSuggestionsWorkflow).toContain("github-script");
     expect(testSuggestionsWorkflow).toContain("updateComment");
     expect(testSuggestionsWorkflow).toContain("createComment");
-    expect(messages.join("\n")).toContain("Installed prs Codex skills: 10");
+    expect(messages.join("\n")).toContain("Installed prs Codex skills: 11");
     expect(messages.join("\n")).toContain(
       "Codex fallback CLI: /usr/local/bin/node /Users/tester/Projects/prs/packages/cli/dist/index.js"
     );

@@ -390,6 +390,7 @@ const ISSUE_USAGE = [
 const TEST_BACKLOG_USAGE = [
   "Usage:",
   "  prs test-backlog [--format <markdown|json>] [--top <count>]",
+  "  prs review tests [--format <markdown|json>] [--top <count>]",
   "                       [--repo-root <path>] [--create-issues]",
   "                       [--max-issues <count>] [--label <name>] [--labels <a,b>]",
 ].join("\n");
@@ -397,6 +398,7 @@ const TEST_BACKLOG_USAGE = [
 const FEATURE_BACKLOG_USAGE = [
   "Usage:",
   "  prs feature-backlog [repo-path] [--format <markdown|json>] [--top <count>]",
+  "  prs review features [repo-path] [--format <markdown|json>] [--top <count>]",
   "                          [--create-issues] [--max-issues <count>]",
   "                          [--label <name>] [--labels <a,b>]",
 ].join("\n");
@@ -405,6 +407,10 @@ const REVIEW_USAGE = [
   "Usage:",
   "  prs review [--base <git-ref>] [--head <git-ref>] [--format <markdown|json>]",
   "                [--issue-number <number>]",
+  "  prs review diff [--base <git-ref>] [--head <git-ref>] [--format <markdown|json>]",
+  "                  [--issue-number <number>]",
+  "  prs review tests [test-backlog options]",
+  "  prs review features [feature-backlog options]",
 ].join("\n");
 
 const AUDIT_PUBLISH_USAGE =
@@ -420,7 +426,7 @@ const TOP_LEVEL_HELP = [
   "  prs pr fix-comments <pr-number>",
   "  prs pr fix-failing-tests <pr-number>",
   "  prs pr fix-tests <pr-number>",
-  "  prs test-backlog [--top <count>]",
+  "  prs review tests [--top <count>]",
   "",
   "Advanced:",
   "  prs issue draft",
@@ -434,7 +440,7 @@ const TOP_LEVEL_HELP = [
   "  prs issue batch <number> <number> [...number] [--mode unattended]",
   "  prs pr prepare-review <pr-number>",
   "  prs pr resolve-conflicts <pr-number>",
-  "  prs feature-backlog [repo-path]",
+  "  prs review features [repo-path]",
   "",
   "Codex launchers:",
   "  prs codex issue <number>",
@@ -449,6 +455,8 @@ const TOP_LEVEL_HELP = [
   "  prs tool pr list [--actionable] --json",
   "  prs tool pr ready <pr-number> [--all] --json",
   "  prs tool pr prepare-review <pr-number> --json",
+  "  prs test-backlog [--top <count>]",
+  "  prs feature-backlog [repo-path]",
   "  prs audit publish (--issue <number>|--pr <number>) --file <path> --section <name> [--local-run <path>]",
   "  prs commit",
   "  prs diff",
@@ -1121,7 +1129,11 @@ function parsePositiveInteger(value: string | undefined, flagName: string): numb
 }
 
 export function parseTestBacklogCommandArgs(args: string[]): TestBacklogCommandOptions {
-  const optionArgs = args.slice(1);
+  const normalizedArgs =
+    args[0] === "review" && args[1] === "tests"
+      ? ["test-backlog", ...args.slice(2)]
+      : args;
+  const optionArgs = normalizedArgs.slice(1);
   let repoRoot = getDefaultRepoRoot();
   let format: BacklogOutputFormat = "markdown";
   let top = 5;
@@ -1249,7 +1261,11 @@ export function parseTestBacklogCommandArgs(args: string[]): TestBacklogCommandO
 }
 
 export function parseFeatureBacklogCommandArgs(args: string[]): FeatureBacklogCommandOptions {
-  const optionArgs = args.slice(1);
+  const normalizedArgs =
+    args[0] === "review" && args[1] === "features"
+      ? ["feature-backlog", ...args.slice(2)]
+      : args;
+  const optionArgs = normalizedArgs.slice(1);
   let repoRoot = getDefaultRepoRoot();
   let format: BacklogOutputFormat = "markdown";
   let top = 5;
@@ -1369,7 +1385,9 @@ export function parseFeatureBacklogCommandArgs(args: string[]): FeatureBacklogCo
 }
 
 export function parseReviewCommandArgs(args: string[]): ReviewCommandOptions {
-  const optionArgs = args.slice(1);
+  const normalizedArgs =
+    args[0] === "review" && args[1] === "diff" ? ["review", ...args.slice(2)] : args;
+  const optionArgs = normalizedArgs.slice(1);
   let base: string | undefined;
   let head: string | undefined;
   let format: ReviewOutputFormat = "markdown";
@@ -1461,6 +1479,10 @@ function resolveLaunchStageNoticeId(args: string[]): LaunchStageNoticeId | undef
   const command = args[0] ?? "commit";
 
   if (command === "feature-backlog") {
+    return "feature-backlog";
+  }
+
+  if (command === "review" && args[1] === "features") {
     return "feature-backlog";
   }
 
@@ -3981,8 +4003,18 @@ async function createProvider(
   }
 }
 
-async function runReviewCommand(): Promise<void> {
-  const options = parseReviewCommandArgs(getCliArgs());
+async function runReviewCommand(args = getCliArgs()): Promise<void> {
+  if (args[1] === "tests") {
+    await runTestBacklogCommand(args);
+    return;
+  }
+
+  if (args[1] === "features") {
+    await runFeatureBacklogCommand(args);
+    return;
+  }
+
+  const options = parseReviewCommandArgs(args);
   const diff = readReviewDiff(options.base, options.head);
   const { provider } = await createProvider();
   const issue =
@@ -4677,8 +4709,8 @@ async function maybeCreateFeatureBacklogIssues(
   return createdIssues;
 }
 
-async function runTestBacklogCommand(): Promise<void> {
-  const options = parseTestBacklogCommandArgs(getCliArgs());
+async function runTestBacklogCommand(args = getCliArgs()): Promise<void> {
+  const options = parseTestBacklogCommandArgs(args);
   const repositoryConfig = getRepositoryConfig(options.repoRoot);
   const analysis = await analyzeTestBacklog({
     excludePaths: repositoryConfig.aiContext.excludePaths,
@@ -4709,8 +4741,8 @@ async function runTestBacklogCommand(): Promise<void> {
   }
 }
 
-async function runFeatureBacklogCommand(): Promise<void> {
-  const options = parseFeatureBacklogCommandArgs(getCliArgs());
+async function runFeatureBacklogCommand(args = getCliArgs()): Promise<void> {
+  const options = parseFeatureBacklogCommandArgs(args);
   const repositoryConfig = getRepositoryConfig(options.repoRoot);
   const analysis = await analyzeFeatureBacklog({
     excludePaths: repositoryConfig.aiContext.excludePaths,

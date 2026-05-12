@@ -2742,6 +2742,16 @@ describe("CLI integration", () => {
     expect(options.maxIssues).toBe(4);
     expect(options.labels).toEqual(["tests", "cli", "smoke"]);
     expect(options.repoRoot).toMatch(/packages\/core$/);
+
+    const aliasOptions = parseTestBacklogCommandArgs([
+      "review",
+      "tests",
+      "--format=json",
+      "--top=2",
+    ]);
+
+    expect(aliasOptions.format).toBe("json");
+    expect(aliasOptions.top).toBe(2);
   });
 
   it("parses feature-backlog flags with an explicit repository path", async () => {
@@ -2767,6 +2777,16 @@ describe("CLI integration", () => {
     expect(options.maxIssues).toBe(4);
     expect(options.labels).toEqual(["product", "backlog", "discovery"]);
     expect(options.repoRoot).toMatch(/packages\/cli$/);
+
+    const aliasOptions = parseFeatureBacklogCommandArgs([
+      "review",
+      "features",
+      "packages/core",
+      "--top=2",
+    ]);
+
+    expect(aliasOptions.top).toBe(2);
+    expect(aliasOptions.repoRoot).toMatch(/packages\/core$/);
   });
 
   it("parses review flags for local PR review", async () => {
@@ -2790,6 +2810,15 @@ describe("CLI integration", () => {
       format: "json",
       issueNumber: 50,
     });
+
+    expect(
+      parseReviewCommandArgs(["review", "diff", "--base", "origin/main"])
+    ).toEqual({
+      base: "origin/main",
+      head: undefined,
+      format: "markdown",
+      issueNumber: undefined,
+    });
   });
 
   it("prints launch-stage command tiers for top-level help", async () => {
@@ -2802,12 +2831,14 @@ describe("CLI integration", () => {
 
     expect(stdout.output()).toContain("GitHub-first AI workflows");
     expect(stdout.output()).toContain("Start here:");
+    expect(stdout.output()).toContain("prs review tests [--top <count>]");
     expect(stdout.output()).toContain("prs pr fix-comments <pr-number>");
     expect(stdout.output()).toContain("Advanced:");
     expect(stdout.output()).toContain("Beta:");
     expect(stdout.output()).toContain("prs issue draft");
     expect(stdout.output()).toContain("prs issue refine <number>");
     expect(stdout.output()).toContain("prs pr prepare-review <pr-number>");
+    expect(stdout.output()).toContain("prs review features [repo-path]");
     expect(stdout.output()).toContain("prs pr resolve-conflicts <pr-number>");
     expect(stdout.output()).toContain("Codex launchers:");
     expect(stdout.output()).toContain("prs codex issue <number>");
@@ -2841,7 +2872,7 @@ describe("CLI integration", () => {
 
     const output = stdout.output();
     expect(output).toContain("BETA WORKFLOW NOTICE");
-    expect(output).toContain("`prs feature-backlog`");
+    expect(output).toContain("`prs review features`");
     expect(output).toContain('"summary"');
     expect(output.indexOf("BETA WORKFLOW NOTICE")).toBeLessThan(
       output.indexOf('"summary"')

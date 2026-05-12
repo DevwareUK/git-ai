@@ -71,6 +71,16 @@ function renderPrReadyToolCommand(all = false): string {
   return `prs ${cliArgs.replace("123", "<number>")}`;
 }
 
+function renderReviewCommand(action: "diff" | "tests" | "features"): string {
+  const route = routePrsCommandSurfaceAction(parsePrsCommandSurfaceArgs(["review", action]));
+  const cliArgs = route.cliArgs?.join(" ");
+  if (!cliArgs) {
+    throw new Error(`Expected /prs review ${action} to route through a prs command.`);
+  }
+
+  return `prs ${cliArgs}`;
+}
+
 function formatShellCommandSegment(value: string): string {
   return /^[A-Za-z0-9_./:=@+-]+$/.test(value)
     ? value
@@ -142,13 +152,18 @@ export const PRS_CODEX_SKILLS: ManagedCodexSkill[] = [
       "- Do not recreate prs workflows with ad hoc git commands when a deterministic `prs tool ...` command exists.",
       "- For `/prs issue`, run `prs tool issue list --actionable --json`; if it returns `status: \"blocked\"`, report its `message` and `nextAction` instead of inspecting git refs or source files.",
       "- For `/prs pr`, run `prs tool pr list --actionable --json`; if it returns `status: \"blocked\"`, report its `message` and `nextAction` instead of inspecting git refs or source files.",
+      "- For `/prs review tests`, run the existing test backlog command path instead of inventing a separate coverage audit.",
       "",
       "### Interactive forms",
       "",
       "- `/prs`: inspect repository state and offer likely next actions.",
-      "- `/prs:create`, `/prs:issue`, `/prs:pr`, `/prs:audit`, and `/prs:finish` are top-level alias skills for the matching `/prs ...` routes.",
+      "- `/prs:create`, `/prs:review`, `/prs:issue`, `/prs:pr`, `/prs:audit`, and `/prs:finish` are top-level alias skills for the matching `/prs ...` routes.",
       "- `/prs create`: start the guided route for creating new GitHub work items from a rough idea. Use a descriptive working title such as `Draft GitHub Issue: <short topic>` in Codex status/summary text. After draft artifacts are created, stop and ask the user to approve the draft before creating it in GitHub.",
       "- `/prs create issue`: create one implementation-ready GitHub issue or a linked issue set from a rough idea. This currently uses the existing `prs issue draft` implementation; after artifacts are drafted, ask for approval and offer to create the GitHub issue or issue set.",
+      "- `/prs review`: show review lanes for diff review, test coverage strategy, and feature/product backlog discovery.",
+      `- \`/prs review tests\`: run \`${renderReviewCommand("tests")}\`; review repository-wide testing strategy and coverage, then offer to turn approved gaps into GitHub issues.`,
+      `- \`/prs review features\`: run \`${renderReviewCommand("features")}\`; review repository-wide feature/product opportunities, then offer to turn approved opportunities into GitHub issues.`,
+      `- \`/prs review diff\`: run \`${renderReviewCommand("diff")}\`; review the current diff or supplied \`--base\`/\`--head\` comparison.`,
       "- `/prs issue`: run `prs tool issue list --actionable --json`, show actionable for me open issues, and then offer contextual issue actions. One selection prepares issue context; multiple selections start parallel issue work through Superpowers agents and worktrees.",
       "- `/prs pr`: run `prs tool pr list --actionable --json`, show the returned actionable pull requests, and then offer contextual PR actions.",
       "",
@@ -171,6 +186,7 @@ export const PRS_CODEX_SKILLS: ManagedCodexSkill[] = [
       "",
       "Existing managed skills are backing behaviors:",
       "- `prs:start-issue-work` backs `/prs create issue`, `/prs issue <number> refine`, and `/prs issue <number> plan`.",
+      "- `prs:review` backs `/prs review`, `/prs review tests`, `/prs review features`, and `/prs review diff`.",
       "- `prs:parallel-batch` backs multi-select `/prs issue`.",
       "- `prs:publish-audit` backs `/prs audit publish`.",
       "- `prs:finish-work` backs `/prs finish`.",
@@ -261,6 +277,24 @@ export const PRS_CODEX_SKILLS: ManagedCodexSkill[] = [
       "Create draft artifacts with the configured prs issue-draft flow.",
       "After draft artifacts exist, stop and ask the user to approve them before creating the GitHub issue or linked issue set in GitHub.",
       "If the user approves, create the issue through the configured forge flow and publish any approved Superpowers plan artifact to GitHub audit.",
+    ].join("\n"),
+  },
+  {
+    folderName: "prs-review",
+    name: "prs:review",
+    description:
+      "Review diffs, test coverage strategy, or feature backlog opportunities with prs.",
+    body: [
+      SHARED_WORKFLOW_CONTRACT,
+      "",
+      "## Review Work",
+      "",
+      "Use this alias exactly like `/prs review`.",
+      "For an interactive review lane, offer diff review, test coverage strategy review, and feature/product backlog review.",
+      `For \`/prs:review tests\`, run \`${renderReviewCommand("tests")}\` with any user-supplied flags such as \`--top\`, \`--format\`, or \`--create-issues\`. Treat it as a repository-wide testing strategy and coverage review.`,
+      `For \`/prs:review features\`, run \`${renderReviewCommand("features")}\` with any user-supplied flags. Treat it as repository-wide product and feature opportunity discovery.`,
+      `For \`/prs:review diff\`, run \`${renderReviewCommand("diff")}\` with any user-supplied \`--base\`, \`--head\`, or \`--format\` flags.`,
+      "When review output proposes GitHub issues, ask for approval before creating issues unless the user explicitly passed an issue-creation flag.",
     ].join("\n"),
   },
   {

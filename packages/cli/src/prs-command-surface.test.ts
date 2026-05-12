@@ -29,6 +29,31 @@ describe("prs command surface", () => {
     });
   });
 
+  it("parses review routes for repo health and diff review", () => {
+    expect(parsePrsCommandSurfaceArgs(["review"])).toEqual({
+      kind: "review",
+      mode: "interactive",
+    });
+    expect(parsePrsCommandSurfaceArgs(["review", "diff", "--base", "origin/main"])).toEqual({
+      kind: "review",
+      mode: "direct",
+      action: "diff",
+      passthroughArgs: ["--base", "origin/main"],
+    });
+    expect(parsePrsCommandSurfaceArgs(["review", "tests", "--top", "4"])).toEqual({
+      kind: "review",
+      mode: "direct",
+      action: "tests",
+      passthroughArgs: ["--top", "4"],
+    });
+    expect(parsePrsCommandSurfaceArgs(["review", "features", ".", "--top", "2"])).toEqual({
+      kind: "review",
+      mode: "direct",
+      action: "features",
+      passthroughArgs: [".", "--top", "2"],
+    });
+  });
+
   it("parses direct issue work", () => {
     expect(parsePrsCommandSurfaceArgs(["issue", "123"])).toEqual({
       kind: "issue",
@@ -157,6 +182,9 @@ describe("prs command surface", () => {
     expect(() => parsePrsCommandSurfaceArgs(["create", "story"])).toThrow(
       renderPrsCommandSurfaceHelp()
     );
+    expect(() => parsePrsCommandSurfaceArgs(["review", "coverage"])).toThrow(
+      renderPrsCommandSurfaceHelp()
+    );
     expect(() => parsePrsCommandSurfaceArgs(["issue", "abc"])).toThrow(
       "Invalid /prs issue number"
     );
@@ -171,6 +199,54 @@ describe("prs command surface routing", () => {
       skillName: "prs:start-issue-work",
       cliArgs: ["issue", "draft"],
       target: { type: "create", name: "issue" },
+    });
+  });
+
+  it("routes review actions to the existing review and backlog commands", () => {
+    expect(routePrsCommandSurfaceAction({ kind: "review", mode: "interactive" })).toEqual({
+      interaction: "interactive",
+      skillName: "prs:review",
+      cliArgs: undefined,
+      target: { type: "review", name: "tests" },
+    });
+    expect(
+      routePrsCommandSurfaceAction({
+        kind: "review",
+        mode: "direct",
+        action: "diff",
+        passthroughArgs: ["--base", "origin/main"],
+      })
+    ).toEqual({
+      interaction: "direct",
+      skillName: "prs:review",
+      cliArgs: ["review", "--base", "origin/main"],
+      target: { type: "review", name: "diff" },
+    });
+    expect(
+      routePrsCommandSurfaceAction({
+        kind: "review",
+        mode: "direct",
+        action: "tests",
+        passthroughArgs: ["--top", "4"],
+      })
+    ).toEqual({
+      interaction: "direct",
+      skillName: "prs:review",
+      cliArgs: ["test-backlog", "--top", "4"],
+      target: { type: "review", name: "tests" },
+    });
+    expect(
+      routePrsCommandSurfaceAction({
+        kind: "review",
+        mode: "direct",
+        action: "features",
+        passthroughArgs: [".", "--top", "2"],
+      })
+    ).toEqual({
+      interaction: "direct",
+      skillName: "prs:review",
+      cliArgs: ["feature-backlog", ".", "--top", "2"],
+      target: { type: "review", name: "features" },
     });
   });
 

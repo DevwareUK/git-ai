@@ -45,7 +45,7 @@ Start here if you are evaluating `prs` for a team:
 | `prs pr fix-comments <pr-number>` | Pulls selected GitHub review comments into a focused local fix flow. |
 | `prs pr fix-failing-tests <pr-number>` | Captures currently failing local verification output on a PR branch and hands it to the configured runtime for a focused fix. |
 | `prs pr fix-tests <pr-number>` | Pulls selected managed AI test suggestions into a focused local implementation flow with preserved task context. |
-| `prs test-backlog` | Finds the highest-value automated testing gaps in the repository. |
+| `prs review tests` | Reviews repository-wide testing strategy and finds the highest-value automated testing gaps. |
 
 ## Launch demo guide
 
@@ -57,7 +57,7 @@ These are the fastest paths to a useful first result:
 
 1. Review a pull request better: use `actions/pr-review` in GitHub or run `prs review --base origin/main` locally.
 2. Respond to live PR feedback: run `prs pr fix-comments <pr-number>`, `prs pr fix-failing-tests <pr-number>`, or `prs pr fix-tests <pr-number>` when the PR branch is checked out locally.
-3. Raise test confidence: use `actions/test-suggestions` on pull requests and `prs test-backlog --top 5` for repository-wide gaps.
+3. Raise test confidence: use `actions/test-suggestions` on pull requests and `prs review tests --top 5` for repository-wide gaps.
 
 Add `actions/pr-assistant` when you also want managed PR-body updates that preserve human-written context.
 
@@ -79,7 +79,7 @@ Beta workflows:
 - `prs issue batch <number> <number> [...number]`
 - `prs pr prepare-review <pr-number>`
 - `prs pr resolve-conflicts <pr-number>`
-- `prs feature-backlog`
+- `prs review features`
 
 Separate from the command tiers, multi-provider and runtime-parity paths such as `bedrock-claude` and `claude-code` also remain supported but are still deeper-launch paths.
 
@@ -138,7 +138,7 @@ Move into that target repository and try the two safest CLI workflows first:
 
 ```bash
 prs review
-prs test-backlog --top 5
+prs review tests --top 5
 ```
 
 If you already have a live GitHub pull request branch checked out locally, the next recommended workflows are:
@@ -179,11 +179,15 @@ The launch path is not presented as full runtime or provider parity:
 
 ## Codex `/prs` workflow
 
-The recommended Codex entrypoint is `/prs`. It is the unified workflow router over the existing `prs` CLI and managed Codex skills. The shorter alias skills `/prs:create`, `/prs:issue`, `/prs:pr`, `/prs:audit`, and `/prs:finish` enter the same workflows directly when you already know which lane you want.
+The recommended Codex entrypoint is `/prs`. It is the unified workflow router over the existing `prs` CLI and managed Codex skills. The shorter alias skills `/prs:create`, `/prs:review`, `/prs:issue`, `/prs:pr`, `/prs:audit`, and `/prs:finish` enter the same workflows directly when you already know which lane you want.
 
 - `/prs`: interactive command center
 - `/prs create` or `/prs:create`: guided route for creating new GitHub work items from a rough idea; after draft artifacts are created, Codex should ask you to approve them before creating the GitHub issue or linked issue set
 - `/prs create issue`: create one implementation-ready GitHub issue or a linked issue set; this currently uses the existing `prs issue draft` implementation
+- `/prs review` or `/prs:review`: interactive review lane for diff review, test coverage strategy, and feature/product backlog discovery
+- `/prs review tests`: review repository-wide testing strategy and coverage using the existing `prs test-backlog` implementation
+- `/prs review features`: review repository-wide feature/product opportunities using the existing `prs feature-backlog` implementation
+- `/prs review diff`: review the current diff or a supplied `--base`/`--head` comparison using `prs review`
 - `/prs issue`: interactive "actionable for me" issue picker backed by `prs tool issue list --actionable --json`
 - `/prs issue <number>`: prepare existing issue context for local implementation with `prs tool issue ready <number> --json`
 - `/prs issue <number> --all`: take all sensible issue-readiness steps with `prs tool issue ready <number> --all --json`, then continue into Superpowers worktree creation and issue implementation; it should not stop after the readiness JSON
@@ -201,7 +205,7 @@ The recommended Codex entrypoint is `/prs`. It is the unified workflow router ov
 - `/prs audit publish`: publish run artifacts to GitHub audit comments
 - `/prs finish`: verify, commit, push, PR, audit, and safe cleanup
 
-The alias skills map as follows: `/prs:issue` to `/prs issue`, `/prs:pr` to `/prs pr`, `/prs:audit` to `/prs audit publish`, and `/prs:finish` to `/prs finish`. Their descriptions are intentionally more specific so Codex app task titles are less likely to collapse to generic text such as "Create PR".
+The alias skills map as follows: `/prs:review` to `/prs review`, `/prs:issue` to `/prs issue`, `/prs:pr` to `/prs pr`, `/prs:audit` to `/prs audit publish`, and `/prs:finish` to `/prs finish`. Their descriptions are intentionally more specific so Codex app task titles are less likely to collapse to generic text such as "Create PR".
 
 `/prs issue` and `/prs pr` default to actionable-for-me lists. `/prs issue` must use `prs tool issue list --actionable --json` as the source of truth, and `/prs pr` must use `prs tool pr list --actionable --json`; when either tool returns `status: "blocked"`, Codex should report the tool's `message` and `nextAction` instead of recreating GitHub discovery from git refs or source inspection. Issue multi-select starts parallel Superpowers issue work in separate worktrees. In Codex installs without a first-class slash-command directory, `prs setup` installs the managed `prs` Codex skill as the `/prs` router.
 
@@ -216,10 +220,11 @@ Run `prs help` or `prs --help` for the same tiered overview in the terminal.
 Primary offer commands:
 
 - `prs review`: review the current diff or a branch comparison
+- `prs review tests`: review repository-wide testing strategy and find high-value automated testing gaps
 - `prs pr fix-comments <pr-number>`: fix selected PR review comments with the configured interactive runtime
 - `prs pr fix-failing-tests <pr-number>`: capture failing local verification output, open the configured interactive runtime with that context, then rerun verification before commit review and safe push
 - `prs pr fix-tests <pr-number>`: implement selected AI PR test suggestions with the configured interactive runtime and their preserved task details
-- `prs test-backlog`: find high-value automated testing gaps
+- `prs test-backlog`: legacy direct alias for `prs review tests`
 
 Advanced commands:
 
@@ -234,7 +239,8 @@ Beta commands:
 - `prs issue batch ...`: queue unattended issue-to-PR runs
 - `prs pr prepare-review <pr-number>`: prepare a reviewer workspace and review brief before a live Codex session
 - `prs pr resolve-conflicts <pr-number>`: sync a PR branch with its base branch and resolve conflicts in a focused Codex session
-- `prs feature-backlog`: find high-value feature opportunities
+- `prs review features`: find high-value feature opportunities
+- `prs feature-backlog`: legacy direct alias for `prs review features`
 
 Codex launchers:
 
@@ -600,7 +606,7 @@ Important behavior:
 - markdown output is optimized as a compact pre-review checklist that highlights only the top 3 to 5 reviewer-ready risks when the diff supports that many, and fewer when the diff is low risk
 - JSON output keeps the same `summary` / `findings` / `comments` structure for automation, with severity, confidence, affected file, why-this-matters context, optional suggested fixes, and right-side line numbers taken from the diff
 
-### `prs test-backlog`
+### `prs review tests`
 
 Usage:
 
@@ -608,7 +614,12 @@ Usage:
 prs test-backlog [--format <markdown|json>] [--top <count>]
                      [--repo-root <path>] [--create-issues]
                      [--max-issues <count>] [--label <name>] [--labels <a,b>]
+prs review tests [--format <markdown|json>] [--top <count>]
+                    [--repo-root <path>] [--create-issues]
+                    [--max-issues <count>] [--label <name>] [--labels <a,b>]
 ```
+
+`prs review tests` is the preferred command name. `prs test-backlog` remains as a direct compatibility alias.
 
 Flags:
 
@@ -626,11 +637,11 @@ Flags:
 Examples:
 
 ```bash
-prs test-backlog
-prs test-backlog --format json --top 5
-GITHUB_TOKEN=... prs test-backlog --create-issues --max-issues 3
-prs test-backlog --label testing --label backlog
-prs test-backlog --labels testing,backlog
+prs review tests
+prs review tests --format json --top 5
+GITHUB_TOKEN=... prs review tests --create-issues --max-issues 3
+prs review tests --label testing --label backlog
+prs review tests --labels testing,backlog
 ```
 
 Important behavior:
@@ -645,7 +656,7 @@ Important behavior:
 - when `--create-issues` is enabled, `prs` checks for matching open issue titles first so it can reuse existing backlog items instead of creating duplicates
 - if `forge.type` is `none`, backlog issue creation is disabled for that repository
 
-### `prs feature-backlog`
+### `prs review features`
 
 Usage:
 
@@ -653,7 +664,12 @@ Usage:
 prs feature-backlog [repo-path] [--format <markdown|json>] [--top <count>]
                         [--create-issues] [--max-issues <count>]
                         [--label <name>] [--labels <a,b>]
+prs review features [repo-path] [--format <markdown|json>] [--top <count>]
+                        [--create-issues] [--max-issues <count>]
+                        [--label <name>] [--labels <a,b>]
 ```
+
+`prs review features` is the preferred command name. `prs feature-backlog` remains as a direct compatibility alias.
 
 Flags:
 
@@ -671,15 +687,15 @@ Flags:
 Examples:
 
 ```bash
-prs feature-backlog
-prs feature-backlog ../other-repo --top 3
-GITHUB_TOKEN=... prs feature-backlog . --create-issues --label product
-prs feature-backlog . --format json
+prs review features
+prs review features ../other-repo --top 3
+GITHUB_TOKEN=... prs review features . --create-issues --label product
+prs review features . --format json
 ```
 
 Important behavior:
 
-- `prs feature-backlog` prints a beta workflow notice before execution
+- `prs review features` and its legacy direct alias `prs feature-backlog` print a beta workflow notice before execution
 - the repository analysis is heuristic and based on the repository structure, current product surface, and automation signals
 - with the default GitHub forge integration, `--create-issues` requires `GH_TOKEN` or `GITHUB_TOKEN`
 - feature backlog issue creation uses the analyzed repository's configured forge, so the required credentials follow that forge's issue-creation path

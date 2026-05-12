@@ -6,6 +6,7 @@ import {
 } from "./actionable-github";
 
 export type PrsIssueAction = "work" | "refine" | "plan" | "finish";
+export type PrsReviewAction = "choose" | "diff" | "tests" | "features";
 export type PrsPrAction =
   | "choose"
   | "prepare-review"
@@ -17,6 +18,13 @@ export type PrsPrAction =
 export type PrsCommandSurfaceAction =
   | { kind: "root"; mode: "interactive" }
   | { kind: "create"; target: "issue" }
+  | { kind: "review"; mode: "interactive" }
+  | {
+      kind: "review";
+      mode: "direct";
+      action: Exclude<PrsReviewAction, "choose">;
+      passthroughArgs: string[];
+    }
   | { kind: "issue"; mode: "interactive" }
   | { kind: "issue"; mode: "direct"; issueNumber: number; action: PrsIssueAction; all?: boolean }
   | { kind: "pr"; mode: "interactive" }
@@ -28,13 +36,17 @@ export type PrsCommandRoute = {
   interaction: "interactive" | "direct";
   skillName:
     | "prs"
+    | "prs:review"
     | "prs:start-issue-work"
     | "prs:parallel-batch"
     | "prs:publish-audit"
     | "prs:finish-work";
   cliArgs?: string[];
   picker?: "actionable-issues" | "actionable-pull-requests" | "pr-actions";
-  target?: { type: "issue" | "pull-request"; number: number } | { type: "create"; name: "issue" };
+  target?:
+    | { type: "issue" | "pull-request"; number: number }
+    | { type: "create"; name: "issue" }
+    | { type: "review"; name: "diff" | "tests" | "features" };
   toolOnly?: boolean;
 };
 
@@ -69,6 +81,10 @@ export function renderPrsCommandSurfaceHelp(): string {
     "Usage:",
     "  /prs",
     "  /prs create [issue]",
+    "  /prs review",
+    "  /prs review diff [--base <git-ref>] [--head <git-ref>] [--format <markdown|json>]",
+    "  /prs review tests [--format <markdown|json>] [--top <count>] [--create-issues]",
+    "  /prs review features [repo-path] [--format <markdown|json>] [--top <count>] [--create-issues]",
     "  /prs issue",
     "  /prs issue <number> [--all|refine|plan|finish]",
     "  /prs pr",
@@ -91,7 +107,26 @@ export function parsePrsCommandSurfaceArgs(args: string[]): PrsCommandSurfaceAct
         throw new Error(renderPrsCommandSurfaceHelp());
       }
 
-      return { kind: "create", target: "issue" };
+    return { kind: "create", target: "issue" };
+    }
+
+    throw new Error(renderPrsCommandSurfaceHelp());
+  }
+
+  if (first === "review") {
+    if (!second) {
+      return { kind: "review", mode: "interactive" };
+    }
+
+    if (second === "diff" || second === "tests" || second === "features") {
+      return {
+        kind: "review",
+        mode: "direct",
+        action: second,
+        passthroughArgs: [third, ...rest].filter(
+          (value): value is string => value !== undefined
+        ),
+      };
     }
 
     throw new Error(renderPrsCommandSurfaceHelp());
@@ -176,6 +211,42 @@ export function routePrsCommandSurfaceAction(action: PrsCommandSurfaceAction): P
       skillName: "prs:start-issue-work",
       cliArgs: ["issue", "draft"],
       target: { type: "create", name: "issue" },
+    };
+  }
+
+  if (action.kind === "review") {
+    if (action.mode === "interactive") {
+      return {
+        interaction: "interactive",
+        skillName: "prs:review",
+        cliArgs: undefined,
+        target: { type: "review", name: "tests" },
+      };
+    }
+
+    if (action.action === "tests") {
+      return {
+        interaction: "direct",
+        skillName: "prs:review",
+        cliArgs: ["test-backlog", ...action.passthroughArgs],
+        target: { type: "review", name: "tests" },
+      };
+    }
+
+    if (action.action === "features") {
+      return {
+        interaction: "direct",
+        skillName: "prs:review",
+        cliArgs: ["feature-backlog", ...action.passthroughArgs],
+        target: { type: "review", name: "features" },
+      };
+    }
+
+    return {
+      interaction: "direct",
+      skillName: "prs:review",
+      cliArgs: ["review", ...action.passthroughArgs],
+      target: { type: "review", name: "diff" },
     };
   }
 

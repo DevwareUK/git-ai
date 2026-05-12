@@ -27,6 +27,7 @@ describe("managed prs Codex skills", () => {
       "prs:finish-work",
       "prs:parallel-batch",
       "prs:create",
+      "prs:review",
       "prs:issue",
       "prs:pr",
       "prs:audit",
@@ -52,6 +53,10 @@ describe("managed prs Codex skills", () => {
     expect(markdown).toContain("/prs create issue");
     expect(markdown).toContain("Draft GitHub Issue: <short topic>");
     expect(markdown).toContain("ask the user to approve the draft before creating it in GitHub");
+    expect(markdown).toContain("/prs:review");
+    expect(markdown).toContain("/prs review tests`: run `prs test-backlog`");
+    expect(markdown).toContain("/prs review features`: run `prs feature-backlog`");
+    expect(markdown).toContain("/prs review diff`: run `prs review`");
     expect(markdown).toContain("/prs issue");
     expect(markdown).toContain(
       "/prs issue`: run `prs tool issue list --actionable --json`"
@@ -109,15 +114,19 @@ describe("managed prs Codex skills", () => {
 
   it("renders top-level alias skills for the shorter /prs colon commands", () => {
     const createMarkdown = renderCodexSkillMarkdown(PRS_CODEX_SKILLS[5]);
-    const issueMarkdown = renderCodexSkillMarkdown(PRS_CODEX_SKILLS[6]);
-    const prMarkdown = renderCodexSkillMarkdown(PRS_CODEX_SKILLS[7]);
-    const auditMarkdown = renderCodexSkillMarkdown(PRS_CODEX_SKILLS[8]);
-    const finishMarkdown = renderCodexSkillMarkdown(PRS_CODEX_SKILLS[9]);
+    const reviewMarkdown = renderCodexSkillMarkdown(PRS_CODEX_SKILLS[6]);
+    const issueMarkdown = renderCodexSkillMarkdown(PRS_CODEX_SKILLS[7]);
+    const prMarkdown = renderCodexSkillMarkdown(PRS_CODEX_SKILLS[8]);
+    const auditMarkdown = renderCodexSkillMarkdown(PRS_CODEX_SKILLS[9]);
+    const finishMarkdown = renderCodexSkillMarkdown(PRS_CODEX_SKILLS[10]);
 
     expect(createMarkdown).toContain("name: prs:create");
     expect(createMarkdown).toContain("Draft a GitHub issue from a rough idea");
     expect(createMarkdown).toContain("Draft GitHub Issue: <short topic>");
     expect(createMarkdown).toContain("ask the user to approve them before creating");
+    expect(reviewMarkdown).toContain("name: prs:review");
+    expect(reviewMarkdown).toContain("testing strategy and coverage review");
+    expect(reviewMarkdown).toContain("/prs:review tests");
     expect(issueMarkdown).toContain("name: prs:issue");
     expect(issueMarkdown).toContain("/prs:issue <number> --all");
     expect(prMarkdown).toContain("name: prs:pr");
@@ -203,7 +212,7 @@ describe("managed prs Codex skills", () => {
       ],
     });
 
-    expect(result.installed).toBe(10);
+    expect(result.installed).toBe(11);
     const unifiedSkillPath = resolve(codexHome, "skills", "prs", "SKILL.md");
     expect(existsSync(unifiedSkillPath)).toBe(true);
     expect(readFileSync(unifiedSkillPath, "utf8")).toContain("name: prs");
@@ -216,6 +225,9 @@ describe("managed prs Codex skills", () => {
     const aliasSkillPath = resolve(codexHome, "skills", "prs-create", "SKILL.md");
     expect(existsSync(aliasSkillPath)).toBe(true);
     expect(readFileSync(aliasSkillPath, "utf8")).toContain("name: prs:create");
+    const reviewSkillPath = resolve(codexHome, "skills", "prs-review", "SKILL.md");
+    expect(existsSync(reviewSkillPath)).toBe(true);
+    expect(readFileSync(reviewSkillPath, "utf8")).toContain("name: prs:review");
   });
 
   it("reports no slash command installation when no command root is configured", () => {
@@ -224,7 +236,7 @@ describe("managed prs Codex skills", () => {
 
     const result = installManagedCodexSkills({ CODEX_HOME: codexHome }, "/Users/tester");
 
-    expect(result.installed).toBe(10);
+    expect(result.installed).toBe(11);
     expect(result.skillFiles.some((file) => file.endsWith("/prs/SKILL.md"))).toBe(true);
   });
 });
