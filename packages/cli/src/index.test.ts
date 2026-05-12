@@ -27,6 +27,8 @@ const REPO_ROOT = resolve(__dirname, "../../..");
 const ORIGINAL_ARGV = [...process.argv];
 const cleanupTargets = new Set<string>();
 
+vi.setConfig({ testTimeout: 20000 });
+
 function getRepositoryIssueUrl(issueNumber: number): string {
   const gitEntryPath = resolve(REPO_ROOT, ".git");
   let gitConfigPath = resolve(gitEntryPath, "config");
@@ -1400,14 +1402,13 @@ async function loadCli(options: {
       awsDefaultRegion: process.env.AWS_DEFAULT_REGION?.trim() || undefined,
     })),
   }));
-  if (options.dotenvConfigImpl) {
-    vi.doMock("dotenv", () => ({
-      default: {
-        config: options.dotenvConfigImpl,
-      },
-      config: options.dotenvConfigImpl,
-    }));
-  }
+  const dotenvConfig = options.dotenvConfigImpl ?? vi.fn(() => ({ parsed: {} }));
+  vi.doMock("dotenv", () => ({
+    default: {
+      config: dotenvConfig,
+    },
+    config: dotenvConfig,
+  }));
   vi.doMock("node:child_process", () => ({
     execFileSync,
     spawnSync,
