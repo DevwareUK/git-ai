@@ -7,6 +7,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -554,6 +555,38 @@ function isUnexpectedExecFileSyncCall(error: unknown): error is Error {
   return error instanceof Error && error.message.startsWith("Unexpected execFileSync call:");
 }
 
+type MockChildProcess = EventEmitter & {
+  stdout: EventEmitter;
+  stderr: EventEmitter;
+};
+
+function createMockChildProcess(options: {
+  status?: number | null;
+  signal?: NodeJS.Signals | null;
+  stdout?: string;
+  stderr?: string;
+  error?: Error;
+} = {}): MockChildProcess {
+  const child = new EventEmitter() as MockChildProcess;
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+
+  queueMicrotask(() => {
+    if (options.stdout) {
+      child.stdout.emit("data", Buffer.from(options.stdout));
+    }
+    if (options.stderr) {
+      child.stderr.emit("data", Buffer.from(options.stderr));
+    }
+    if (options.error) {
+      child.emit("error", options.error);
+    }
+    child.emit("close", options.status ?? 0, options.signal ?? null);
+  });
+
+  return child;
+}
+
 function isGitListUntrackedFilesCommand(command: string, args: string[]): boolean {
   return (
     command === "git" &&
@@ -634,6 +667,60 @@ function readIssueBatchState(issueNumbers: number[]): {
   };
 }
 
+function writeMockIssueWorktreeOutcome(options: {
+  worktreePath: string;
+  issueNumber: number;
+  branchName: string;
+  pullRequest:
+    | { status: "created"; title: string; url: string }
+    | { status: "skipped"; reason: "no-changes" };
+}): void {
+  const runDir = `.prs/runs/mock-issue-${options.issueNumber}`;
+  const issueDir = `.prs/issues/${options.issueNumber}`;
+  mkdirSync(resolve(options.worktreePath, runDir), { recursive: true });
+  mkdirSync(resolve(options.worktreePath, issueDir), { recursive: true });
+  writeFileSync(
+    resolve(options.worktreePath, issueDir, "session.json"),
+    `${JSON.stringify(
+      {
+        issueNumber: options.issueNumber,
+        runtimeType: "codex",
+        branchName: options.branchName,
+        baseBranch: "main",
+        configuredBaseBranch: "main",
+        issueDir,
+        runDir,
+        promptFile: `${runDir}/prompt.md`,
+        outputLog: `${runDir}/output.log`,
+        executionMode: "unattended",
+        createdAt: "2026-04-26T10:00:00.000Z",
+        updatedAt: "2026-04-26T10:00:00.000Z",
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+  writeFileSync(
+    resolve(options.worktreePath, runDir, "metadata.json"),
+    `${JSON.stringify(
+      {
+        outcome: {
+          issueNumber: options.issueNumber,
+          branchName: options.branchName,
+          baseBranch: "main",
+          runDir,
+          committed: options.pullRequest.status === "created",
+          pullRequest: options.pullRequest,
+        },
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+}
+
 function readLatestRunMetadata(): {
   runDir: string;
     metadata: {
@@ -673,6 +760,11 @@ async function loadGitHubForge(options: {
     args: string[],
     rawSecondArg?: unknown
   ) => { status: number; error?: Error; stdout?: string; stderr?: string };
+  spawnImpl?: (
+    command: string,
+    args: string[],
+    options: { cwd?: string; env?: NodeJS.ProcessEnv }
+  ) => MockChildProcess;
 } = {}) {
   vi.resetModules();
 
@@ -1021,6 +1113,10 @@ async function loadCli(options: {
       args[2] === "rev-parse" &&
       args[3] === "--show-toplevel"
     ) {
+      if (String(args[1]).includes(`${REPO_ROOT}/.prs/worktrees/`)) {
+        return `${args[1]}\n`;
+      }
+
       return `${runtimeRepoRoot}\n`;
     }
 
@@ -1150,12 +1246,38 @@ async function loadCli(options: {
           return { status: 0, stdout: "", stderr: "" };
         }
 
+        if (
+          command === "git" &&
+          normalizedArgs[0] === "worktree" &&
+          normalizedArgs[1] === "add" &&
+          normalizedArgs[2] === "--detach" &&
+          typeof normalizedArgs[3] === "string" &&
+          isUnexpectedSpawnSyncCall(error)
+        ) {
+          mkdirSync(normalizedArgs[3], { recursive: true });
+          return { status: 0, stdout: "", stderr: "" };
+        }
+
         throw error;
       }
     }
 
     return { status: 0 };
   });
+  const spawn = vi.fn(
+    (
+      command: string,
+      rawArgs?: unknown,
+      rawOptions?: { cwd?: string; env?: NodeJS.ProcessEnv }
+    ) => {
+      const args = Array.isArray(rawArgs) ? rawArgs.map(String) : [];
+      if (options.spawnImpl) {
+        return options.spawnImpl(command, args, rawOptions ?? {});
+      }
+
+      return createMockChildProcess();
+    }
+  );
   const readlineAnswers = [...(options.readlineAnswers ?? [])];
   const createInterface = vi.fn(() => ({
     question: vi.fn(async () => readlineAnswers.shift() ?? ""),
@@ -1411,6 +1533,7 @@ async function loadCli(options: {
   }));
   vi.doMock("node:child_process", () => ({
     execFileSync,
+    spawn,
     spawnSync,
   }));
   vi.doMock("node:readline/promises", () => ({
@@ -1444,6 +1567,7 @@ async function loadCli(options: {
     generateIssueResolutionPlan,
     StructuredGenerationError,
     execFileSync,
+    spawn,
     spawnSync,
     createInterface,
   };
@@ -2503,6 +2627,17 @@ describe("CLI integration", () => {
     });
   });
 
+  it("parses multiple issue numbers as a parallel unattended issue run", async () => {
+    process.env.GIT_AI_DISABLE_AUTO_RUN = "1";
+    const { parseIssueCommandArgs } = await loadCli();
+
+    expect(parseIssueCommandArgs(["issue", "123", "124", "--mode", "unattended"])).toEqual({
+      action: "batch",
+      issueNumbers: [123, 124],
+      mode: "unattended",
+    });
+  });
+
   it("rejects interactive batch issue mode", async () => {
     process.env.GIT_AI_DISABLE_AUTO_RUN = "1";
     const { parseIssueCommandArgs } = await loadCli();
@@ -2510,7 +2645,7 @@ describe("CLI integration", () => {
     expect(() =>
       parseIssueCommandArgs(["issue", "batch", "123", "124", "--mode", "interactive"])
     ).toThrow(
-      "Batch issue runs only support `--mode unattended`. Interactive batch mode is not supported."
+      "Batch issue runs only support `--mode unattended`. Interactive multi-issue mode is not supported."
     );
   });
 
@@ -11953,17 +12088,17 @@ describe("CLI integration", () => {
     expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
-  it("runs issue batches sequentially, records batch progress, and resumes from the first incomplete issue", async () => {
+  it("runs multi-issue work in child worktrees, records progress, and resumes incomplete issues", async () => {
     const beforeRuns = listRunDirectories();
     createMockCodexHome();
     const issueNumbers = [123, 124];
     const issueTitles = new Map([
-      [123, "Batch queue first issue"],
-      [124, "Batch queue second issue"],
+      [123, "Multi issue first task"],
+      [124, "Multi issue second task"],
     ]);
     const branchByIssue = new Map([
-      [123, "feat/issue-123-batch-queue-first-issue"],
-      [124, "feat/issue-124-batch-queue-second-issue"],
+      [123, "feat/issue-123-multi-issue-first-task"],
+      [124, "feat/issue-124-multi-issue-second-task"],
     ]);
     const batchStatePath = resolve(
       REPO_ROOT,
@@ -11975,8 +12110,8 @@ describe("CLI integration", () => {
     for (const target of [
       resolve(REPO_ROOT, ".prs", "issues", "123"),
       resolve(REPO_ROOT, ".prs", "issues", "124"),
-      resolve(REPO_ROOT, ".prs", "issues", "123-batch-queue-first-issue"),
-      resolve(REPO_ROOT, ".prs", "issues", "124-batch-queue-second-issue"),
+      resolve(REPO_ROOT, ".prs", "issues", "123-multi-issue-first-task"),
+      resolve(REPO_ROOT, ".prs", "issues", "124-multi-issue-second-task"),
       batchStatePath,
     ]) {
       rmSync(target, { recursive: true, force: true });
@@ -12144,15 +12279,39 @@ describe("CLI integration", () => {
 
         throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
       },
+      spawnImpl: (_command, args, options) => {
+        const issueNumber = Number.parseInt(args[2] ?? "", 10);
+        codexIssues.push(issueNumber);
+        activeIssueNumber = issueNumber;
+        const attemptNumber = (codexAttempts.get(issueNumber) ?? 0) + 1;
+        codexAttempts.set(issueNumber, attemptNumber);
+        writeMockIssueWorktreeOutcome({
+          worktreePath: options.cwd ?? REPO_ROOT,
+          issueNumber,
+          branchName: branchByIssue.get(issueNumber) ?? `feat/issue-${issueNumber}`,
+          pullRequest: {
+            status: "created",
+            title: `Issue ${issueNumber}`,
+            url: `https://github.com/DevwareUK/prs/pull/${issueNumber === 123 ? 701 : 702}`,
+          },
+        });
+
+        if (issueNumber === 124 && attemptNumber === 1) {
+          return createMockChildProcess({
+            status: 1,
+            stderr: "The unattended Codex session did not complete successfully. agent failed\n",
+          });
+        }
+
+        return createMockChildProcess();
+      },
     });
 
     process.env.OPENAI_API_KEY = "test-key";
     process.env.GITHUB_TOKEN = "test-token";
     process.argv = ["node", "prs", "issue", "batch", "123", "124"];
 
-    await expect(run()).rejects.toThrow(
-      "The unattended Codex session did not complete successfully."
-    );
+    await expect(run()).rejects.toThrow("One or more issue runs failed");
 
     const failedBatchState = readIssueBatchState(issueNumbers);
     cleanupTargets.add(batchStatePath);
@@ -12200,10 +12359,9 @@ describe("CLI integration", () => {
       },
     ]);
     expect(codexIssues).toEqual([123, 124, 124]);
-    expect(fetchMock).toHaveBeenCalled();
   });
 
-  it("records no-change issue batch entries as completed skipped outcomes and continues", async () => {
+  it("records no-change multi-issue entries as completed skipped outcomes and continues", async () => {
     const beforeRuns = listRunDirectories();
     createMockCodexHome();
     const issueNumbers = [96, 98, 99];
@@ -12385,6 +12543,32 @@ describe("CLI integration", () => {
 
         throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
       },
+      spawnImpl: (_command, args, options) => {
+        const issueNumber = Number.parseInt(args[2] ?? "", 10);
+        codexIssues.push(issueNumber);
+        activeIssueNumber = issueNumber;
+        const branchName =
+          issueNumber === 96
+            ? "feat/issue-96-batch-tracked-first-issue"
+            : issueNumber === 98
+              ? "feat/issue-98-batch-no-change-middle-issue"
+              : "feat/issue-99-batch-tracked-final-issue";
+        writeMockIssueWorktreeOutcome({
+          worktreePath: options.cwd ?? REPO_ROOT,
+          issueNumber,
+          branchName,
+          pullRequest:
+            issueNumber === 98
+              ? { status: "skipped", reason: "no-changes" }
+              : {
+                  status: "created",
+                  title: `Issue ${issueNumber}`,
+                  url: `https://github.com/DevwareUK/prs/pull/${issueNumber === 96 ? 906 : 909}`,
+                },
+        });
+
+        return createMockChildProcess();
+      },
     });
 
     process.env.OPENAI_API_KEY = "test-key";
@@ -12427,14 +12611,8 @@ describe("CLI integration", () => {
     ).toContain("PR skipped (no-changes)");
   });
 
-  it("lets a batch-started unattended issue continue independently through the single-issue command", async () => {
-    const beforeRuns = listRunDirectories();
-    createMockCodexHome();
-    const issueTitles = new Map([
-      [223, "Independent batch queue first issue"],
-      [224, "Independent batch queue second issue"],
-    ]);
-    const branch224 = "feat/issue-224-independent-batch-queue-second-issue";
+  it("records multi-issue child worktree paths for inspection", async () => {
+    const issueNumbers = [223, 224];
     const batchStatePath = resolve(
       REPO_ROOT,
       ".prs",
@@ -12442,98 +12620,10 @@ describe("CLI integration", () => {
       "issues-223-224.json"
     );
 
-    for (const target of [
-      resolve(REPO_ROOT, ".prs", "issues", "223"),
-      resolve(REPO_ROOT, ".prs", "issues", "224"),
-      resolve(REPO_ROOT, ".prs", "issues", "223-independent-batch-queue-first-issue"),
-      resolve(REPO_ROOT, ".prs", "issues", "224-independent-batch-queue-second-issue"),
-      batchStatePath,
-    ]) {
-      rmSync(target, { recursive: true, force: true });
-      cleanupTargets.add(target);
-    }
-
-    const statusResponses = [
-      "",
-      " M packages/cli/src/index.ts\n",
-      "",
-      "",
-      " M packages/cli/src/index.ts\n",
-    ];
-    const branches = new Set<string>();
-    const gitCommands: string[][] = [];
-    const codexAttempts = new Map<number, number>();
-
-    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
-      const url = String(input);
-      const issueMatch = url.match(/\/issues\/(\d+)$/);
-      if (issueMatch) {
-        const issueNumber = Number.parseInt(issueMatch[1] ?? "", 10);
-        return createFetchResponse({
-          title: issueTitles.get(issueNumber),
-          body: `Implement issue ${issueNumber} through unattended orchestration.`,
-          html_url: `https://github.com/DevwareUK/prs/issues/${issueNumber}`,
-        });
-      }
-
-      if (url.includes("/comments?")) {
-        return createFetchResponse([]);
-      }
-
-      const planCommentMatch = url.match(/\/issues\/(\d+)\/comments$/);
-      if (planCommentMatch && init?.method === "POST") {
-        const issueNumber = Number.parseInt(planCommentMatch[1] ?? "", 10);
-        return createFetchResponse({
-          id: 8000 + issueNumber,
-          body: JSON.parse(String(init.body)).body,
-          html_url:
-            `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-${8000 + issueNumber}`,
-          updated_at: "2026-04-26T10:50:00Z",
-        });
-      }
-
-      if (url.endsWith("/pulls?state=open&per_page=100")) {
-        return createFetchResponse([]);
-      }
-
-      throw new Error(`Unexpected fetch call: ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
+    rmSync(batchStatePath, { recursive: true, force: true });
+    cleanupTargets.add(batchStatePath);
 
     const { run } = await loadCli({
-      issueResolutionPlanResult: createIssueResolutionPlanResult(),
-      execFileSyncImpl: (command, args) => {
-        if (command === "git" && args[0] === "status") {
-          return statusResponses.shift() ?? "";
-        }
-
-        if (command === "git" && args[0] === "diff" && args[1] === "--name-only") {
-          return "packages/cli/src/index.ts\n";
-        }
-
-        if (
-          command === "git" &&
-          args[0] === "diff" &&
-          args[1] === "HEAD" &&
-          args[2] === "--" &&
-          args[3] === "packages/cli/src/index.ts"
-        ) {
-          return [
-            "diff --git a/packages/cli/src/index.ts b/packages/cli/src/index.ts",
-            "--- a/packages/cli/src/index.ts",
-            "+++ b/packages/cli/src/index.ts",
-            "@@ -1,1 +1,1 @@",
-            '-const state = "before";',
-            '+const state = "after";',
-          ].join("\n");
-        }
-
-        if (command === "git" && args[0] === "remote") {
-          return "git@github.com:DevwareUK/prs.git\n";
-        }
-
-        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
-      },
       spawnSyncImpl: (command, args) => {
         if (command === "gh" && args[0] === "--version") {
           return { status: 1, error: new Error("gh is unavailable") };
@@ -12543,94 +12633,46 @@ describe("CLI integration", () => {
           return { status: 0 };
         }
 
-        if (command === "git") {
-          gitCommands.push(args as string[]);
-        }
-
-        if (command === "git" && args[0] === "rev-parse") {
-          return { status: branches.has(args[2] as string) ? 0 : 1 };
-        }
-
-        if (command === "git" && args[0] === "checkout" && args[1] === "main") {
-          return { status: 0 };
-        }
-
-        if (command === "git" && args[0] === "pull") {
-          return { status: 0 };
-        }
-
-        if (command === "git" && args[0] === "checkout" && args[1] === "-b") {
-          branches.add(args[2] as string);
-          return { status: 0 };
-        }
-
-        if (command === "git" && args[0] === "checkout") {
-          return { status: 0 };
-        }
-
-        if (command === "codex" && args[0] === "exec") {
-          const prompt = String(args.at(-1) ?? "");
-          const issueNumber = Number.parseInt(prompt.match(/issue-(\d+)/)?.[1] ?? "", 10);
-          const attemptNumber = (codexAttempts.get(issueNumber) ?? 0) + 1;
-          codexAttempts.set(issueNumber, attemptNumber);
-
-          if (issueNumber === 224 && attemptNumber === 1) {
-            return { status: 1, error: new Error("agent failed") };
-          }
-
-          return { status: 0 };
-        }
-
-        if (command === "pnpm" && args[0] === "--version") {
-          return { status: 0 };
-        }
-
-        if (command === "pnpm" && args[0] === "build") {
-          return { status: 0, stdout: "built\n", stderr: "" };
-        }
-
-        if (command === "git" && (args[0] === "add" || args[0] === "commit" || args[0] === "push")) {
-          return { status: 0, stdout: "", stderr: "" };
-        }
-
-        if (command === "gh" && args[0] === "pr" && args[1] === "create") {
-          return {
-            status: 0,
-            stdout: `https://github.com/DevwareUK/prs/pull/${codexAttempts.get(224) === 2 ? 804 : 803}\n`,
-            stderr: "",
-          };
-        }
-
         throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+      spawnImpl: (_command, args, options) => {
+        const issueNumber = Number.parseInt(args[2] ?? "", 10);
+        writeMockIssueWorktreeOutcome({
+          worktreePath: options.cwd ?? REPO_ROOT,
+          issueNumber,
+          branchName: `feat/issue-${issueNumber}-parallel-worktree`,
+          pullRequest: {
+            status: "created",
+            title: `Issue ${issueNumber}`,
+            url: `https://github.com/DevwareUK/prs/pull/${issueNumber}`,
+          },
+        });
+
+        return createMockChildProcess();
       },
     });
 
     process.env.OPENAI_API_KEY = "test-key";
     process.env.GITHUB_TOKEN = "test-token";
-    process.argv = ["node", "prs", "issue", "batch", "223", "224"];
+    process.argv = ["node", "prs", "issue", "223", "224"];
 
-    await expect(run()).rejects.toThrow(
-      "The unattended Codex session did not complete successfully."
-    );
-
-    const sessionStatePath = resolve(REPO_ROOT, ".prs", "issues", "224", "session.json");
-    cleanupTargets.add(sessionStatePath);
-    expect(existsSync(sessionStatePath)).toBe(true);
-
-    const rerunGitCommandIndex = gitCommands.length;
-    process.argv = ["node", "prs", "issue", "224", "--mode", "unattended"];
     await run();
 
-    const rerunGitCommands = gitCommands.slice(rerunGitCommandIndex);
-    expect(rerunGitCommands).toContainEqual(["rev-parse", "--verify", branch224]);
-    expect(rerunGitCommands).toContainEqual(["checkout", branch224]);
-    expect(rerunGitCommands).not.toContainEqual(["checkout", "main"]);
-    expect(rerunGitCommands).not.toContainEqual(["pull"]);
-    expect(rerunGitCommands).not.toContainEqual(["checkout", "-b", branch224]);
-    expect(codexAttempts.get(224)).toBe(2);
-    for (const runDir of listRunDirectories().filter((entry) => !beforeRuns.includes(entry))) {
-      cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", runDir));
-    }
+    const completedBatchState = readIssueBatchState(issueNumbers);
+    cleanupTargets.add(resolve(REPO_ROOT, completedBatchState.latestRunDir));
+
+    expect(completedBatchState.issues).toMatchObject([
+      {
+        issueNumber: 223,
+        status: "completed",
+        worktreePath: ".prs/worktrees/issues-223-224/issue-223",
+      },
+      {
+        issueNumber: 224,
+        status: "completed",
+        worktreePath: ".prs/worktrees/issues-223-224/issue-224",
+      },
+    ]);
   });
 
   it("tracks the Codex session for a first full issue run", async () => {
@@ -14234,6 +14276,191 @@ describe("CLI integration", () => {
         reason: "no-changes",
       },
     });
+  });
+
+  it("uses unattended Codex for Superpowers plan preflight during unattended issue runs", async () => {
+    const beforeRuns = listRunDirectories();
+    const issueNumber = 1516;
+    const branchName = "feat/issue-1516-superpowers-plan-preflight";
+    const sessionStateDir = resolve(REPO_ROOT, ".prs", "issues", String(issueNumber));
+    const issueWorkspaceDir = resolve(
+      REPO_ROOT,
+      ".prs",
+      "issues",
+      "1516-superpowers-plan-preflight"
+    );
+    rmSync(sessionStateDir, { recursive: true, force: true });
+    rmSync(issueWorkspaceDir, { recursive: true, force: true });
+    cleanupTargets.add(sessionStateDir);
+    cleanupTargets.add(issueWorkspaceDir);
+    createMockCodexSuperpowersHome();
+
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = String(input);
+
+      if (url.endsWith(`/issues/${issueNumber}`)) {
+        return createFetchResponse({
+          title: "Superpowers plan preflight",
+          body: "The unattended issue workflow should generate plans without a terminal.",
+          html_url: `https://github.com/DevwareUK/prs/issues/${issueNumber}`,
+        });
+      }
+
+      if (url.includes(`/issues/${issueNumber}/comments?`)) {
+        return createFetchResponse([]);
+      }
+
+      if (url.endsWith(`/issues/${issueNumber}/comments`) && init?.method === "POST") {
+        return createFetchResponse({
+          id: 1516,
+          body: JSON.parse(String(init.body)).body,
+          html_url:
+            `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-1516`,
+          updated_at: "2026-05-12T15:10:00Z",
+        });
+      }
+
+      throw new Error(`Unexpected fetch call: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.GITHUB_TOKEN = "test-token";
+    const codexExecArgs: string[][] = [];
+
+    await withRepositoryConfig(
+      JSON.stringify({
+        ai: {
+          issue: {
+            useCodexSuperpowers: true,
+          },
+          runtime: {
+            type: "codex",
+          },
+          provider: {
+            type: "openai",
+          },
+        },
+        baseBranch: "main",
+        buildCommand: ["pnpm", "build"],
+        forge: {
+          type: "github",
+        },
+      }),
+      async () => {
+        const { run, generateCommitMessage, spawnSync } = await loadCli({
+          execFileSyncImpl: (command, args) => {
+            if (command === "git" && args[0] === "status") {
+              return "";
+            }
+
+            if (command === "git" && args[0] === "diff") {
+              return "";
+            }
+
+            if (
+              command === "git" &&
+              args[0] === "ls-files" &&
+              args[1] === "--others" &&
+              args[2] === "--exclude-standard"
+            ) {
+              return "";
+            }
+
+            if (command === "git" && args[0] === "remote") {
+              return "git@github.com:DevwareUK/prs.git\n";
+            }
+
+            throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+          },
+          spawnSyncImpl: (command, args) => {
+            if (command === "gh" && args[0] === "--version") {
+              return { status: 0 };
+            }
+
+            if (command === "gh" && args[0] === "auth" && args[1] === "status") {
+              return { status: 0 };
+            }
+
+            if (command === "gh" && args[0] === "issue" && args[1] === "view") {
+              return {
+                status: 1,
+                error: new Error("force API fallback"),
+              };
+            }
+
+            if (command === "git" && args[0] === "rev-parse") {
+              return { status: 1 };
+            }
+
+            if (command === "git" && args[0] === "checkout" && args[1] === "main") {
+              return { status: 0 };
+            }
+
+            if (command === "git" && args[0] === "pull") {
+              return { status: 0 };
+            }
+
+            if (command === "git" && args[0] === "checkout" && args[1] === "-b") {
+              return { status: 0 };
+            }
+
+            if (command === "codex" && args[0] === "--version") {
+              return { status: 0 };
+            }
+
+            if (command === "codex" && args[0] === "exec") {
+              codexExecArgs.push([...args]);
+              const { metadata, runDir } = readLatestRunMetadata();
+              if (String(metadata.runDir).includes(`issue-plan-${issueNumber}`)) {
+                writeFileSync(
+                  resolve(REPO_ROOT, metadata.runDir as string, "superpowers-plan.md"),
+                  "# Superpowers Plan\n\n- Use the unattended plan preflight.\n",
+                  "utf8"
+                );
+                cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", runDir));
+              }
+              return { status: 0 };
+            }
+
+            if (command === "pnpm" && args[0] === "--version") {
+              return { status: 0 };
+            }
+
+            if (command === "pnpm" && args[0] === "build") {
+              return { status: 0, stdout: "built\n", stderr: "" };
+            }
+
+            throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+          },
+        });
+
+        process.argv = ["node", "prs", "issue", String(issueNumber), "--mode", "unattended"];
+        await run();
+
+        expect(codexExecArgs[0]).toContain("--full-auto");
+        expect(codexExecArgs[0]).toContain("--cd");
+        expect(codexExecArgs[0]).toContain(REPO_ROOT);
+        expect(
+          spawnSync.mock.calls.some(
+            ([command, args]) =>
+              command === "codex" &&
+              Array.isArray(args) &&
+              args[0] === "--sandbox"
+          )
+        ).toBe(false);
+        expect(generateCommitMessage).not.toHaveBeenCalled();
+      }
+    );
+
+    for (const runDir of listRunDirectories().filter((entry) => !beforeRuns.includes(entry))) {
+      cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", runDir));
+    }
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining(`/issues/${issueNumber}/comments`),
+      expect.objectContaining({
+        method: "POST",
+      })
+    );
   });
 
   it("summarizes manual pull request creation when GitHub authentication is unavailable", async () => {

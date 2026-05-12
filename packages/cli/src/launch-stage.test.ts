@@ -36,11 +36,12 @@ describe("formatLaunchStageNotice", () => {
     expect(notice).toContain("legacy issue automation path");
   });
 
-  it("frames issue batch as legacy while parallel Superpowers work is the target", () => {
+  it("frames issue batch as the widest beta automation path", () => {
     const notice = formatLaunchStageNotice("issue-batch");
 
-    expect(notice).toContain("current sequential batch remains beta");
-    expect(notice).toContain("parallel Superpowers-backed issue work");
+    expect(notice).toContain("fans out unattended issue-to-PR runs");
+    expect(notice).toContain("widest automation path in the CLI today");
+    expect(notice).toContain("Codex + Superpowers + GitHub audit");
   });
 
   it("describes resolve-conflicts as a Codex-specific beta PR workflow", () => {

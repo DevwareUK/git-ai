@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import {
   appendFileSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -334,6 +335,7 @@ type IssueBatchAttempt = {
   startedAt: string;
   updatedAt: string;
   status: IssueBatchStatus;
+  worktreePath?: string;
   runDir?: string;
   branchName?: string;
   prUrl?: string;
@@ -344,6 +346,7 @@ type IssueBatchAttempt = {
 type IssueBatchIssueState = {
   issueNumber: number;
   status: IssueBatchStatus;
+  worktreePath?: string;
   runDir?: string;
   branchName?: string;
   prUrl?: string;
@@ -379,6 +382,7 @@ type UnattendedIssueRunResult = {
 const ISSUE_USAGE = [
   "Usage:",
   "  prs issue <number> [--mode <interactive|unattended>]",
+  "  prs issue <number> <number> [...number] [--mode unattended]",
   "  prs issue batch <number> <number> [...number] [--mode unattended]",
   "  prs issue draft",
   "  prs issue refine <number>",
@@ -433,6 +437,7 @@ const TOP_LEVEL_HELP = [
   "  prs issue refine <number>",
   "  prs issue plan <number> [--refresh]",
   "  prs issue <number> [--mode <interactive|unattended>]",
+  "  prs issue <number> <number> [...number] [--mode unattended]",
   "  prs issue prepare <number> [--mode <local|github-action>]",
   "  prs issue finalize <number>",
   "",
@@ -898,7 +903,10 @@ function parseIssuePlanOptions(rawArgs: string[]): { refresh: boolean } {
   return { refresh };
 }
 
-function parseIssueBatchArgs(rawArgs: string[]): {
+function parseIssueBatchArgs(
+  rawArgs: string[],
+  commandLabel = "Multi-issue runs"
+): {
   issueNumbers: number[];
   mode: "unattended";
 } {
@@ -928,7 +936,7 @@ function parseIssueBatchArgs(rawArgs: string[]): {
   if (mode !== undefined && mode !== "unattended") {
     if (mode === "interactive") {
       throw new Error(
-        "Batch issue runs only support `--mode unattended`. Interactive batch mode is not supported."
+        `${commandLabel} only support \`--mode unattended\`. Interactive multi-issue mode is not supported.`
       );
     }
 
@@ -938,12 +946,12 @@ function parseIssueBatchArgs(rawArgs: string[]): {
   const uniqueIssueNumbers = [...new Set(issueNumbers)];
   if (uniqueIssueNumbers.length < 2) {
     throw new Error(
-      `Batch issue runs require at least two issue numbers. ${ISSUE_USAGE}`
+      `${commandLabel} require at least two issue numbers. ${ISSUE_USAGE}`
     );
   }
 
   if (uniqueIssueNumbers.length !== issueNumbers.length) {
-    throw new Error("Batch issue runs do not support duplicate issue numbers.");
+    throw new Error(`${commandLabel} do not support duplicate issue numbers.`);
   }
 
   return {
@@ -979,7 +987,7 @@ export function parseIssueCommandArgs(args: string[]): IssueCommandOptions {
   }
 
   if (subcommand === "batch") {
-    const parsed = parseIssueBatchArgs(issueArgs.slice(1));
+    const parsed = parseIssueBatchArgs(issueArgs.slice(1), "Batch issue runs");
     return {
       action: "batch",
       issueNumbers: parsed.issueNumbers,
@@ -1016,6 +1024,16 @@ export function parseIssueCommandArgs(args: string[]): IssueCommandOptions {
       issueNumber: parseIssueNumber(issueArgs[1]),
       mode: "local",
       refresh: parsedOptions.refresh,
+    };
+  }
+
+  const numericIssueArgs = issueArgs.filter((arg) => /^\d+$/.test(arg));
+  if (numericIssueArgs.length > 1) {
+    const parsed = parseIssueBatchArgs(issueArgs);
+    return {
+      action: "batch",
+      issueNumbers: parsed.issueNumbers,
+      mode: parsed.mode,
     };
   }
 
@@ -2745,6 +2763,16 @@ function syncIssueBaseBranch(
   preflight: { remoteRef: string; remoteTip: string }
 ): void {
   const { remoteRef, remoteTip } = preflight;
+
+  if (
+    process.env.PRS_ISSUE_WORKTREE_BASE_READY === "1" &&
+    branchContainsCommit(repoRoot, remoteTip, "HEAD")
+  ) {
+    console.log(
+      `Using prepared worktree HEAD for ${baseBranch}; it already contains ${remoteRef} tip ${remoteTip}.`
+    );
+    return;
+  }
 
   console.log(`Switching to base branch ${baseBranch}...`);
   runInteractiveCommand(
@@ -5498,6 +5526,7 @@ async function createSuperpowersIssuePlanComment(options: {
   issueNumber: number;
   issue: IssueDetails;
   existingPlanComment?: IssuePlanComment;
+  mode: IssuePlanResolutionMode;
 }): Promise<IssuePlanComment | undefined> {
   const workspace = createIssuePlanWorkspace(options.repoRoot, options.issueNumber);
   writeIssuePlanWorkspaceFiles(
@@ -5509,8 +5538,12 @@ async function createSuperpowersIssuePlanComment(options: {
   );
 
   console.log("Creating issue resolution plan with Codex Superpowers...");
-  const runtime = getInteractiveRuntimeByType("codex");
-  runtime.launch(options.repoRoot, workspace);
+  if (options.mode === "execution-preflight") {
+    launchUnattendedRuntime("codex", options.repoRoot, workspace);
+  } else {
+    const runtime = getInteractiveRuntimeByType("codex");
+    runtime.launch(options.repoRoot, workspace);
+  }
 
   const comment = await publishSuperpowersPlanArtifact({
     repoRoot: options.repoRoot,
@@ -5571,6 +5604,7 @@ async function resolveIssuePlanComment(options: {
       issueNumber: options.issueNumber,
       issue,
       existingPlanComment: existingPlanComment,
+      mode: options.mode,
     });
     if (comment) {
       return comment;
@@ -6005,8 +6039,260 @@ function createIssueNoChangesOutcome(
   };
 }
 
+function getIssueBatchWorktreePath(
+  repoRoot: string,
+  issueNumbers: number[],
+  issueNumber: number
+): string {
+  return resolve(
+    repoRoot,
+    ".prs",
+    "worktrees",
+    createIssueBatchKey(issueNumbers),
+    `issue-${issueNumber}`
+  );
+}
+
+function copyLocalWorkflowFileToWorktree(
+  repoRoot: string,
+  worktreePath: string,
+  relativePath: string
+): void {
+  const sourcePath = resolve(repoRoot, relativePath);
+  if (!existsSync(sourcePath)) {
+    return;
+  }
+
+  const targetPath = resolve(worktreePath, relativePath);
+  mkdirSync(dirname(targetPath), { recursive: true });
+  copyFileSync(sourcePath, targetPath);
+}
+
+function copyLocalWorkflowConfigToWorktree(repoRoot: string, worktreePath: string): void {
+  copyLocalWorkflowFileToWorktree(repoRoot, worktreePath, ".prs/config.json");
+  copyLocalWorkflowFileToWorktree(repoRoot, worktreePath, ".env");
+}
+
+function ensureIssueBatchWorktree(
+  repoRoot: string,
+  issueNumbers: number[],
+  issueNumber: number,
+  baseBranch: string
+): string {
+  const worktreePath = getIssueBatchWorktreePath(repoRoot, issueNumbers, issueNumber);
+
+  if (existsSync(worktreePath)) {
+    const worktreeRoot = runCommand(
+      "git",
+      ["-C", worktreePath, "rev-parse", "--show-toplevel"],
+      `Existing issue worktree at ${worktreePath} is not a usable git worktree.`
+    );
+    if (resolve(worktreeRoot) !== resolve(worktreePath)) {
+      throw new Error(
+        `Existing issue worktree path ${worktreePath} resolves to ${worktreeRoot}; remove it or choose a fresh issue batch.`
+      );
+    }
+    copyLocalWorkflowConfigToWorktree(repoRoot, worktreePath);
+    return worktreePath;
+  }
+
+  mkdirSync(dirname(worktreePath), { recursive: true });
+  runInteractiveCommand(
+    "git",
+    ["worktree", "add", "--detach", worktreePath, `origin/${baseBranch}`],
+    `Failed to create worktree for issue #${issueNumber}.`,
+    repoRoot
+  );
+  copyLocalWorkflowConfigToWorktree(repoRoot, worktreePath);
+  return worktreePath;
+}
+
+function toBatchRelativePath(repoRoot: string, worktreePath: string, pathValue: string): string {
+  const absolutePath = isAbsolute(pathValue) ? pathValue : resolve(worktreePath, pathValue);
+  return toRepoRelativePath(repoRoot, absolutePath);
+}
+
+function readIssueBatchSessionDetails(
+  repoRoot: string,
+  worktreePath: string,
+  issueNumber: number
+): { branchName?: string; runDir?: string } {
+  const sessionState = loadIssueSessionState(worktreePath, issueNumber);
+  if (!sessionState) {
+    return {};
+  }
+
+  return {
+    branchName: sessionState.branchName,
+    runDir: toBatchRelativePath(repoRoot, worktreePath, sessionState.runDir),
+  };
+}
+
+function isIssuePullRequestOutcome(value: unknown): value is IssuePullRequestOutcome {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const status = (value as { status?: unknown }).status;
+  if (status === "created") {
+    return (
+      typeof (value as { title?: unknown }).title === "string" &&
+      ((value as { url?: unknown }).url === undefined ||
+        typeof (value as { url?: unknown }).url === "string")
+    );
+  }
+
+  if (status === "manual") {
+    return (
+      typeof (value as { titleFilePath?: unknown }).titleFilePath === "string" &&
+      typeof (value as { bodyFilePath?: unknown }).bodyFilePath === "string"
+    );
+  }
+
+  if (status === "skipped") {
+    const reason = (value as { reason?: unknown }).reason;
+    return (
+      reason === "commit-declined" ||
+      reason === "no-changes" ||
+      reason === "forge-disabled"
+    );
+  }
+
+  return false;
+}
+
+function readIssueRunResultFromWorktree(
+  repoRoot: string,
+  worktreePath: string,
+  issueNumber: number
+): UnattendedIssueRunResult {
+  const sessionState = loadIssueSessionState(worktreePath, issueNumber);
+  if (!sessionState) {
+    throw new Error(`Issue #${issueNumber} completed without writing session state.`);
+  }
+
+  const metadataPath = resolve(worktreePath, sessionState.runDir, "metadata.json");
+  if (!existsSync(metadataPath)) {
+    throw new Error(`Issue #${issueNumber} completed without writing run metadata.`);
+  }
+
+  const metadata = JSON.parse(readFileSync(metadataPath, "utf8")) as {
+    outcome?: Partial<IssueRunOutcomeSummary>;
+  };
+  const outcome = metadata.outcome;
+  if (
+    !outcome ||
+    outcome.issueNumber !== issueNumber ||
+    typeof outcome.branchName !== "string" ||
+    typeof outcome.runDir !== "string" ||
+    typeof outcome.committed !== "boolean" ||
+    !isIssuePullRequestOutcome(outcome.pullRequest)
+  ) {
+    throw new Error(`Issue #${issueNumber} completed without a valid recorded outcome.`);
+  }
+
+  return {
+    branchName: outcome.branchName,
+    runDir: toBatchRelativePath(repoRoot, worktreePath, outcome.runDir),
+    committed: outcome.committed,
+    pullRequest: outcome.pullRequest,
+  };
+}
+
+type IssueBatchChildResult = {
+  issueNumber: number;
+  worktreePath: string;
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stderr: string;
+  error?: Error;
+};
+
+function runIssueBatchChild(
+  issueNumber: number,
+  worktreePath: string
+): Promise<IssueBatchChildResult> {
+  const cliEntrypoint = process.argv[1];
+  if (!cliEntrypoint) {
+    throw new Error("Cannot locate the prs CLI entrypoint for multi-issue execution.");
+  }
+
+  return new Promise((resolvePromise) => {
+    const child = spawn(
+      process.execPath,
+      [cliEntrypoint, "issue", String(issueNumber), "--mode", "unattended"],
+      {
+        cwd: worktreePath,
+        env: {
+          ...process.env,
+          GIT_AI_DISABLE_AUTO_RUN: "0",
+          PRS_ISSUE_WORKTREE_BASE_READY: "1",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      }
+    );
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    let spawnError: Error | undefined;
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdoutChunks.push(chunk);
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderrChunks.push(chunk);
+    });
+    child.on("error", (error) => {
+      spawnError = error;
+    });
+    child.on("close", (exitCode, signal) => {
+      resolvePromise({
+        issueNumber,
+        worktreePath,
+        exitCode,
+        signal,
+        stdout: Buffer.concat(stdoutChunks).toString("utf8"),
+        stderr: Buffer.concat(stderrChunks).toString("utf8"),
+        error: spawnError,
+      });
+    });
+  });
+}
+
+function summarizeIssueBatchChildFailure(result: IssueBatchChildResult): string {
+  if (result.error) {
+    return result.error.message;
+  }
+
+  const output = [result.stdout, result.stderr]
+    .join("\n")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const lastLine = output.at(-1);
+  if (lastLine) {
+    return lastLine;
+  }
+
+  if (result.signal) {
+    return `Issue process exited after signal ${result.signal}.`;
+  }
+
+  return `Issue process exited with code ${result.exitCode ?? "unknown"}.`;
+}
+
 async function runIssueBatchCommand(issueNumbers: number[]): Promise<void> {
   const repoRoot = getDefaultRepoRoot();
+  const repositoryConfig = getRepositoryConfig(repoRoot);
+  requireCodexForUnattendedIssueRuns(repositoryConfig);
+  const forge = getRepositoryForge(repoRoot);
+  if (!forge.isAuthenticated()) {
+    throw new Error(
+      "Multi-issue runs require authenticated GitHub access so prs can open pull requests automatically."
+    );
+  }
+  preflightIssueBaseBranch(repoRoot, repositoryConfig.baseBranch);
+
   const workspace = createIssueBatchWorkspace(repoRoot, issueNumbers);
   let state =
     loadIssueBatchState(repoRoot, issueNumbers) ??
@@ -6015,6 +6301,8 @@ async function runIssueBatchCommand(issueNumbers: number[]): Promise<void> {
     ...currentState,
     latestRunDir: toRepoRelativePath(repoRoot, workspace.runDir),
   }));
+
+  const issueRuns: Array<{ issueNumber: number; worktreePath: string }> = [];
 
   for (let index = 0; index < issueNumbers.length; index += 1) {
     const issueNumber = issueNumbers[index];
@@ -6030,154 +6318,208 @@ async function runIssueBatchCommand(issueNumbers: number[]): Promise<void> {
       continue;
     }
 
-    const startMessage = `[${index + 1}/${issueNumbers.length}] Starting issue #${issueNumber}.`;
+    const worktreePath = ensureIssueBatchWorktree(
+      repoRoot,
+      issueNumbers,
+      issueNumber,
+      repositoryConfig.baseBranch
+    );
+    const relativeWorktreePath = toRepoRelativePath(repoRoot, worktreePath);
+    const startMessage = `[${index + 1}/${issueNumbers.length}] Starting issue #${issueNumber} in ${relativeWorktreePath}.`;
     console.log(startMessage);
     appendIssueBatchLog(workspace, startMessage);
+    const now = new Date().toISOString();
+    state = updateIssueBatchState(
+      repoRoot,
+      issueNumbers,
+      state,
+      workspace,
+      (currentState) => ({
+        ...currentState,
+        stoppedIssueNumber: undefined,
+        issues: currentState.issues.map((entry) =>
+          entry.issueNumber !== issueNumber
+            ? entry
+            : {
+                ...entry,
+                status: "running",
+                worktreePath: relativeWorktreePath,
+                error: undefined,
+                attempts: [
+                  ...entry.attempts,
+                  {
+                    startedAt: now,
+                    updatedAt: now,
+                    status: "running",
+                    worktreePath: relativeWorktreePath,
+                  },
+                ],
+              }
+        ),
+      })
+    );
+    issueRuns.push({ issueNumber, worktreePath });
+  }
 
-    try {
-      const result = await runUnattendedIssueCommand(issueNumber, {
-        onPrepared: ({ branchName, runDir }) => {
-          const now = new Date().toISOString();
-          state = updateIssueBatchState(
-            repoRoot,
-            issueNumbers,
-            state,
-            workspace,
-            (currentState) => ({
-              ...currentState,
-              stoppedIssueNumber: issueNumber,
-              issues: currentState.issues.map((entry) =>
-                entry.issueNumber !== issueNumber
-                  ? entry
-                  : {
-                      ...entry,
-                      status: "running",
-                      branchName,
-                      runDir,
-                      error: undefined,
-                      attempts: [
-                        ...entry.attempts,
-                        {
-                          startedAt: now,
-                          updatedAt: now,
-                          status: "running",
-                          branchName,
-                          runDir,
-                        },
-                      ],
-                    }
-              ),
-            })
-          );
-        },
-      });
+  const childResults = await Promise.all(
+    issueRuns.map((issueRun) =>
+      runIssueBatchChild(issueRun.issueNumber, issueRun.worktreePath)
+    )
+  );
+  const failures: string[] = [];
 
-      const resultPrUrl =
-        result.pullRequest.status === "created" ? result.pullRequest.url : undefined;
-      const successMessage =
-        result.pullRequest.status === "created" && result.pullRequest.url
-          ? `[${index + 1}/${issueNumbers.length}] Completed issue #${issueNumber}: ${result.pullRequest.url}`
-          : result.pullRequest.status === "skipped"
-            ? `[${index + 1}/${issueNumbers.length}] Completed issue #${issueNumber}: skipped (${result.pullRequest.reason})`
-            : `[${index + 1}/${issueNumbers.length}] Completed issue #${issueNumber}.`;
-      console.log(successMessage);
-      appendIssueBatchLog(workspace, successMessage);
-      state = updateIssueBatchState(
-        repoRoot,
-        issueNumbers,
-        state,
-        workspace,
-        (currentState) => ({
-          ...currentState,
-          stoppedIssueNumber: undefined,
-          issues: currentState.issues.map((entry) =>
-            entry.issueNumber !== issueNumber
-              ? entry
-              : {
-                  ...entry,
-                  status: "completed",
-                  branchName: result.branchName,
-                  runDir: result.runDir,
-                  prUrl: resultPrUrl,
-                  pullRequest: result.pullRequest,
-                  error: undefined,
-                  attempts:
-                    entry.attempts.length === 0
-                      ? [
-                          {
-                            startedAt: new Date().toISOString(),
-                            updatedAt: new Date().toISOString(),
-                            status: "completed",
-                            branchName: result.branchName,
-                            runDir: result.runDir,
-                            prUrl: resultPrUrl,
-                            pullRequest: result.pullRequest,
-                          },
-                        ]
-                      : entry.attempts.map((attempt, attemptIndex) =>
-                          attemptIndex === entry.attempts.length - 1
-                            ? {
-                                ...attempt,
-                                updatedAt: new Date().toISOString(),
-                                status: "completed",
-                                branchName: result.branchName,
-                                runDir: result.runDir,
-                                prUrl: resultPrUrl,
-                                pullRequest: result.pullRequest,
-                                error: undefined,
-                              }
-                            : attempt
-                        ),
-                }
-          ),
-        })
-      );
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      const failureMessage = `[${index + 1}/${issueNumbers.length}] Stopping batch at issue #${issueNumber}: ${message}`;
-      console.log(failureMessage);
-      appendIssueBatchLog(workspace, failureMessage);
-      state = updateIssueBatchState(
-        repoRoot,
-        issueNumbers,
-        state,
-        workspace,
-        (currentState) => ({
-          ...currentState,
-          stoppedIssueNumber: issueNumber,
-          issues: currentState.issues.map((entry) =>
-            entry.issueNumber !== issueNumber
-              ? entry
-              : {
-                  ...entry,
-                  status: "failed",
-                  error: message,
-                  attempts:
-                    entry.attempts.length === 0
-                      ? [
-                          {
-                            startedAt: new Date().toISOString(),
-                            updatedAt: new Date().toISOString(),
-                            status: "failed",
-                            error: message,
-                          },
-                        ]
-                      : entry.attempts.map((attempt, attemptIndex) =>
-                          attemptIndex === entry.attempts.length - 1
-                            ? {
-                                ...attempt,
-                                updatedAt: new Date().toISOString(),
-                                status: "failed",
-                                error: message,
-                              }
-                            : attempt
-                        ),
-                }
-          ),
-        })
-      );
-      throw error;
+  for (const childResult of childResults) {
+    const { issueNumber, worktreePath } = childResult;
+    appendIssueBatchLog(
+      workspace,
+      [
+        `# Output for issue #${issueNumber}`,
+        childResult.stdout.trim(),
+        childResult.stderr.trim(),
+        "",
+      ]
+        .filter((line) => line.length > 0)
+        .join("\n")
+    );
+
+    if (!childResult.error && childResult.exitCode === 0) {
+      try {
+        const result = readIssueRunResultFromWorktree(
+          repoRoot,
+          worktreePath,
+          issueNumber
+        );
+        const resultPrUrl =
+          result.pullRequest.status === "created" ? result.pullRequest.url : undefined;
+        const successMessage =
+          result.pullRequest.status === "created" && result.pullRequest.url
+            ? `Completed issue #${issueNumber}: ${result.pullRequest.url}`
+            : result.pullRequest.status === "skipped"
+              ? `Completed issue #${issueNumber}: skipped (${result.pullRequest.reason})`
+              : `Completed issue #${issueNumber}.`;
+        console.log(successMessage);
+        appendIssueBatchLog(workspace, successMessage);
+        state = updateIssueBatchState(
+          repoRoot,
+          issueNumbers,
+          state,
+          workspace,
+          (currentState) => ({
+            ...currentState,
+            stoppedIssueNumber: undefined,
+            issues: currentState.issues.map((entry) =>
+              entry.issueNumber !== issueNumber
+                ? entry
+                : {
+                    ...entry,
+                    status: "completed",
+                    worktreePath: toRepoRelativePath(repoRoot, worktreePath),
+                    branchName: result.branchName,
+                    runDir: result.runDir,
+                    prUrl: resultPrUrl,
+                    pullRequest: result.pullRequest,
+                    error: undefined,
+                    attempts:
+                      entry.attempts.length === 0
+                        ? [
+                            {
+                              startedAt: new Date().toISOString(),
+                              updatedAt: new Date().toISOString(),
+                              status: "completed",
+                              worktreePath: toRepoRelativePath(repoRoot, worktreePath),
+                              branchName: result.branchName,
+                              runDir: result.runDir,
+                              prUrl: resultPrUrl,
+                              pullRequest: result.pullRequest,
+                            },
+                          ]
+                        : entry.attempts.map((attempt, attemptIndex) =>
+                            attemptIndex === entry.attempts.length - 1
+                              ? {
+                                  ...attempt,
+                                  updatedAt: new Date().toISOString(),
+                                  status: "completed",
+                                  worktreePath: toRepoRelativePath(repoRoot, worktreePath),
+                                  branchName: result.branchName,
+                                  runDir: result.runDir,
+                                  prUrl: resultPrUrl,
+                                  pullRequest: result.pullRequest,
+                                  error: undefined,
+                                }
+                              : attempt
+                          ),
+                  }
+            ),
+          })
+        );
+        continue;
+      } catch (error: unknown) {
+        childResult.error = error instanceof Error ? error : new Error(String(error));
+      }
     }
+
+    const message = summarizeIssueBatchChildFailure(childResult);
+    failures.push(`#${issueNumber}: ${message}`);
+    const sessionDetails = readIssueBatchSessionDetails(
+      repoRoot,
+      worktreePath,
+      issueNumber
+    );
+    const failureMessage = `Issue #${issueNumber} failed: ${message}`;
+    console.log(failureMessage);
+    appendIssueBatchLog(workspace, failureMessage);
+    state = updateIssueBatchState(
+      repoRoot,
+      issueNumbers,
+      state,
+      workspace,
+      (currentState) => ({
+        ...currentState,
+        stoppedIssueNumber: currentState.stoppedIssueNumber ?? issueNumber,
+        issues: currentState.issues.map((entry) =>
+          entry.issueNumber !== issueNumber
+            ? entry
+            : {
+                ...entry,
+                status: "failed",
+                worktreePath: toRepoRelativePath(repoRoot, worktreePath),
+                branchName: sessionDetails.branchName ?? entry.branchName,
+                runDir: sessionDetails.runDir ?? entry.runDir,
+                error: message,
+                attempts:
+                  entry.attempts.length === 0
+                    ? [
+                        {
+                          startedAt: new Date().toISOString(),
+                          updatedAt: new Date().toISOString(),
+                          status: "failed",
+                          worktreePath: toRepoRelativePath(repoRoot, worktreePath),
+                          branchName: sessionDetails.branchName,
+                          runDir: sessionDetails.runDir,
+                          error: message,
+                        },
+                      ]
+                    : entry.attempts.map((attempt, attemptIndex) =>
+                        attemptIndex === entry.attempts.length - 1
+                          ? {
+                              ...attempt,
+                              updatedAt: new Date().toISOString(),
+                              status: "failed",
+                              worktreePath: toRepoRelativePath(repoRoot, worktreePath),
+                              branchName: sessionDetails.branchName ?? attempt.branchName,
+                              runDir: sessionDetails.runDir ?? attempt.runDir,
+                              error: message,
+                            }
+                          : attempt
+                      ),
+              }
+        ),
+      })
+    );
+  }
+
+  if (failures.length > 0) {
+    throw new Error(`One or more issue runs failed: ${failures.join("; ")}`);
   }
 }
 

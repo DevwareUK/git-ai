@@ -34,13 +34,13 @@ const LAUNCH_STAGE_NOTICE_DEFINITIONS: Record<
   },
   "issue-batch": {
     tier: "beta",
-    command: "`prs issue batch ...`",
+    command: "`prs issue <number> <number> ...`",
     reason:
-      "It chains unattended issue-to-PR runs; the current sequential batch remains beta while parallel Superpowers-backed issue work is the target.",
+      "It fans out unattended issue-to-PR runs across separate worktrees and remains the widest automation path in the CLI today.",
     recommendedFirst:
       "Codex + Superpowers + GitHub audit for issue work, or `prs review` and PR fix workflows for narrower changes.",
     constraints:
-      'Requires a clean working tree, at least two issue numbers, authenticated GitHub access, and `ai.runtime.type: "codex"`.',
+      'Requires at least two issue numbers, authenticated GitHub access, and `ai.runtime.type: "codex"`; `prs issue batch ...` remains a compatibility alias.',
   },
   "issue-draft": {
     tier: "advanced",
