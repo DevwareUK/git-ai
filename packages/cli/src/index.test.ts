@@ -13492,6 +13492,191 @@ describe("CLI integration", () => {
     });
   });
 
+  it("uses unattended Codex for Superpowers plan preflight during unattended issue runs", async () => {
+    const beforeRuns = listRunDirectories();
+    const issueNumber = 1516;
+    const branchName = "feat/issue-1516-superpowers-plan-preflight";
+    const sessionStateDir = resolve(REPO_ROOT, ".prs", "issues", String(issueNumber));
+    const issueWorkspaceDir = resolve(
+      REPO_ROOT,
+      ".prs",
+      "issues",
+      "1516-superpowers-plan-preflight"
+    );
+    rmSync(sessionStateDir, { recursive: true, force: true });
+    rmSync(issueWorkspaceDir, { recursive: true, force: true });
+    cleanupTargets.add(sessionStateDir);
+    cleanupTargets.add(issueWorkspaceDir);
+    createMockCodexSuperpowersHome();
+
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = String(input);
+
+      if (url.endsWith(`/issues/${issueNumber}`)) {
+        return createFetchResponse({
+          title: "Superpowers plan preflight",
+          body: "The unattended issue workflow should generate plans without a terminal.",
+          html_url: `https://github.com/DevwareUK/prs/issues/${issueNumber}`,
+        });
+      }
+
+      if (url.includes(`/issues/${issueNumber}/comments?`)) {
+        return createFetchResponse([]);
+      }
+
+      if (url.endsWith(`/issues/${issueNumber}/comments`) && init?.method === "POST") {
+        return createFetchResponse({
+          id: 1516,
+          body: JSON.parse(String(init.body)).body,
+          html_url:
+            `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-1516`,
+          updated_at: "2026-05-12T15:10:00Z",
+        });
+      }
+
+      throw new Error(`Unexpected fetch call: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.GITHUB_TOKEN = "test-token";
+    const codexExecArgs: string[][] = [];
+
+    await withRepositoryConfig(
+      JSON.stringify({
+        ai: {
+          issue: {
+            useCodexSuperpowers: true,
+          },
+          runtime: {
+            type: "codex",
+          },
+          provider: {
+            type: "openai",
+          },
+        },
+        baseBranch: "main",
+        buildCommand: ["pnpm", "build"],
+        forge: {
+          type: "github",
+        },
+      }),
+      async () => {
+        const { run, generateCommitMessage, spawnSync } = await loadCli({
+          execFileSyncImpl: (command, args) => {
+            if (command === "git" && args[0] === "status") {
+              return "";
+            }
+
+            if (command === "git" && args[0] === "diff") {
+              return "";
+            }
+
+            if (
+              command === "git" &&
+              args[0] === "ls-files" &&
+              args[1] === "--others" &&
+              args[2] === "--exclude-standard"
+            ) {
+              return "";
+            }
+
+            if (command === "git" && args[0] === "remote") {
+              return "git@github.com:DevwareUK/prs.git\n";
+            }
+
+            throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+          },
+          spawnSyncImpl: (command, args) => {
+            if (command === "gh" && args[0] === "--version") {
+              return { status: 0 };
+            }
+
+            if (command === "gh" && args[0] === "auth" && args[1] === "status") {
+              return { status: 0 };
+            }
+
+            if (command === "gh" && args[0] === "issue" && args[1] === "view") {
+              return {
+                status: 1,
+                error: new Error("force API fallback"),
+              };
+            }
+
+            if (command === "git" && args[0] === "rev-parse") {
+              return { status: 1 };
+            }
+
+            if (command === "git" && args[0] === "checkout" && args[1] === "main") {
+              return { status: 0 };
+            }
+
+            if (command === "git" && args[0] === "pull") {
+              return { status: 0 };
+            }
+
+            if (command === "git" && args[0] === "checkout" && args[1] === "-b") {
+              return { status: 0 };
+            }
+
+            if (command === "codex" && args[0] === "--version") {
+              return { status: 0 };
+            }
+
+            if (command === "codex" && args[0] === "exec") {
+              codexExecArgs.push([...args]);
+              const { metadata, runDir } = readLatestRunMetadata();
+              if (String(metadata.runDir).includes(`issue-plan-${issueNumber}`)) {
+                writeFileSync(
+                  resolve(REPO_ROOT, metadata.runDir as string, "superpowers-plan.md"),
+                  "# Superpowers Plan\n\n- Use the unattended plan preflight.\n",
+                  "utf8"
+                );
+                cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", runDir));
+              }
+              return { status: 0 };
+            }
+
+            if (command === "pnpm" && args[0] === "--version") {
+              return { status: 0 };
+            }
+
+            if (command === "pnpm" && args[0] === "build") {
+              return { status: 0, stdout: "built\n", stderr: "" };
+            }
+
+            throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+          },
+        });
+
+        process.argv = ["node", "prs", "issue", String(issueNumber), "--mode", "unattended"];
+        await run();
+
+        expect(codexExecArgs[0]).toContain("--full-auto");
+        expect(codexExecArgs[0]).toContain("--cd");
+        expect(codexExecArgs[0]).toContain(REPO_ROOT);
+        expect(
+          spawnSync.mock.calls.some(
+            ([command, args]) =>
+              command === "codex" &&
+              Array.isArray(args) &&
+              args[0] === "--sandbox"
+          )
+        ).toBe(false);
+        expect(generateCommitMessage).not.toHaveBeenCalled();
+      }
+    );
+
+    for (const runDir of listRunDirectories().filter((entry) => !beforeRuns.includes(entry))) {
+      cleanupTargets.add(resolve(REPO_ROOT, ".prs", "runs", runDir));
+    }
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining(`/issues/${issueNumber}/comments`),
+      expect.objectContaining({
+        method: "POST",
+      })
+    );
+  });
+
   it("summarizes manual pull request creation when GitHub authentication is unavailable", async () => {
     const beforeRuns = listRunDirectories();
     const issueNumber = 1511;
