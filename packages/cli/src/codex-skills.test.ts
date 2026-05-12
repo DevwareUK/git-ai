@@ -42,16 +42,40 @@ describe("managed prs Codex skills", () => {
     const markdown = renderCodexSkillMarkdown(PRS_CODEX_SKILLS[0]);
 
     expect(markdown).toContain("name: prs");
+    expect(markdown).toContain("/prs create");
+    expect(markdown).toContain("/prs create issue");
     expect(markdown).toContain("/prs issue");
+    expect(markdown).toContain(
+      "/prs issue`: run `prs tool issue list --actionable --json`"
+    );
+    expect(markdown).toContain(
+      "/prs issue <number>`: run `prs tool issue ready <number> --json`"
+    );
+    expect(markdown).toContain(
+      "/prs issue <number> --all`: run `prs tool issue ready <number> --all --json`"
+    );
+    expect(markdown).toContain(
+      "continue into Superpowers worktree creation and issue implementation"
+    );
+    expect(markdown).toContain(
+      "do not stop after the readiness JSON when `--all` is present."
+    );
     expect(markdown).toContain("/prs issue <number> finish");
     expect(markdown).toContain("/prs pr <number> resolve-conflicts");
     expect(markdown).toContain(
       "/prs pr <number>`: run `prs tool pr ready <number> --json`"
     );
     expect(markdown).toContain(
+      "current repository checkout used by the user's normal local runtime"
+    );
+    expect(markdown).toContain("review/pr-<number>");
+    expect(markdown).toContain("do not continue from the worktree");
+    expect(markdown).toContain(
       "/prs pr <number> --all`: run `prs tool pr ready <number> --all --json`"
     );
-    expect(markdown).toContain("Do not push, review, fix, approve, or merge.");
+    expect(markdown).toContain(
+      "Do not push, review, fix, approve, merge, or switch to an existing PR worktree."
+    );
     expect(markdown).toContain(
       "/prs pr <number> prepare-review`: run `prs tool pr prepare-review <number> --json`"
     );
@@ -85,7 +109,7 @@ describe("managed prs Codex skills", () => {
     expect(markdown).not.toContain("Prefer the installed `prs` command when it is on `PATH`.");
   });
 
-  it("renders a one-shot fast path for /prs pr when a fallback CLI is captured", () => {
+  it("renders one-shot fast paths for /prs issue and /prs pr when a fallback CLI is captured", () => {
     const markdown = renderCodexSkillMarkdown(PRS_CODEX_SKILLS[0], {
       cliFallbackCommand: [
         "/usr/local/bin/node",
@@ -93,6 +117,9 @@ describe("managed prs Codex skills", () => {
       ],
     });
 
+    expect(markdown).toContain(
+      "Fast path for `/prs issue`: run `/usr/local/bin/node /Users/tester/Projects/prs/packages/cli/dist/index.js tool issue list --actionable --json` exactly once."
+    );
     expect(markdown).toContain(
       "Fast path for `/prs pr`: run `/usr/local/bin/node /Users/tester/Projects/prs/packages/cli/dist/index.js tool pr list --actionable --json` exactly once."
     );

@@ -45,6 +45,8 @@ import {
 } from "./config";
 import { publishAuditArtifact } from "./audit-artifacts";
 import { buildDoneStateInstructions } from "./done-state";
+import { listIssuesTool } from "./issue-list-tool";
+import { readyIssueTool } from "./issue-ready-tool";
 import {
   formatLaunchStageNotice,
   type LaunchStageNoticeId,
@@ -442,6 +444,8 @@ const TOP_LEVEL_HELP = [
   "",
   "Supporting commands:",
   "  prs setup",
+  "  prs tool issue list [--actionable] --json",
+  "  prs tool issue ready <issue-number> [--all] --json",
   "  prs tool pr list [--actionable] --json",
   "  prs tool pr ready <pr-number> [--all] --json",
   "  prs tool pr prepare-review <pr-number> --json",
@@ -4231,6 +4235,26 @@ async function runToolCommand(): Promise<void> {
     const result = await listPullRequestsTool({
       actionable: toolCommand.actionable,
       repoRoot,
+    });
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+
+  if (toolCommand.kind === "issue-list") {
+    const result = await listIssuesTool({
+      actionable: toolCommand.actionable,
+      repoRoot,
+    });
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+
+  if (toolCommand.kind === "issue-ready") {
+    const result = await readyIssueTool({
+      all: toolCommand.all,
+      issueNumber: toolCommand.issueNumber,
+      repoRoot,
+      forge: getRepositoryForge(repoRoot),
     });
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     return;

@@ -147,6 +147,15 @@ function ensureSuccess(result: PrReadyRunCommandResult, message: string): void {
   }
 }
 
+function isBranchCheckedOutInAnotherWorktree(result: PrReadyRunCommandResult): boolean {
+  const output = `${result.stderr}\n${result.stdout}`;
+  return /already checked out at|is already used by worktree/i.test(output);
+}
+
+function reviewBranchNameForPullRequest(pullRequest: PullRequestDetails): string {
+  return `review/pr-${pullRequest.number}`;
+}
+
 function checkoutPullRequestBranch(
   runCommand: (command: string, args: string[]) => PrReadyRunCommandResult,
   repoRoot: string,
@@ -169,10 +178,29 @@ function checkoutPullRequestBranch(
     );
   }
 
-  ensureSuccess(
-    git(runCommand, repoRoot, ["checkout", pullRequest.headRefName]),
-    `Failed to check out PR branch "${pullRequest.headRefName}".`
-  );
+  const checkoutResult = git(runCommand, repoRoot, ["checkout", pullRequest.headRefName]);
+  if (checkoutResult.status !== 0) {
+    if (isBranchCheckedOutInAnotherWorktree(checkoutResult)) {
+      const reviewBranchName = reviewBranchNameForPullRequest(pullRequest);
+      ensureSuccess(
+        git(runCommand, repoRoot, [
+          "fetch",
+          "origin",
+          `+refs/pull/${pullRequest.number}/head:refs/heads/${reviewBranchName}`,
+        ]),
+        `Failed to fetch PR #${pullRequest.number} into local review branch "${reviewBranchName}".`
+      );
+      ensureSuccess(
+        git(runCommand, repoRoot, ["checkout", reviewBranchName]),
+        `Failed to check out local review branch "${reviewBranchName}".`
+      );
+      return reviewBranchName;
+    }
+    ensureSuccess(
+      checkoutResult,
+      `Failed to check out PR branch "${pullRequest.headRefName}".`
+    );
+  }
   return pullRequest.headRefName;
 }
 

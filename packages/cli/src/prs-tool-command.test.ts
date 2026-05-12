@@ -2,6 +2,29 @@ import { describe, expect, it } from "vitest";
 import { parsePrsToolCommandArgs, renderPrsToolCommandHelp } from "./prs-tool-command";
 
 describe("prs tool command parser", () => {
+  it("parses actionable issue list JSON command", () => {
+    expect(parsePrsToolCommandArgs(["issue", "list", "--actionable", "--json"])).toEqual({
+      kind: "issue-list",
+      actionable: true,
+      json: true,
+    });
+  });
+
+  it("parses issue ready JSON command", () => {
+    expect(parsePrsToolCommandArgs(["issue", "ready", "151", "--json"])).toEqual({
+      kind: "issue-ready",
+      issueNumber: 151,
+      all: false,
+      json: true,
+    });
+    expect(parsePrsToolCommandArgs(["issue", "ready", "151", "--all", "--json"])).toEqual({
+      kind: "issue-ready",
+      issueNumber: 151,
+      all: true,
+      json: true,
+    });
+  });
+
   it("parses actionable PR list JSON command", () => {
     expect(parsePrsToolCommandArgs(["pr", "list", "--actionable", "--json"])).toEqual({
       kind: "pr-list",
@@ -45,6 +68,9 @@ describe("prs tool command parser", () => {
     expect(() => parsePrsToolCommandArgs(["pr", "prepare-review", "abc", "--json"])).toThrow(
       'Invalid prs tool pr number: "abc".'
     );
+    expect(() => parsePrsToolCommandArgs(["issue", "ready", "abc", "--json"])).toThrow(
+      'Invalid prs tool issue number: "abc".'
+    );
   });
 
   it("rejects unsupported forms with help", () => {
@@ -56,6 +82,9 @@ describe("prs tool command parser", () => {
       renderPrsToolCommandHelp()
     );
     expect(() => parsePrsToolCommandArgs(["pr", "prepare-review", "--json"])).toThrow(
+      renderPrsToolCommandHelp()
+    );
+    expect(() => parsePrsToolCommandArgs(["issue", "list"])).toThrow(
       renderPrsToolCommandHelp()
     );
     expect(() => parsePrsToolCommandArgs(["unknown"])).toThrow(renderPrsToolCommandHelp());

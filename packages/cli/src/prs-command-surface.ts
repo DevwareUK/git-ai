@@ -16,8 +16,9 @@ export type PrsPrAction =
 
 export type PrsCommandSurfaceAction =
   | { kind: "root"; mode: "interactive" }
+  | { kind: "create"; target: "issue" }
   | { kind: "issue"; mode: "interactive" }
-  | { kind: "issue"; mode: "direct"; issueNumber: number; action: PrsIssueAction }
+  | { kind: "issue"; mode: "direct"; issueNumber: number; action: PrsIssueAction; all?: boolean }
   | { kind: "pr"; mode: "interactive" }
   | { kind: "pr"; mode: "direct"; prNumber: number; action: PrsPrAction; all?: boolean }
   | { kind: "audit"; action: "publish"; passthroughArgs: string[] }
@@ -33,7 +34,7 @@ export type PrsCommandRoute = {
     | "prs:finish-work";
   cliArgs?: string[];
   picker?: "actionable-issues" | "actionable-pull-requests" | "pr-actions";
-  target?: { type: "issue" | "pull-request"; number: number };
+  target?: { type: "issue" | "pull-request"; number: number } | { type: "create"; name: "issue" };
   toolOnly?: boolean;
 };
 
@@ -67,8 +68,9 @@ export function renderPrsCommandSurfaceHelp(): string {
   return [
     "Usage:",
     "  /prs",
+    "  /prs create [issue]",
     "  /prs issue",
-    "  /prs issue <number> [refine|plan|finish]",
+    "  /prs issue <number> [--all|refine|plan|finish]",
     "  /prs pr",
     "  /prs pr <number> [--all|prepare-review|resolve-conflicts|fix-comments|fix-failing-tests|fix-tests]",
     "  /prs audit publish [--issue <number>|--pr <number>] [--file <path>] [--section <name>] [--local-run <path>]",
@@ -83,6 +85,18 @@ export function parsePrsCommandSurfaceArgs(args: string[]): PrsCommandSurfaceAct
     return { kind: "root", mode: "interactive" };
   }
 
+  if (first === "create") {
+    if (!second || second === "issue") {
+      if (third || rest.length > 0) {
+        throw new Error(renderPrsCommandSurfaceHelp());
+      }
+
+      return { kind: "create", target: "issue" };
+    }
+
+    throw new Error(renderPrsCommandSurfaceHelp());
+  }
+
   if (first === "issue") {
     if (!second) {
       return { kind: "issue", mode: "interactive" };
@@ -92,8 +106,11 @@ export function parsePrsCommandSurfaceArgs(args: string[]): PrsCommandSurfaceAct
     }
 
     const issueNumber = parsePositiveNumber(second, "issue");
+    if (third === "--all") {
+      return { kind: "issue", mode: "direct", issueNumber, action: "work", all: true };
+    }
     if (!third) {
-      return { kind: "issue", mode: "direct", issueNumber, action: "work" };
+      return { kind: "issue", mode: "direct", issueNumber, action: "work", all: false };
     }
     if (!ISSUE_ACTIONS.has(third)) {
       throw new Error(renderPrsCommandSurfaceHelp());
@@ -153,11 +170,20 @@ export function routePrsCommandSurfaceAction(action: PrsCommandSurfaceAction): P
     return { interaction: "interactive", skillName: "prs", cliArgs: undefined };
   }
 
+  if (action.kind === "create") {
+    return {
+      interaction: "direct",
+      skillName: "prs:start-issue-work",
+      cliArgs: ["issue", "draft"],
+      target: { type: "create", name: "issue" },
+    };
+  }
+
   if (action.kind === "issue") {
     if (action.mode === "interactive") {
       return {
         interaction: "interactive",
-        skillName: "prs:start-issue-work",
+        skillName: "prs",
         cliArgs: undefined,
         picker: "actionable-issues",
       };
@@ -166,9 +192,12 @@ export function routePrsCommandSurfaceAction(action: PrsCommandSurfaceAction): P
     if (action.action === "work") {
       return {
         interaction: "direct",
-        skillName: "prs:start-issue-work",
-        cliArgs: ["issue", String(action.issueNumber)],
+        skillName: "prs",
+        cliArgs: action.all
+          ? ["tool", "issue", "ready", String(action.issueNumber), "--all", "--json"]
+          : ["tool", "issue", "ready", String(action.issueNumber), "--json"],
         target: { type: "issue", number: action.issueNumber },
+        toolOnly: action.all ? undefined : true,
       };
     }
 

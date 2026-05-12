@@ -56,6 +56,7 @@ function createForge(): RepositoryForge {
 
 function createCommandRecorder(options: {
   containsBase: boolean;
+  lockedHeadBranch?: boolean;
   mergeStatus?: number;
   ddevStatus?: number;
 }) {
@@ -68,6 +69,14 @@ function createCommandRecorder(options: {
       return { status: 0, stdout: "", stderr: "" };
     }
     if (command === "git" && normalizedArgs[0] === "checkout") {
+      if (normalizedArgs[1] === "codex/sales-menu-images" && options.lockedHeadBranch) {
+        return {
+          status: 128,
+          stdout: "",
+          stderr:
+            "fatal: 'codex/sales-menu-images' is already checked out at '/repo/.worktrees/sales-menu-images'\n",
+        };
+      }
       return { status: 0, stdout: "", stderr: "" };
     }
     if (command === "git" && normalizedArgs[0] === "fetch" && normalizedArgs[1] === "origin") {
@@ -160,6 +169,44 @@ describe("PR ready tool", () => {
     });
     expect(calls.some((call) => call.command === "git" && gitCallArgs(call)[0] === "merge")).toBe(true);
     expect(calls.some((call) => call.command === "ddev" && call.args[0] === "start")).toBe(true);
+  });
+
+  it("uses a current-checkout review branch when the PR head branch is locked in another worktree", async () => {
+    const repoRoot = createRepo();
+    mkdirSync(resolve(repoRoot, ".ddev"), { recursive: true });
+    writeFileSync(resolve(repoRoot, ".ddev", "config.yaml"), "name: bos\n", "utf8");
+    const { calls, runCommand } = createCommandRecorder({
+      containsBase: true,
+      lockedHeadBranch: true,
+    });
+
+    const result = await readyPullRequestTool({
+      all: true,
+      forge: createForge(),
+      prNumber: 115,
+      repoRoot,
+      runCommand,
+      ensureCleanWorkingTree: vi.fn(),
+      ensureVerificationCommandAvailable: vi.fn(),
+      buildCommand: ["pnpm", "build"],
+    });
+
+    expect(result).toMatchObject({
+      status: "ready",
+      branchName: "review/pr-115",
+      nextAction: "browse-local-app",
+      runtime: {
+        kind: "ddev",
+        status: "running",
+        url: "https://bos.ddev.site",
+      },
+    });
+    expect(calls.map(gitCallArgs)).toContainEqual([
+      "fetch",
+      "origin",
+      "+refs/pull/115/head:refs/heads/review/pr-115",
+    ]);
+    expect(calls.map(gitCallArgs)).toContainEqual(["checkout", "review/pr-115"]);
   });
 
   it("blocks when --all base sync hits merge conflicts", async () => {

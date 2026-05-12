@@ -18,12 +18,31 @@ describe("prs command surface", () => {
     });
   });
 
+  it("parses create routes for new work items", () => {
+    expect(parsePrsCommandSurfaceArgs(["create"])).toEqual({
+      kind: "create",
+      target: "issue",
+    });
+    expect(parsePrsCommandSurfaceArgs(["create", "issue"])).toEqual({
+      kind: "create",
+      target: "issue",
+    });
+  });
+
   it("parses direct issue work", () => {
     expect(parsePrsCommandSurfaceArgs(["issue", "123"])).toEqual({
       kind: "issue",
       mode: "direct",
       issueNumber: 123,
       action: "work",
+      all: false,
+    });
+    expect(parsePrsCommandSurfaceArgs(["issue", "123", "--all"])).toEqual({
+      kind: "issue",
+      mode: "direct",
+      issueNumber: 123,
+      action: "work",
+      all: true,
     });
   });
 
@@ -135,6 +154,9 @@ describe("prs command surface", () => {
     expect(() => parsePrsCommandSurfaceArgs(["pr", "resolve-conflicts", "456"])).toThrow(
       renderPrsCommandSurfaceHelp()
     );
+    expect(() => parsePrsCommandSurfaceArgs(["create", "story"])).toThrow(
+      renderPrsCommandSurfaceHelp()
+    );
     expect(() => parsePrsCommandSurfaceArgs(["issue", "abc"])).toThrow(
       "Invalid /prs issue number"
     );
@@ -143,10 +165,19 @@ describe("prs command surface", () => {
 });
 
 describe("prs command surface routing", () => {
+  it("routes create actions to issue draft creation", () => {
+    expect(routePrsCommandSurfaceAction({ kind: "create", target: "issue" })).toEqual({
+      interaction: "direct",
+      skillName: "prs:start-issue-work",
+      cliArgs: ["issue", "draft"],
+      target: { type: "create", name: "issue" },
+    });
+  });
+
   it("routes issue actions to existing CLI commands and skills", () => {
     expect(routePrsCommandSurfaceAction({ kind: "issue", mode: "interactive" })).toEqual({
       interaction: "interactive",
-      skillName: "prs:start-issue-work",
+      skillName: "prs",
       cliArgs: undefined,
       picker: "actionable-issues",
     });
@@ -156,11 +187,27 @@ describe("prs command surface routing", () => {
         mode: "direct",
         issueNumber: 123,
         action: "work",
+        all: false,
       })
     ).toEqual({
       interaction: "direct",
-      skillName: "prs:start-issue-work",
-      cliArgs: ["issue", "123"],
+      skillName: "prs",
+      cliArgs: ["tool", "issue", "ready", "123", "--json"],
+      target: { type: "issue", number: 123 },
+      toolOnly: true,
+    });
+    expect(
+      routePrsCommandSurfaceAction({
+        kind: "issue",
+        mode: "direct",
+        issueNumber: 123,
+        action: "work",
+        all: true,
+      })
+    ).toEqual({
+      interaction: "direct",
+      skillName: "prs",
+      cliArgs: ["tool", "issue", "ready", "123", "--all", "--json"],
       target: { type: "issue", number: 123 },
     });
     expect(
@@ -412,7 +459,7 @@ describe("prs interactive picker models", () => {
   it("only builds picker models for interactive list actions", () => {
     expect(
       buildPrsInteractivePickerModel(
-        { kind: "issue", mode: "direct", issueNumber: 123, action: "work" },
+        { kind: "issue", mode: "direct", issueNumber: 123, action: "work", all: false },
         { currentUser: "me", issues: [] }
       )
     ).toBeUndefined();

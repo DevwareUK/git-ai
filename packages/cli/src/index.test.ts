@@ -5145,6 +5145,80 @@ describe("CLI integration", () => {
     });
   });
 
+  it("runs prs tool issue list actionable as deterministic JSON", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          login: "me",
+        })
+      )
+      .mockResolvedValueOnce(
+        createFetchResponse([
+          {
+            number: 151,
+            title: "Planned issue",
+            user: { login: "someone-else" },
+            assignees: [],
+            labels: [],
+            updated_at: "2026-05-12T10:00:00Z",
+          },
+          {
+            number: 152,
+            title: "Pull request returned by issues endpoint",
+            user: { login: "me" },
+            assignees: [],
+            labels: [],
+            updated_at: "2026-05-12T11:00:00Z",
+            pull_request: {},
+          },
+        ])
+      )
+      .mockResolvedValueOnce(createFetchResponse([]))
+      .mockResolvedValueOnce(
+        createFetchResponse([
+          {
+            body: "<!-- prs:issue-plan -->\nPlan",
+          },
+        ])
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { run } = await loadCli({
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "rev-parse") {
+          return `${REPO_ROOT}\n`;
+        }
+
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/prs.git\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    process.env.GITHUB_TOKEN = "test-token";
+    process.argv = ["node", "prs", "tool", "issue", "list", "--actionable", "--json"];
+    const stdout = captureStdout();
+
+    await run();
+
+    expect(stdout.output().trimStart()).toMatch(/^\{/);
+    expect(JSON.parse(stdout.output())).toMatchObject({
+      status: "ready",
+      actionable: true,
+      currentUser: "me",
+      issues: [
+        {
+          number: 151,
+          hasPrsPlan: true,
+        },
+      ],
+      source: "github-api",
+    });
+  });
+
   it("loads repository .env before running prs tool pr list", async () => {
     const fetchMock = vi
       .fn()

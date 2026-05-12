@@ -47,6 +47,18 @@ function renderPrPrepareReviewToolCommand(): string {
   return `prs ${cliArgs.replace("123", "<number>")}`;
 }
 
+function renderIssueReadyToolCommand(all = false): string {
+  const route = routePrsCommandSurfaceAction(
+    parsePrsCommandSurfaceArgs(all ? ["issue", "123", "--all"] : ["issue", "123"])
+  );
+  const cliArgs = route.cliArgs?.join(" ");
+  if (!cliArgs) {
+    throw new Error("Expected /prs issue <number> to route through a prs tool command.");
+  }
+
+  return `prs ${cliArgs.replace("123", "<number>")}`;
+}
+
 function renderPrReadyToolCommand(all = false): string {
   const route = routePrsCommandSurfaceAction(
     parsePrsCommandSurfaceArgs(all ? ["pr", "123", "--all"] : ["pr", "123"])
@@ -82,6 +94,7 @@ function renderSetupCapturedCliGuidance(options: CodexSkillRenderOptions): strin
 
   return [
     `- Use the setup-captured fallback CLI as the primary Codex command path: \`${formattedCommand} <args>\`.`,
+    `- Fast path for \`/prs issue\`: run \`${formattedCommand} tool issue list --actionable --json\` exactly once.`,
     `- Fast path for \`/prs pr\`: run \`${formattedCommand} tool pr list --actionable --json\` exactly once.`,
     "- Do not run `command -v prs`, `git status`, GitHub API fallbacks, SSH PR-ref discovery, or source-code inspection before this fast-path command.",
   ];
@@ -127,22 +140,26 @@ export const PRS_CODEX_SKILLS: ManagedCodexSkill[] = [
       "- If no GitHub API authentication is available, SSH pull refs may identify candidate PR numbers, but do not call that an actionable-for-me list because assignees, review requests, checks, comments, and draft state are unavailable.",
       "- Never call commands that launch Codex from inside a Codex session.",
       "- Do not recreate prs workflows with ad hoc git commands when a deterministic `prs tool ...` command exists.",
+      "- For `/prs issue`, run `prs tool issue list --actionable --json`; if it returns `status: \"blocked\"`, report its `message` and `nextAction` instead of inspecting git refs or source files.",
       "- For `/prs pr`, run `prs tool pr list --actionable --json`; if it returns `status: \"blocked\"`, report its `message` and `nextAction` instead of inspecting git refs or source files.",
       "",
       "### Interactive forms",
       "",
       "- `/prs`: inspect repository state and offer likely next actions.",
-      "- `/prs issue`: show actionable for me open issues. One selection starts issue work; multiple selections start parallel issue work through Superpowers agents and worktrees.",
+      "- `/prs create`: start the guided route for creating new GitHub work items from a rough idea.",
+      "- `/prs create issue`: create one implementation-ready GitHub issue or a linked issue set from a rough idea. This currently uses the existing `prs issue draft` implementation.",
+      "- `/prs issue`: run `prs tool issue list --actionable --json`, show actionable for me open issues, and then offer contextual issue actions. One selection prepares issue context; multiple selections start parallel issue work through Superpowers agents and worktrees.",
       "- `/prs pr`: run `prs tool pr list --actionable --json`, show the returned actionable pull requests, and then offer contextual PR actions.",
       "",
       "### Direct forms",
       "",
-      "- `/prs issue <number>`: start work on the issue.",
+      `- \`/prs issue <number>\`: run \`${renderIssueReadyToolCommand()}\`; gather issue context, write readiness metadata, and stop with the next sensible action so Superpowers can create the implementation worktree.`,
+      `- \`/prs issue <number> --all\`: run \`${renderIssueReadyToolCommand(true)}\`; if the result is ready, do not stop after the readiness JSON when \`--all\` is present. Instead, continue into Superpowers worktree creation and issue implementation from the updated base branch, publish approved spec/plan artifacts to GitHub audit, and then use \`/prs finish\` discipline for verification, commit, push, PR, audit, and safe cleanup.`,
       "- `/prs issue <number> refine`: refine the issue.",
       "- `/prs issue <number> plan`: publish or refresh the issue plan.",
       "- `/prs issue <number> finish`: finish work with the issue context preserved.",
-      `- \`/prs pr <number>\`: run \`${renderPrReadyToolCommand()}\`; check out the PR branch, report base sync/runtime readiness, and stop with the next sensible action so the user can browse the app quickly.`,
-      `- \`/prs pr <number> --all\`: run \`${renderPrReadyToolCommand(true)}\`; take all sensible readiness steps without prompting, including syncing the base branch and starting DDEV when detected. Do not push, review, fix, approve, or merge.`,
+      `- \`/prs pr <number>\`: run \`${renderPrReadyToolCommand()}\`; prepare the PR in the current repository checkout used by the user's normal local runtime, report base sync/runtime readiness, and stop with the next sensible action so the user can browse the app quickly. If the tool returns a local \`review/pr-<number>\` branch because the PR head branch is checked out in another worktree, stay in that current checkout and do not continue from the worktree.`,
+      `- \`/prs pr <number> --all\`: run \`${renderPrReadyToolCommand(true)}\`; take all sensible readiness steps without prompting in the current repository checkout, including syncing the base branch and starting DDEV when detected. Do not push, review, fix, approve, merge, or switch to an existing PR worktree.`,
       `- \`/prs pr <number> prepare-review\`: run \`${renderPrPrepareReviewToolCommand()}\`, keep the prepared branch checked out in the current repository, read the returned \`snapshotFilePath\` when useful, then continue review in this Codex session. The deterministic tool does not generate \`review-brief.md\`; do not look for one unless a separate command created it.`,
       "- `/prs pr <number> resolve-conflicts`: run `prs pr resolve-conflicts <number>`.",
       "- `/prs pr <number> fix-comments`: run `prs pr fix-comments <number>`.",
@@ -152,7 +169,7 @@ export const PRS_CODEX_SKILLS: ManagedCodexSkill[] = [
       "- `/prs finish`: verify, commit, push, open or update a PR, publish final audit, and clean up only when safe.",
       "",
       "Existing managed skills are backing behaviors:",
-      "- `prs:start-issue-work` backs `/prs issue`.",
+      "- `prs:start-issue-work` backs `/prs create issue`, `/prs issue <number> refine`, and `/prs issue <number> plan`.",
       "- `prs:parallel-batch` backs multi-select `/prs issue`.",
       "- `prs:publish-audit` backs `/prs audit publish`.",
       "- `prs:finish-work` backs `/prs finish`.",
