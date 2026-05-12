@@ -146,7 +146,7 @@ export function initializePullRequestPrepareReviewOutputLog(
   writeFileSync(
     workspace.outputLogPath,
     [
-      "# prs pr prepare-review run log",
+      "# prs codex pr prepare-review run log",
       "",
       `Created: ${new Date().toISOString()}`,
       `Snapshot file: ${toRepoRelativePath(repoRoot, workspace.snapshotFilePath)}`,

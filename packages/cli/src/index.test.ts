@@ -2706,14 +2706,13 @@ describe("CLI integration", () => {
     ).toThrow('Unknown pr option "--extra"');
   });
 
-  it("parses pr prepare-review as a dedicated pr subcommand", async () => {
+  it("rejects retired direct pr prepare-review command", async () => {
     process.env.GIT_AI_DISABLE_AUTO_RUN = "1";
     const { parsePrCommandArgs } = await loadCli();
 
-    expect(parsePrCommandArgs(["pr", "prepare-review", "75"])).toEqual({
-      action: "prepare-review",
-      prNumber: 75,
-    });
+    expect(() => parsePrCommandArgs(["pr", "prepare-review", "75"])).toThrow(
+      "`prs pr prepare-review <pr-number>` has been retired"
+    );
   });
 
   it("parses pr resolve-conflicts as a dedicated pr subcommand", async () => {
@@ -2997,7 +2996,7 @@ describe("CLI integration", () => {
     expect(stdout.output()).toContain("Beta:");
     expect(stdout.output()).toContain("prs issue draft");
     expect(stdout.output()).toContain("prs issue refine <number>");
-    expect(stdout.output()).toContain("prs pr prepare-review <pr-number>");
+    expect(stdout.output()).not.toContain("  prs pr prepare-review <pr-number>");
     expect(stdout.output()).toContain("prs review features [repo-path]");
     expect(stdout.output()).toContain("prs pr resolve-conflicts <pr-number>");
     expect(stdout.output()).toContain("Codex launchers:");
@@ -5141,7 +5140,7 @@ describe("CLI integration", () => {
       async () => {
         const { run } = await loadCli();
 
-        process.argv = ["node", "prs", "pr", "prepare-review", "87"];
+        process.argv = ["node", "prs", "codex", "pr", "prepare-review", "87"];
 
         await expect(run()).rejects.toThrow(
           "Repository forge support is disabled by .prs/config.json. Configure `forge.type` to enable pull request workflows."
@@ -5628,7 +5627,7 @@ describe("CLI integration", () => {
     });
 
     process.env.GITHUB_TOKEN = "test-token";
-    process.argv = ["node", "prs", "pr", "prepare-review", "87"];
+    process.argv = ["node", "prs", "codex", "pr", "prepare-review", "87"];
     const messages: string[] = [];
     vi.spyOn(console, "log").mockImplementation((message?: unknown) => {
       messages.push(String(message ?? ""));
@@ -5667,7 +5666,7 @@ describe("CLI integration", () => {
       "do not modify tracked repository files"
     );
     expect(readFileSync(promptFilePath, "utf8")).toContain("pnpm build");
-    expect(readFileSync(outputLogPath, "utf8")).toContain("# prs pr prepare-review run log");
+    expect(readFileSync(outputLogPath, "utf8")).toContain("# prs codex pr prepare-review run log");
     expect(readFileSync(outputLogPath, "utf8")).toContain("git fetch origin main");
     expect(readFileSync(outputLogPath, "utf8")).toContain(`git checkout ${branchName}`);
     expect(readFileSync(reviewBriefPath, "utf8")).toContain("## Reviewer Commands");
@@ -5872,7 +5871,7 @@ describe("CLI integration", () => {
     });
 
     process.env.GITHUB_TOKEN = "test-token";
-    process.argv = ["node", "prs", "pr", "prepare-review", "88"];
+    process.argv = ["node", "prs", "codex", "pr", "prepare-review", "88"];
 
     await run();
 
@@ -6112,7 +6111,7 @@ describe("CLI integration", () => {
     });
 
     process.env.GITHUB_TOKEN = "test-token";
-    process.argv = ["node", "prs", "pr", "prepare-review", "206"];
+    process.argv = ["node", "prs", "codex", "pr", "prepare-review", "206"];
     const stdout = captureStdout();
     const messages: string[] = [];
     vi.spyOn(console, "log").mockImplementation((message?: unknown) => {
@@ -6327,7 +6326,7 @@ describe("CLI integration", () => {
     });
 
     process.env.GITHUB_TOKEN = "test-token";
-    process.argv = ["node", "prs", "pr", "prepare-review", "207"];
+    process.argv = ["node", "prs", "codex", "pr", "prepare-review", "207"];
 
     const messages: string[] = [];
     vi.spyOn(console, "log").mockImplementation((message?: unknown) => {
@@ -6490,7 +6489,7 @@ describe("CLI integration", () => {
     });
 
     process.env.GITHUB_TOKEN = "test-token";
-    process.argv = ["node", "prs", "pr", "prepare-review", "208"];
+    process.argv = ["node", "prs", "codex", "pr", "prepare-review", "208"];
 
     await expect(run()).rejects.toThrow("Build failed. Changes were not committed.");
     expect(generateCommitMessage).not.toHaveBeenCalled();
@@ -6660,7 +6659,7 @@ describe("CLI integration", () => {
     });
 
     process.env.GITHUB_TOKEN = "test-token";
-    process.argv = ["node", "prs", "pr", "prepare-review", "205"];
+    process.argv = ["node", "prs", "codex", "pr", "prepare-review", "205"];
     const stdout = captureStdout();
     const messages: string[] = [];
     vi.spyOn(console, "log").mockImplementation((message?: unknown) => {
@@ -6945,7 +6944,7 @@ describe("CLI integration", () => {
     });
 
     process.env.GITHUB_TOKEN = "test-token";
-    process.argv = ["node", "prs", "pr", "prepare-review", "209"];
+    process.argv = ["node", "prs", "codex", "pr", "prepare-review", "209"];
 
     await run();
 
@@ -7112,7 +7111,7 @@ describe("CLI integration", () => {
     });
 
     process.env.GITHUB_TOKEN = "test-token";
-    process.argv = ["node", "prs", "pr", "prepare-review", "210"];
+    process.argv = ["node", "prs", "codex", "pr", "prepare-review", "210"];
 
     await expect(run()).rejects.toThrow(
       'Base-branch sync is still incomplete for "feat/prepare-review-conflicts-unresolved".'

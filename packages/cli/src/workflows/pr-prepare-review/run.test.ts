@@ -1835,7 +1835,7 @@ describe("runPrPrepareReviewCommand", () => {
           status: "blocked",
           conflictResolution: "unresolved",
           recoveryMessage: expect.stringContaining(
-            "After fixing the branch state, rerun `prs pr prepare-review 206`."
+            "After fixing the branch state, rerun `prs codex pr prepare-review 206`."
           ),
         }),
       }),

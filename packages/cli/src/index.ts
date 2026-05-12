@@ -461,7 +461,6 @@ const TOP_LEVEL_HELP = [
   "",
   "Beta:",
   "  prs issue batch <number> <number> [...number] [--mode unattended]",
-  "  prs pr prepare-review <pr-number>",
   "  prs pr resolve-conflicts <pr-number>",
   "  prs review features [repo-path]",
   "",
@@ -1659,9 +1658,6 @@ function resolveLaunchStageNoticeId(args: string[]): LaunchStageNoticeId | undef
 
   if (command === "pr") {
     const prCommand = parsePrCommandArgs(args);
-    if (prCommand.action === "prepare-review") {
-      return "pr-prepare-review";
-    }
     if (prCommand.action === "resolve-conflicts") {
       return "pr-resolve-conflicts";
     }
@@ -4587,11 +4583,6 @@ async function runPrCommand(): Promise<void> {
   const repoRoot = getDefaultRepoRoot();
   const prCommand = parsePrCommandArgs(getCliArgs());
   const repositoryConfig = getRepositoryConfig(repoRoot);
-
-  if (prCommand.action === "prepare-review") {
-    await runPrPrepareReviewCodexLauncher(prCommand.prNumber, repoRoot, repositoryConfig);
-    return;
-  }
 
   if (prCommand.action === "resolve-conflicts") {
     await runPrResolveConflictsCodexLauncher(prCommand.prNumber, repoRoot, repositoryConfig);

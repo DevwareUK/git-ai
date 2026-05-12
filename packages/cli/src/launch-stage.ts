@@ -94,7 +94,7 @@ const LAUNCH_STAGE_NOTICE_DEFINITIONS: Record<
   },
   "pr-prepare-review": {
     tier: "beta",
-    command: "`prs pr prepare-review <pr-number>`",
+    command: "`prs codex pr prepare-review <pr-number>`",
     reason:
       "It automates reviewer workspace setup, base-branch sync, and a live Codex handoff around a pull request.",
     recommendedFirst:
