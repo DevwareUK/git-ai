@@ -30,6 +30,8 @@ Beta commands:
 Supporting commands:
 
 - `prs setup`: guided repository onboarding for `prs`
+- `prs setup --update-skills`: refresh only managed Codex `/prs` skills
+- `prs update skills`: refresh managed Codex `/prs` skills after upgrading the CLI
 - `prs tool issue create (--draft-file <path>|--issue-set <path>) --json`: deterministically create GitHub issues from approved local issue draft artifacts
 - `prs codex pr prepare-review <pr-number>`: explicit legacy launcher for reviewer workspace preparation and live Codex follow-up
 - `prs tool pr prepare-review <pr-number> --json`: deterministic Codex-safe review preparation
@@ -71,9 +73,12 @@ Requirements:
 
 ```bash
 prs setup
+prs setup --update-skills
 ```
 
 Runs a guided repository setup flow for the current Git repository. The command inspects the repo, suggests defaults for `baseBranch`, `forge.type`, `ai.runtime.type`, `ai.issue.useCodexSuperpowers`, `buildCommand`, and extra `aiContext.excludePaths`, prints the detection source for each suggestion, warns when it had to fall back because signals were missing or conflicting, and first offers a one-confirmation "use the recommended setup" path before dropping into per-field prompts when you want to customize values. It writes `.prs/config.json`, preserves any existing `ai.provider` settings already present in that file, preserves an existing explicit `ai.issue.useCodexSuperpowers` value on reruns, treats legacy `ai.issueDraft.useCodexSuperpowers` as a backward-compatible input, ensures `.prs/` is gitignored, and only touches `AGENTS.md` when you explicitly opt in to a minimal scaffold for non-obvious repository guidance.
+
+`prs setup --update-skills` skips repository setup prompts and only refreshes managed Codex skills. It is equivalent to `prs update skills`.
 
 When Codex is available locally, setup also checks whether the Superpowers plugin is present under the active `CODEX_HOME` and reports whether Codex Superpowers-backed issue workflows were enabled or disabled. Setup does not install Codex plugins for you.
 
@@ -88,6 +93,14 @@ Those installed workflows reference `DevwareUK/prs/actions/...@main` and require
 When you opt into the `AGENTS.md` scaffold, setup adds only placeholder prompts such as protected paths, generated files, deployment caveats, and domain rules. It intentionally does not copy repository config values like branch names or build commands into `AGENTS.md`.
 
 The setup flow still expects you to create `.env` yourself because it cannot safely write secrets like `OPENAI_API_KEY`. It also calls out the recommended GitHub/OpenAI/Codex launch path and points advanced users to `bedrock-claude` and `claude-code` as customization paths rather than parity guarantees.
+
+### `prs update skills`
+
+```bash
+prs update skills
+```
+
+Refreshes the managed Codex `/prs` skills under the active Codex skills directory. Generated skill files include a prs-managed marker and content hash so the CLI can detect stale skills after upgrades. The command updates missing or stale managed skills, leaves current skills unchanged, and skips files at managed paths that do not look like prs-managed skill files.
 
 ### `prs issue`
 

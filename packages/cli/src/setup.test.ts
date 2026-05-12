@@ -221,7 +221,9 @@ describe("setup command", () => {
     expect(testSuggestionsWorkflow).toContain("github-script");
     expect(testSuggestionsWorkflow).toContain("updateComment");
     expect(testSuggestionsWorkflow).toContain("createComment");
-    expect(messages.join("\n")).toContain("Installed prs Codex skills: 11");
+    expect(messages.join("\n")).toContain(
+      "Installed prs Codex skills: 11; updated: 0; unchanged: 0; skipped: 0"
+    );
     expect(messages.join("\n")).toContain(
       "Codex fallback CLI: /usr/local/bin/node /Users/tester/Projects/prs/packages/cli/dist/index.js"
     );
@@ -357,8 +359,12 @@ describe("setup command", () => {
   });
 
   it("rejects unexpected setup arguments", () => {
+    expect(parseSetupCommandArgs(["setup"])).toEqual({ updateSkills: false });
+    expect(parseSetupCommandArgs(["setup", "--update-skills"])).toEqual({
+      updateSkills: true,
+    });
     expect(() => parseSetupCommandArgs(["setup", "--force"])).toThrow(
-      'Unknown setup option "--force". Usage:\n  prs setup'
+      'Unknown setup option "--force". Usage:\n  prs setup\n  prs setup --update-skills'
     );
   });
 

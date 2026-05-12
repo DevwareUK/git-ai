@@ -45,6 +45,7 @@ import {
   loadResolvedRepositoryConfig,
 } from "./config";
 import { publishAuditArtifact } from "./audit-artifacts";
+import { inspectManagedCodexSkills } from "./codex-skills";
 import { buildDoneStateInstructions } from "./done-state";
 import { listIssuesTool } from "./issue-list-tool";
 import { readyIssueTool } from "./issue-ready-tool";
@@ -111,7 +112,13 @@ import {
   toRepoRelativePath,
   writeIssueRefineSessionState,
 } from "./run-artifacts";
-import { parseSetupCommandArgs, runSetupCommand } from "./setup";
+import {
+  logManagedCodexSkillsRefreshResult,
+  parseSetupCommandArgs,
+  refreshManagedCodexSkills,
+  resolveCurrentCliFallbackCommand,
+  runSetupCommand,
+} from "./setup";
 import {
   branchContainsCommit,
   ensureVerificationCommandAvailable,
@@ -472,6 +479,8 @@ const TOP_LEVEL_HELP = [
   "",
   "Supporting commands:",
   "  prs setup",
+  "  prs setup --update-skills",
+  "  prs update skills",
   "  prs tool issue list [--actionable] --json",
   "  prs tool issue ready <issue-number> [--all] --json",
   "  prs tool issue create (--draft-file <path>|--issue-set <path>) --json",
@@ -487,6 +496,8 @@ const TOP_LEVEL_HELP = [
   "GitHub-only by design: forge-backed issue and pull request workflows currently target GitHub repositories.",
 ].join("\n");
 
+const UPDATE_USAGE = ["Usage:", "  prs update skills"].join("\n");
+
 function getCliArgs(): string[] {
   return process.argv.slice(2).filter((arg) => arg !== "--");
 }
@@ -498,6 +509,33 @@ function getInvokedCommandName(): string {
 
 function getDefaultRepoRoot(): string {
   return resolveRuntimeRepoRoot();
+}
+
+function warnIfManagedCodexSkillsAreStale(command: string): void {
+  if (command === "setup" || command === "update") {
+    return;
+  }
+
+  try {
+    const staleSkills = inspectManagedCodexSkills(undefined, undefined, {
+      cliFallbackCommand: resolveCurrentCliFallbackCommand(),
+    }).filter((status) => status.status === "stale");
+
+    if (staleSkills.length === 0) {
+      return;
+    }
+
+    const names = staleSkills
+      .slice(0, 3)
+      .map((status) => status.skillName)
+      .join(", ");
+    const suffix = staleSkills.length > 3 ? `, and ${staleSkills.length - 3} more` : "";
+    console.error(
+      `prs Codex skills look stale (${names}${suffix}). Run \`prs update skills\` to refresh them.`
+    );
+  } catch {
+    // Skill freshness should never block the requested command.
+  }
 }
 
 function loadRepoEnv(repoRoot: string): void {
@@ -1264,6 +1302,15 @@ export function parseAuditCommandArgs(args: string[]): AuditCommandOptions {
     sectionName,
     localRun,
   };
+}
+
+export function parseUpdateCommandArgs(args: string[]): { action: "skills" } {
+  const updateArgs = args[0] === "update" ? args.slice(1) : args;
+  if (updateArgs.length === 1 && updateArgs[0] === "skills") {
+    return { action: "skills" };
+  }
+
+  throw new Error(UPDATE_USAGE);
 }
 
 function parsePositiveInteger(value: string | undefined, flagName: string): number {
@@ -4579,6 +4626,13 @@ async function runAuditCommand(): Promise<void> {
   console.log(`Audit artifact ${result.status}: ${result.comment.url}`);
 }
 
+async function runUpdateCommand(): Promise<void> {
+  const command = parseUpdateCommandArgs(getCliArgs());
+  if (command.action === "skills") {
+    logManagedCodexSkillsRefreshResult(refreshManagedCodexSkills());
+  }
+}
+
 async function runPrCommand(): Promise<void> {
   const repoRoot = getDefaultRepoRoot();
   const prCommand = parsePrCommandArgs(getCliArgs());
@@ -7522,6 +7576,7 @@ export async function run(): Promise<void> {
     command !== "commit" &&
     command !== "diff" &&
     command !== "setup" &&
+    command !== "update" &&
     command !== "audit" &&
     command !== "issue" &&
     command !== "pr" &&
@@ -7534,6 +7589,7 @@ export async function run(): Promise<void> {
     throw new Error(`Unknown command: ${command}.\n\n${TOP_LEVEL_HELP}`);
   }
 
+  warnIfManagedCodexSkillsAreStale(command);
   emitLaunchStageNotice(args);
 
   if (command === "commit") {
@@ -7550,11 +7606,21 @@ export async function run(): Promise<void> {
   }
 
   if (command === "setup") {
-    parseSetupCommandArgs(args);
+    const setupCommand = parseSetupCommandArgs(args);
+    if (setupCommand.updateSkills) {
+      logManagedCodexSkillsRefreshResult(refreshManagedCodexSkills());
+      return;
+    }
+
     await runSetupCommand({
       repoRoot: getDefaultRepoRoot(),
       promptForLine,
     });
+    return;
+  }
+
+  if (command === "update") {
+    await runUpdateCommand();
     return;
   }
 

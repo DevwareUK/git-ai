@@ -1,4 +1,11 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -8,6 +15,7 @@ import {
   renderCodexSkillMarkdown,
   resolveCodexSkillsRoot,
 } from "./codex-skills";
+import { parsePrsToolCommandArgs } from "./prs-tool-command";
 
 const cleanupTargets = new Set<string>();
 
@@ -39,6 +47,7 @@ describe("managed prs Codex skills", () => {
     const markdown = renderCodexSkillMarkdown(PRS_CODEX_SKILLS[1]);
 
     expect(markdown).toContain("name: prs:start-issue-work");
+    expect(markdown).toContain('<!-- prs:managed-skill name="prs:start-issue-work"');
     expect(markdown).toContain("Use Superpowers for brainstorming, planning, worktrees, agents, and verification.");
     expect(markdown).toContain("Publish specs, plans, decisions, and completion notes to GitHub through `prs audit publish`.");
     expect(markdown).toContain("Never commit generated Superpowers specs or plans to `docs/superpowers`.");
@@ -171,6 +180,22 @@ describe("managed prs Codex skills", () => {
     );
   });
 
+  it("keeps documented prs tool commands parseable by the bundled CLI", () => {
+    const markdown = PRS_CODEX_SKILLS.map((skill) =>
+      renderCodexSkillMarkdown(skill)
+    ).join("\n");
+    const documentedToolCommands = [
+      ...markdown.matchAll(/prs tool ([^`.\n]+)/g),
+    ].map((match) => match[1]?.trim().replace("<number>", "123"));
+
+    expect(documentedToolCommands).toContain("issue list --actionable --json");
+    for (const documentedCommand of documentedToolCommands) {
+      expect(() =>
+        parsePrsToolCommandArgs(documentedCommand.split(/\s+/))
+      ).not.toThrow();
+    }
+  });
+
   it("renders setup-captured fallback guidance in finish and audit skills", () => {
     const options = {
       cliFallbackCommand: [
@@ -213,6 +238,9 @@ describe("managed prs Codex skills", () => {
     });
 
     expect(result.installed).toBe(11);
+    expect(result.updated).toBe(0);
+    expect(result.unchanged).toBe(0);
+    expect(result.skipped).toEqual([]);
     const unifiedSkillPath = resolve(codexHome, "skills", "prs", "SKILL.md");
     expect(existsSync(unifiedSkillPath)).toBe(true);
     expect(readFileSync(unifiedSkillPath, "utf8")).toContain("name: prs");
@@ -238,5 +266,70 @@ describe("managed prs Codex skills", () => {
 
     expect(result.installed).toBe(11);
     expect(result.skillFiles.some((file) => file.endsWith("/prs/SKILL.md"))).toBe(true);
+  });
+
+  it("is idempotent for current managed skills", () => {
+    const codexHome = mkdtempSync(resolve(tmpdir(), "prs-codex-home-"));
+    cleanupTargets.add(codexHome);
+
+    installManagedCodexSkills({ CODEX_HOME: codexHome }, "/Users/tester");
+    const result = installManagedCodexSkills({ CODEX_HOME: codexHome }, "/Users/tester");
+
+    expect(result.installed).toBe(0);
+    expect(result.updated).toBe(0);
+    expect(result.unchanged).toBe(11);
+    expect(result.skipped).toEqual([]);
+  });
+
+  it("refreshes legacy managed skills that do not have a marker yet", () => {
+    const codexHome = mkdtempSync(resolve(tmpdir(), "prs-codex-home-"));
+    cleanupTargets.add(codexHome);
+    const skillDir = resolve(codexHome, "skills", "prs");
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(
+      resolve(skillDir, "SKILL.md"),
+      [
+        "---",
+        "name: prs",
+        'description: "old managed skill"',
+        "---",
+        "",
+        "## prs Workflow Contract",
+        "",
+        "Use `prs audit publish`.",
+        "",
+      ].join("\n"),
+      "utf8"
+    );
+
+    const result = installManagedCodexSkills({ CODEX_HOME: codexHome }, "/Users/tester");
+
+    expect(result.installed).toBe(10);
+    expect(result.updated).toBe(1);
+    expect(readFileSync(resolve(skillDir, "SKILL.md"), "utf8")).toContain(
+      '<!-- prs:managed-skill name="prs"'
+    );
+  });
+
+  it("skips custom files at managed skill paths", () => {
+    const codexHome = mkdtempSync(resolve(tmpdir(), "prs-codex-home-"));
+    cleanupTargets.add(codexHome);
+    const skillDir = resolve(codexHome, "skills", "prs");
+    const skillPath = resolve(skillDir, "SKILL.md");
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(skillPath, "# My local prs helper\n", "utf8");
+
+    const result = installManagedCodexSkills({ CODEX_HOME: codexHome }, "/Users/tester");
+
+    expect(result.installed).toBe(10);
+    expect(result.updated).toBe(0);
+    expect(result.skipped).toEqual([
+      {
+        filePath: skillPath,
+        skillName: "prs",
+        reason: "custom-file",
+      },
+    ]);
+    expect(readFileSync(skillPath, "utf8")).toBe("# My local prs helper\n");
   });
 });
