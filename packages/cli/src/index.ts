@@ -5187,6 +5187,7 @@ async function createSuperpowersIssuePlanComment(options: {
   issueNumber: number;
   issue: IssueDetails;
   existingPlanComment?: IssuePlanComment;
+  mode: IssuePlanResolutionMode;
 }): Promise<IssuePlanComment | undefined> {
   const workspace = createIssuePlanWorkspace(options.repoRoot, options.issueNumber);
   writeIssuePlanWorkspaceFiles(
@@ -5198,8 +5199,12 @@ async function createSuperpowersIssuePlanComment(options: {
   );
 
   console.log("Creating issue resolution plan with Codex Superpowers...");
-  const runtime = getInteractiveRuntimeByType("codex");
-  runtime.launch(options.repoRoot, workspace);
+  if (options.mode === "execution-preflight") {
+    launchUnattendedRuntime("codex", options.repoRoot, workspace);
+  } else {
+    const runtime = getInteractiveRuntimeByType("codex");
+    runtime.launch(options.repoRoot, workspace);
+  }
 
   const comment = await publishSuperpowersPlanArtifact({
     repoRoot: options.repoRoot,
@@ -5260,6 +5265,7 @@ async function resolveIssuePlanComment(options: {
       issueNumber: options.issueNumber,
       issue,
       existingPlanComment: existingPlanComment,
+      mode: options.mode,
     });
     if (comment) {
       return comment;
@@ -5919,7 +5925,7 @@ function summarizeIssueBatchChildFailure(result: IssueBatchChildResult): string 
     return result.error.message;
   }
 
-  const output = [result.stderr, result.stdout]
+  const output = [result.stdout, result.stderr]
     .join("\n")
     .split(/\r?\n/)
     .map((line) => line.trim())
