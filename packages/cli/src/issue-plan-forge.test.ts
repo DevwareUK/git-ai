@@ -666,6 +666,84 @@ describe("Issue plan and GitHub forge workflows", () => {
     });
   });
 
+  it("creates audit comments with a resolved gh token when gh is outside PATH", async () => {
+    const issueNumber = 199;
+    const body = "<!-- prs:audit -->\n# Issue #199 audit\n";
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(createFetchResponse({ number: issueNumber }))
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          id: 3202,
+          body,
+          html_url: `https://github.com/DevwareUK/prs/issues/${issueNumber}#issuecomment-3202`,
+          created_at: "2026-05-13T12:00:00Z",
+          updated_at: "2026-05-13T12:00:00Z",
+          user: {
+            login: "prs-bot",
+            type: "Bot",
+          },
+        })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "";
+    process.env.PATH = "/usr/bin:/bin";
+
+    const { createGitHubRepositoryForge, execFileSync } = await loadGitHubForge({
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[0] === "remote") {
+          return "git@github.com:DevwareUK/prs.git\n";
+        }
+
+        if (command === "/opt/homebrew/bin/gh" && args.join(" ") === "auth token") {
+          return "resolved-gh-token\n";
+        }
+
+        throw new Error(`Unexpected execFileSync call: ${command} ${args.join(" ")}`);
+      },
+      spawnSyncImpl: (command, args) => {
+        if (command === "gh" && args[0] === "--version") {
+          return { status: 1, error: new Error("gh is unavailable on PATH") };
+        }
+
+        if (command === "/usr/bin/gh" && args[0] === "--version") {
+          return { status: 1, error: new Error("gh is unavailable on PATH") };
+        }
+
+        if (command === "/bin/gh" && args[0] === "--version") {
+          return { status: 1, error: new Error("gh is unavailable on PATH") };
+        }
+
+        if (command === "/opt/homebrew/bin/gh" && args[0] === "--version") {
+          return { status: 0 };
+        }
+
+        throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+      },
+    });
+    const forge = createGitHubRepositoryForge(REPO_ROOT);
+
+    await expect(
+      (forge as any).createAuditComment({ type: "issue", number: issueNumber }, body)
+    ).resolves.toMatchObject({
+      id: 3202,
+      body,
+    });
+
+    expect(execFileSync).toHaveBeenCalledWith(
+      "/opt/homebrew/bin/gh",
+      ["auth", "token"],
+      expect.any(Object)
+    );
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
+      headers: expect.objectContaining({
+        Authorization: "Bearer resolved-gh-token",
+      }),
+    });
+  });
+
   it("rejects issue audit targets that resolve to pull requests", async () => {
     const issueNumber = 88;
     const fetchMock = vi.fn().mockResolvedValueOnce(

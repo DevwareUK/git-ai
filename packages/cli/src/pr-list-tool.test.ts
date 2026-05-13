@@ -18,12 +18,14 @@ describe("PR list tool", () => {
 
           return "git@github.com:DevwareUK/prs.git";
         },
+        spawnSyncImpl: () => ({ status: 1, error: new Error("gh unavailable") }),
       })
-    ).resolves.toEqual({
+    ).resolves.toMatchObject({
       status: "blocked",
       reason: "github-auth-required",
-      message:
-        "GitHub authentication is required for `prs tool pr list --actionable --json`.",
+      message: expect.stringContaining(
+        "GitHub authentication is required for `prs tool pr list --actionable --json`."
+      ),
       nextAction:
         "Set GH_TOKEN or GITHUB_TOKEN in the repository environment, or authenticate gh in the shell that runs prs.",
     });
