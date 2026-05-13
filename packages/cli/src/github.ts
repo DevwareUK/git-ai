@@ -8,6 +8,7 @@ import type {
   IssueDetails,
   IssuePlanComment,
   OpenPullRequestChange,
+  PullRequestCheckSignal,
   PullRequestDetails,
   RepositoryComment,
   PullRequestReviewComment,
@@ -357,12 +358,18 @@ function tryFetchPullRequestWithGh(
         "--repo",
         `${owner}/${repo}`,
         "--json",
-        "number,title,body,url,baseRefName,headRefName",
+        "number,title,body,url,baseRefName,headRefName,headRefOid,isDraft,mergeStateStatus",
       ],
       `Failed to fetch GitHub pull request #${prNumber} with gh.`
     );
 
-    const parsed = JSON.parse(payload) as Partial<PullRequestDetails>;
+    const parsed = JSON.parse(payload) as Partial<
+      PullRequestDetails & {
+        headRefOid?: string;
+        isDraft?: boolean;
+        mergeStateStatus?: string | null;
+      }
+    >;
     if (
       !parsed.number ||
       !parsed.title ||
@@ -380,6 +387,9 @@ function tryFetchPullRequestWithGh(
       url: parsed.url,
       baseRefName: parsed.baseRefName,
       headRefName: parsed.headRefName,
+      headSha: parsed.headSha ?? parsed.headRefOid,
+      isDraft: parsed.isDraft,
+      mergeableState: parsed.mergeableState ?? parsed.mergeStateStatus,
     };
   } catch {
     return undefined;
@@ -492,7 +502,10 @@ async function fetchPullRequestWithApi(
     body?: string | null;
     html_url?: string;
     base?: { ref?: string };
-    head?: { ref?: string };
+    head?: { ref?: string; sha?: string };
+    draft?: boolean;
+    mergeable?: boolean | null;
+    mergeable_state?: string | null;
   };
 
   if (
@@ -512,7 +525,149 @@ async function fetchPullRequestWithApi(
     url: payload.html_url,
     baseRefName: payload.base.ref,
     headRefName: payload.head.ref,
+    headSha: payload.head.sha,
+    isDraft: payload.draft,
+    mergeable: payload.mergeable,
+    mergeableState: payload.mergeable_state,
   };
+}
+
+async function listPullRequestChecks(
+  owner: string,
+  repo: string,
+  prNumber: number
+): Promise<PullRequestCheckSignal[]> {
+  const pullRequest = await fetchPullRequestWithApi(owner, repo, prNumber);
+  if (!pullRequest.headSha) {
+    return [];
+  }
+
+  const token = tryResolveGitHubApiToken();
+  const headers: Record<string, string> = {
+    Accept: "application/vnd.github+json",
+    "User-Agent": "prs-cli",
+  };
+
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  const checkRunsPromise = fetch(
+    `https://api.github.com/repos/${owner}/${repo}/commits/${pullRequest.headSha}/check-runs?per_page=100`,
+    { headers }
+  );
+  const statusesPromise = fetch(
+    `https://api.github.com/repos/${owner}/${repo}/commits/${pullRequest.headSha}/status`,
+    { headers }
+  );
+
+  const [checkRunsResponse, statusesResponse] = await Promise.allSettled([
+    checkRunsPromise,
+    statusesPromise,
+  ]);
+  const signals: PullRequestCheckSignal[] = [];
+  const failures: string[] = [];
+
+  if (checkRunsResponse.status === "fulfilled" && checkRunsResponse.value.ok) {
+    const payload = (await checkRunsResponse.value.json()) as {
+      check_runs?: Array<{
+        name?: string;
+        status?: string;
+        conclusion?: string | null;
+        html_url?: string;
+      }>;
+    };
+    signals.push(
+      ...(payload.check_runs ?? [])
+        .filter((checkRun) => checkRun.name)
+        .map((checkRun) => ({
+          name: checkRun.name as string,
+          status: normalizeCheckStatus(checkRun.status),
+          conclusion: normalizeCheckConclusion(checkRun.conclusion),
+          url: checkRun.html_url,
+        }))
+    );
+  } else {
+    failures.push("check runs");
+  }
+
+  if (statusesResponse.status === "fulfilled" && statusesResponse.value.ok) {
+    const payload = (await statusesResponse.value.json()) as {
+      statuses?: Array<{
+        context?: string;
+        state?: string;
+        target_url?: string | null;
+      }>;
+    };
+    signals.push(
+      ...(payload.statuses ?? [])
+        .filter((status) => status.context)
+        .map((status) => ({
+          name: status.context as string,
+          status: status.state === "pending" ? "pending" : "completed",
+          conclusion: normalizeStatusConclusion(status.state),
+          url: status.target_url ?? undefined,
+        }))
+    );
+  } else {
+    failures.push("commit statuses");
+  }
+
+  if (failures.length === 2) {
+    throw new Error(
+      `Failed to fetch GitHub checks for pull request #${prNumber}.`
+    );
+  }
+
+  return signals;
+}
+
+function normalizeCheckStatus(status: string | undefined): PullRequestCheckSignal["status"] {
+  if (status === "queued" || status === "in_progress") {
+    return status === "in_progress" ? "in-progress" : status;
+  }
+
+  if (status === "completed" || status === "pending") {
+    return status;
+  }
+
+  return "unknown";
+}
+
+function normalizeCheckConclusion(
+  conclusion: string | null | undefined
+): PullRequestCheckSignal["conclusion"] | undefined {
+  if (!conclusion) {
+    return undefined;
+  }
+
+  if (
+    conclusion === "success" ||
+    conclusion === "failure" ||
+    conclusion === "neutral" ||
+    conclusion === "cancelled" ||
+    conclusion === "skipped" ||
+    conclusion === "timed_out" ||
+    conclusion === "action_required"
+  ) {
+    return conclusion.replaceAll("_", "-") as PullRequestCheckSignal["conclusion"];
+  }
+
+  return "unknown";
+}
+
+function normalizeStatusConclusion(
+  state: string | undefined
+): PullRequestCheckSignal["conclusion"] | undefined {
+  if (state === "success") {
+    return "success";
+  }
+
+  if (state === "failure" || state === "error") {
+    return "failure";
+  }
+
+  return undefined;
 }
 
 async function listOpenPullRequests(
@@ -806,6 +961,11 @@ class GitHubRepositoryForge implements RepositoryForge {
     }
 
     return fetchPullRequestWithApi(owner, repo, prNumber);
+  }
+
+  async fetchPullRequestChecks(prNumber: number): Promise<PullRequestCheckSignal[]> {
+    const { owner, repo } = parseGitHubRepoFromRemote(this.repoRoot);
+    return listPullRequestChecks(owner, repo, prNumber);
   }
 
   async listOpenPullRequestChanges(): Promise<OpenPullRequestChange[]> {

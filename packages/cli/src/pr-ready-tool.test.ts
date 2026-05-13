@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -31,7 +31,7 @@ function createPullRequest(): PullRequestDetails {
   };
 }
 
-function createForge(): RepositoryForge {
+function createForge(overrides: Partial<RepositoryForge> = {}): RepositoryForge {
   return {
     type: "github",
     isAuthenticated: () => true,
@@ -40,9 +40,10 @@ function createForge(): RepositoryForge {
     fetchIssuePlanComment: vi.fn(),
     fetchAuditComment: vi.fn(),
     fetchPullRequestDetails: vi.fn().mockResolvedValue(createPullRequest()),
+    fetchPullRequestChecks: vi.fn().mockResolvedValue([]),
     listOpenPullRequestChanges: vi.fn(),
-    fetchPullRequestIssueComments: vi.fn(),
-    fetchPullRequestReviewComments: vi.fn(),
+    fetchPullRequestIssueComments: vi.fn().mockResolvedValue([]),
+    fetchPullRequestReviewComments: vi.fn().mockResolvedValue([]),
     createIssuePlanComment: vi.fn(),
     createAuditComment: vi.fn(),
     updateIssuePlanComment: vi.fn(),
@@ -51,6 +52,7 @@ function createForge(): RepositoryForge {
     updateIssue: vi.fn(),
     createOrReuseIssue: vi.fn(),
     createPullRequest: vi.fn(),
+    ...overrides,
   };
 }
 
@@ -130,7 +132,7 @@ function gitCallArgs(call: { command: string; args: string[] }): string[] {
 }
 
 describe("PR ready tool", () => {
-  it("reports a sync prompt when the branch is behind and --all is not set", async () => {
+  it("syncs the base by default without starting the local runtime", async () => {
     const repoRoot = createRepo();
     const { calls, runCommand } = createCommandRecorder({ containsBase: false });
 
@@ -146,18 +148,31 @@ describe("PR ready tool", () => {
     });
 
     expect(result).toMatchObject({
-      status: "needs-action",
-      nextAction: "confirm-sync-base",
+      status: "ready",
+      nextAction: "browse-local-app",
       baseSync: {
-        status: "behind",
+        status: "merged",
         remoteRef: "origin/main",
       },
       runtime: {
         kind: "unknown",
         status: "not-detected",
       },
+      prContext: {
+        checks: {
+          status: "available",
+          totalCount: 0,
+        },
+        testSuggestions: {
+          status: "not-found",
+        },
+        reviewComments: {
+          status: "available",
+          actionableThreadCount: 0,
+        },
+      },
     });
-    expect(calls.some((call) => call.command === "git" && gitCallArgs(call)[0] === "merge")).toBe(false);
+    expect(calls.some((call) => call.command === "git" && gitCallArgs(call)[0] === "merge")).toBe(true);
     expect(calls.some((call) => call.command === "ddev")).toBe(false);
   });
 
@@ -371,5 +386,150 @@ describe("PR ready tool", () => {
       },
     });
     expect(calls.some((call) => call.command === "ddev")).toBe(false);
+  });
+
+  it("persists GitHub-hosted PR context in readiness metadata", async () => {
+    const repoRoot = createRepo();
+    const { runCommand } = createCommandRecorder({ containsBase: true });
+    const forge = createForge({
+      fetchPullRequestDetails: vi.fn().mockResolvedValue({
+        ...createPullRequest(),
+        isDraft: true,
+        mergeable: false,
+        mergeableState: "dirty",
+      }),
+      fetchPullRequestChecks: vi.fn().mockResolvedValue([
+        {
+          name: "build",
+          status: "completed",
+          conclusion: "failure",
+          url: "https://github.com/DevwareUK/bos/actions/runs/1",
+        },
+        {
+          name: "smoke",
+          status: "in-progress",
+          url: "https://github.com/DevwareUK/bos/actions/runs/2",
+        },
+      ]),
+      fetchPullRequestIssueComments: vi.fn().mockResolvedValue([
+        {
+          id: 42,
+          body: [
+            "<!-- prs:test-suggestions -->",
+            "## AI Test Suggestions",
+            "",
+            "### Suggested test areas",
+            "",
+            "#### Checkout readiness metadata",
+            "- [ ] Addressed",
+            "- Priority: High",
+            "- Test type: Integration",
+            "- Behavior covered: Readiness metadata includes hosted PR context.",
+            "- Regression risk: Reviewers lose the fast path signal.",
+            "- Why it matters: The local workflow should surface GitHub context.",
+            "- Protected paths: `packages/cli/src/pr-ready-tool.ts`",
+            "- Likely locations: `packages/cli/src/pr-ready-tool.test.ts`",
+            "- Implementation note: Assert the metadata shape.",
+          ].join("\n"),
+          url: "https://github.com/DevwareUK/bos/pull/115#issuecomment-42",
+          createdAt: "2026-05-13T08:00:00Z",
+          updatedAt: "2026-05-13T08:00:00Z",
+          author: "github-actions",
+          isBot: true,
+        },
+      ]),
+      fetchPullRequestReviewComments: vi.fn().mockResolvedValue([
+        {
+          id: 100,
+          body: "Please cover the metadata warning path too.",
+          path: "packages/cli/src/pr-ready-tool.ts",
+          line: 25,
+          url: "https://github.com/DevwareUK/bos/pull/115#discussion_r100",
+          author: "reviewer",
+          createdAt: "2026-05-13T08:30:00Z",
+          updatedAt: "2026-05-13T08:30:00Z",
+        },
+      ]),
+    });
+
+    const result = await readyPullRequestTool({
+      all: false,
+      forge,
+      prNumber: 115,
+      repoRoot,
+      runCommand,
+      ensureCleanWorkingTree: vi.fn(),
+      ensureVerificationCommandAvailable: vi.fn(),
+      buildCommand: ["pnpm", "build"],
+    });
+
+    expect(result.prContext).toMatchObject({
+      pullRequest: {
+        draft: true,
+        mergeable: false,
+        mergeableState: "dirty",
+      },
+      checks: {
+        status: "available",
+        failed: [{ name: "build", conclusion: "failure" }],
+        pending: [{ name: "smoke", status: "in-progress" }],
+      },
+      testSuggestions: {
+        status: "available",
+        totalCount: 1,
+        openCount: 1,
+        topOpenSuggestions: ["Checkout readiness metadata"],
+      },
+      reviewComments: {
+        status: "available",
+        actionableThreadCount: 1,
+        topThreads: [
+          {
+            path: "packages/cli/src/pr-ready-tool.ts",
+            lineRange: "25",
+            author: "reviewer",
+          },
+        ],
+      },
+    });
+
+    const metadata = JSON.parse(readFileSync(result.metadataFilePath, "utf8")) as typeof result;
+    expect(metadata.prContext).toEqual(result.prContext);
+  });
+
+  it("keeps readiness non-blocking when hosted PR context cannot be fetched", async () => {
+    const repoRoot = createRepo();
+    const { runCommand } = createCommandRecorder({ containsBase: true });
+
+    const result = await readyPullRequestTool({
+      all: false,
+      forge: createForge({
+        fetchPullRequestChecks: vi.fn().mockRejectedValue(new Error("checks API failed")),
+        fetchPullRequestIssueComments: vi.fn().mockRejectedValue(new Error("comments API failed")),
+        fetchPullRequestReviewComments: vi.fn().mockRejectedValue(new Error("review API failed")),
+      }),
+      prNumber: 115,
+      repoRoot,
+      runCommand,
+      ensureCleanWorkingTree: vi.fn(),
+      ensureVerificationCommandAvailable: vi.fn(),
+      buildCommand: ["pnpm", "build"],
+    });
+
+    expect(result).toMatchObject({
+      status: "ready",
+      prContext: {
+        checks: {
+          status: "unavailable",
+        },
+        testSuggestions: {
+          status: "unavailable",
+        },
+        reviewComments: {
+          status: "unavailable",
+        },
+      },
+    });
+    expect(result.prContext.warnings).toHaveLength(3);
   });
 });

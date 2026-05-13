@@ -146,6 +146,8 @@ Supporting commands:
 - `prs commit`
 - `prs diff`
 
+`prs tool pr ready <pr-number> --json` is the fast local PR-readiness path used by `/prs:pr`: it checks out the actual PR head branch, fetches and merges the latest PR base branch, writes readiness metadata with GitHub-hosted context such as failed/pending checks, managed AI test suggestions, and actionable review comments, and does not run the configured build or broad local verification. Add `--all` when you also want the configured local runtime started when possible.
+
 Detailed command behavior lives in [docs/cli-reference.md](docs/cli-reference.md). Codex and `/prs` operator guidance lives in [docs/codex-prs-workflows.md](docs/codex-prs-workflows.md).
 
 ## Documentation map

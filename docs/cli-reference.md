@@ -33,6 +33,7 @@ Supporting commands:
 - `prs setup --update-skills`: refresh only managed Codex `/prs` skills
 - `prs update skills`: refresh managed Codex `/prs` skills after upgrading the CLI
 - `prs tool issue create (--draft-file <path>|--issue-set <path>) --json`: deterministically create GitHub issues from approved local issue draft artifacts
+- `prs tool pr ready <pr-number> [--all] --json`: fast local PR readiness for `/prs:pr`; checks out the actual PR head branch, fetches and merges the latest PR base branch, reports GitHub-hosted review signals in `prContext`, and skips broad local verification
 - `prs codex pr prepare-review <pr-number>`: explicit legacy launcher for reviewer workspace preparation and live Codex follow-up
 - `prs tool pr prepare-review <pr-number> --json`: deterministic Codex-safe review preparation
 - `prs commit`: generate a commit message from staged changes
