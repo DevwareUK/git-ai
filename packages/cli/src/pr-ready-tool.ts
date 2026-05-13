@@ -2,8 +2,17 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import type { RepositoryLocalRuntimeConfigType } from "@prs/contracts";
+import { ALL_TEST_SUGGESTIONS_COMMENT_MARKERS } from "@prs/contracts";
 import { formatRunTimestamp, toRepoRelativePath } from "./run-artifacts";
-import type { PullRequestDetails, RepositoryForge } from "./forge";
+import type { PullRequestCheckSignal, PullRequestDetails, RepositoryForge } from "./forge";
+import {
+  buildPullRequestReviewThreads,
+  formatReviewCommentLineRange,
+} from "./workflows/pr-fix-comments/selection";
+import {
+  findManagedTestSuggestionsComment,
+  parseManagedTestSuggestionsComment,
+} from "./workflows/pr-fix-tests/selection";
 
 export type PrReadyRunCommandResult = {
   status: number;
@@ -35,13 +44,6 @@ export type PrReadyBaseSync =
       summary: string;
     }
   | {
-      status: "behind";
-      baseRefName: string;
-      remoteRef: string;
-      baseTip: string;
-      summary: string;
-    }
-  | {
       status: "merged";
       baseRefName: string;
       remoteRef: string;
@@ -56,6 +58,60 @@ export type PrReadyBaseSync =
       summary: string;
     };
 
+export type PrReadyPullRequestContext = {
+  pullRequest: {
+    draft: boolean | "unknown";
+    mergeable: boolean | null | "unknown";
+    mergeableState?: string;
+  };
+  checks:
+    | {
+        status: "available";
+        totalCount: number;
+        failed: Array<{ name: string; conclusion?: string; url?: string }>;
+        pending: Array<{ name: string; status: string; url?: string }>;
+      }
+    | {
+        status: "unavailable";
+        warning: string;
+      };
+  testSuggestions:
+    | {
+        status: "available";
+        commentUrl: string;
+        totalCount: number;
+        openCount: number;
+        addressedCount: number;
+        topOpenSuggestions: string[];
+      }
+    | {
+        status: "not-found";
+        markers: readonly string[];
+      }
+    | {
+        status: "unavailable";
+        warning: string;
+      };
+  reviewComments:
+    | {
+        status: "available";
+        totalCount: number;
+        actionableThreadCount: number;
+        topThreads: Array<{
+          path: string;
+          lineRange: string;
+          author: string;
+          summary: string;
+          url: string;
+        }>;
+      }
+    | {
+        status: "unavailable";
+        warning: string;
+      };
+  warnings: string[];
+};
+
 export type PrReadyToolResult =
   | {
       status: "ready";
@@ -67,6 +123,7 @@ export type PrReadyToolResult =
       metadataFilePath: string;
       baseSync: PrReadyBaseSync;
       runtime: PrReadyRuntime;
+      prContext: PrReadyPullRequestContext;
       nextAction: "browse-local-app";
     }
   | {
@@ -79,7 +136,8 @@ export type PrReadyToolResult =
       metadataFilePath: string;
       baseSync: PrReadyBaseSync;
       runtime: PrReadyRuntime;
-      nextAction: "confirm-sync-base" | "start-runtime";
+      prContext: PrReadyPullRequestContext;
+      nextAction: "start-runtime";
     }
   | {
       status: "blocked";
@@ -92,6 +150,7 @@ export type PrReadyToolResult =
       metadataFilePath: string;
       baseSync: PrReadyBaseSync;
       runtime: PrReadyRuntime;
+      prContext: PrReadyPullRequestContext;
       nextAction: "resolve-conflicts" | "start-runtime-manually";
     };
 
@@ -304,8 +363,7 @@ function fetchBaseState(
   runCommand: (command: string, args: string[]) => PrReadyRunCommandResult,
   repoRoot: string,
   pullRequest: PullRequestDetails,
-  branchName: string,
-  all: boolean
+  branchName: string
 ): PrReadyBaseSync {
   const remoteRef = `origin/${pullRequest.baseRefName}`;
   ensureSuccess(
@@ -334,16 +392,6 @@ function fetchBaseState(
     };
   }
 
-  if (!all) {
-    return {
-      status: "behind",
-      baseRefName: pullRequest.baseRefName,
-      remoteRef,
-      baseTip,
-      summary: `"${branchName}" does not contain ${remoteRef} tip ${baseTip}.`,
-    };
-  }
-
   const mergeResult = git(runCommand, repoRoot, ["merge", "--no-edit", "--no-ff", remoteRef]);
   if (mergeResult.status !== 0) {
     return {
@@ -362,6 +410,143 @@ function fetchBaseState(
     baseTip,
     summary: `Merged ${remoteRef} tip ${baseTip} into "${branchName}".`,
   };
+}
+
+function isFailedCheck(check: PullRequestCheckSignal): boolean {
+  return (
+    check.conclusion === "failure" ||
+    check.conclusion === "timed-out" ||
+    check.conclusion === "action-required" ||
+    check.conclusion === "cancelled"
+  );
+}
+
+function isPendingCheck(check: PullRequestCheckSignal): boolean {
+  return (
+    check.status === "queued" ||
+    check.status === "in-progress" ||
+    check.status === "pending" ||
+    (check.status !== "completed" && check.conclusion !== "success")
+  );
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function collectPullRequestContext(
+  forge: RepositoryForge,
+  pullRequest: PullRequestDetails
+): Promise<PrReadyPullRequestContext> {
+  const warnings: string[] = [];
+  const context: PrReadyPullRequestContext = {
+    pullRequest: {
+      draft: pullRequest.isDraft ?? "unknown",
+      mergeable: pullRequest.mergeable ?? "unknown",
+      mergeableState: pullRequest.mergeableState ?? undefined,
+    },
+    checks: {
+      status: "unavailable",
+      warning: "GitHub check context has not been fetched yet.",
+    },
+    testSuggestions: {
+      status: "unavailable",
+      warning: "Managed AI test suggestion context has not been fetched yet.",
+    },
+    reviewComments: {
+      status: "unavailable",
+      warning: "Pull request review comment context has not been fetched yet.",
+    },
+    warnings,
+  };
+
+  try {
+    const checks = await forge.fetchPullRequestChecks(pullRequest.number);
+    context.checks = {
+      status: "available",
+      totalCount: checks.length,
+      failed: checks
+        .filter(isFailedCheck)
+        .map((check) => ({
+          name: check.name,
+          conclusion: check.conclusion,
+          url: check.url,
+        })),
+      pending: checks
+        .filter(isPendingCheck)
+        .map((check) => ({
+          name: check.name,
+          status: check.status,
+          url: check.url,
+        })),
+    };
+  } catch (error) {
+    const warning = `GitHub checks unavailable: ${getErrorMessage(error)}`;
+    warnings.push(warning);
+    context.checks = {
+      status: "unavailable",
+      warning,
+    };
+  }
+
+  try {
+    const comments = await forge.fetchPullRequestIssueComments(pullRequest.number);
+    const comment = findManagedTestSuggestionsComment(comments);
+    if (!comment) {
+      context.testSuggestions = {
+        status: "not-found",
+        markers: ALL_TEST_SUGGESTIONS_COMMENT_MARKERS,
+      };
+    } else {
+      const suggestionsComment = parseManagedTestSuggestionsComment(comment);
+      const openSuggestions = suggestionsComment.suggestions.filter(
+        (suggestion) => !suggestion.addressed
+      );
+      context.testSuggestions = {
+        status: "available",
+        commentUrl: comment.url,
+        totalCount: suggestionsComment.suggestions.length,
+        openCount: openSuggestions.length,
+        addressedCount: suggestionsComment.suggestions.length - openSuggestions.length,
+        topOpenSuggestions: openSuggestions
+          .slice(0, 3)
+          .map((suggestion) => suggestion.area),
+      };
+    }
+  } catch (error) {
+    const warning = `Managed AI test suggestions unavailable: ${getErrorMessage(error)}`;
+    warnings.push(warning);
+    context.testSuggestions = {
+      status: "unavailable",
+      warning,
+    };
+  }
+
+  try {
+    const comments = await forge.fetchPullRequestReviewComments(pullRequest.number);
+    const threads = buildPullRequestReviewThreads(comments);
+    context.reviewComments = {
+      status: "available",
+      totalCount: comments.length,
+      actionableThreadCount: threads.length,
+      topThreads: threads.slice(0, 5).map((thread) => ({
+        path: thread.path,
+        lineRange: formatReviewCommentLineRange(thread.startLine, thread.endLine),
+        author: thread.rootComment.author,
+        summary: thread.summary,
+        url: thread.rootComment.url,
+      })),
+    };
+  } catch (error) {
+    const warning = `Review comments unavailable: ${getErrorMessage(error)}`;
+    warnings.push(warning);
+    context.reviewComments = {
+      status: "unavailable",
+      warning,
+    };
+  }
+
+  return context;
 }
 
 function writeMetadata(
@@ -410,9 +595,9 @@ export async function readyPullRequestTool(
     runCommand,
     options.repoRoot,
     pullRequest,
-    branchName,
-    options.all
+    branchName
   );
+  const prContext = await collectPullRequestContext(options.forge, pullRequest);
 
   let result: PrReadyToolResult;
   if (baseSync.status === "blocked") {
@@ -428,24 +613,8 @@ export async function readyPullRequestTool(
       baseSync,
       runtime:
         runtime.kind === "command" ? { ...runtime, status: "not-started" } : runtime,
+      prContext,
       nextAction: "resolve-conflicts",
-    };
-    writeMetadata(options.repoRoot, metadataFilePath, result);
-    return result;
-  }
-
-  if (baseSync.status === "behind") {
-    result = {
-      status: "needs-action",
-      prNumber: pullRequest.number,
-      title: pullRequest.title,
-      url: pullRequest.url,
-      branchName,
-      runDir,
-      metadataFilePath,
-      baseSync,
-      runtime,
-      nextAction: "confirm-sync-base",
     };
     writeMetadata(options.repoRoot, metadataFilePath, result);
     return result;
@@ -464,6 +633,7 @@ export async function readyPullRequestTool(
       metadataFilePath,
       baseSync,
       runtime: startedRuntime,
+      prContext,
       nextAction: "start-runtime-manually",
     };
     writeMetadata(options.repoRoot, metadataFilePath, result);
@@ -481,6 +651,7 @@ export async function readyPullRequestTool(
       metadataFilePath,
       baseSync,
       runtime: startedRuntime,
+      prContext,
       nextAction: "start-runtime",
     };
     writeMetadata(options.repoRoot, metadataFilePath, result);
@@ -497,6 +668,7 @@ export async function readyPullRequestTool(
     metadataFilePath,
     baseSync,
     runtime: startedRuntime,
+    prContext,
     nextAction: "browse-local-app",
   };
   writeMetadata(options.repoRoot, metadataFilePath, result);

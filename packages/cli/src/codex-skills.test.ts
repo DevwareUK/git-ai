@@ -90,17 +90,17 @@ describe("managed prs Codex skills", () => {
     expect(markdown).toContain(
       "current repository checkout used by the user's normal local runtime"
     );
+    expect(markdown).toContain("fetch and merge the latest PR base branch");
+    expect(markdown).toContain("summarize `prContext` signals from GitHub");
     expect(markdown).toContain("actual PR head branch");
     expect(markdown).toContain("remove that clean worktree");
     expect(markdown).toContain("If that worktree has uncommitted changes");
     expect(markdown).toContain(
       "/prs pr <number> --all`: run `prs tool pr ready <number> --all --json`"
     );
+    expect(markdown).toContain("starting the configured local app runtime");
     expect(markdown).toContain(
-      "ensuring the configured local app runtime is running"
-    );
-    expect(markdown).toContain(
-      "Do not push, review, fix, approve, merge, or switch to an existing PR worktree."
+      "Do not push, review, fix, approve, merge, switch to an existing PR worktree, or run broad local verification."
     );
     expect(markdown).toContain(
       "/prs pr <number> prepare-review`: run `prs tool pr prepare-review <number> --json`"

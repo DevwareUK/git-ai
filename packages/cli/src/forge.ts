@@ -36,6 +36,17 @@ export type PullRequestDetails = {
   url: string;
   baseRefName: string;
   headRefName: string;
+  headSha?: string;
+  isDraft?: boolean;
+  mergeable?: boolean | null;
+  mergeableState?: string | null;
+};
+
+export type PullRequestCheckSignal = {
+  name: string;
+  status: "queued" | "in-progress" | "completed" | "pending" | "unknown";
+  conclusion?: "success" | "failure" | "neutral" | "cancelled" | "skipped" | "timed-out" | "action-required" | "unknown";
+  url?: string;
 };
 
 export type OpenPullRequestChange = {
@@ -92,6 +103,7 @@ export interface RepositoryForge {
   fetchIssuePlanComment(issueNumber: number): Promise<IssuePlanComment | undefined>;
   fetchAuditComment(target: AuditTarget): Promise<RepositoryComment | undefined>;
   fetchPullRequestDetails(prNumber: number): Promise<PullRequestDetails>;
+  fetchPullRequestChecks(prNumber: number): Promise<PullRequestCheckSignal[]>;
   listOpenPullRequestChanges(): Promise<OpenPullRequestChange[]>;
   fetchPullRequestIssueComments(prNumber: number): Promise<RepositoryComment[]>;
   fetchPullRequestReviewComments(prNumber: number): Promise<PullRequestReviewComment[]>;
@@ -141,6 +153,12 @@ class NoopRepositoryForge implements RepositoryForge {
   }
 
   async fetchPullRequestDetails(): Promise<PullRequestDetails> {
+    throw new Error(
+      "Repository forge support is disabled by .prs/config.json. Configure `forge.type` to enable pull request workflows."
+    );
+  }
+
+  async fetchPullRequestChecks(): Promise<PullRequestCheckSignal[]> {
     throw new Error(
       "Repository forge support is disabled by .prs/config.json. Configure `forge.type` to enable pull request workflows."
     );

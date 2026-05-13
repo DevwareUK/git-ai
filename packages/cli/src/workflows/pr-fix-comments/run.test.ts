@@ -75,6 +75,7 @@ function createForge(
       fetchIssuePlanComment: vi.fn(),
       fetchAuditComment: vi.fn(),
       fetchPullRequestDetails,
+      fetchPullRequestChecks: vi.fn(),
       listOpenPullRequestChanges: vi.fn(),
       fetchPullRequestIssueComments: vi.fn(),
       fetchPullRequestReviewComments,
