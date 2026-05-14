@@ -170,6 +170,11 @@ describe("PR ready tool", () => {
           status: "available",
           actionableThreadCount: 0,
         },
+        commentSummary: {
+          status: "available",
+          totalCount: 0,
+          groups: [],
+        },
       },
     });
     expect(calls.some((call) => call.command === "git" && gitCallArgs(call)[0] === "merge")).toBe(true);
@@ -561,6 +566,70 @@ describe("PR ready tool", () => {
 
     const metadata = JSON.parse(readFileSync(result.metadataFilePath, "utf8")) as typeof result;
     expect(metadata.prContext).toEqual(result.prContext);
+  });
+
+  it("groups uncategorized and blank PR issue comments without review threads", async () => {
+    const repoRoot = createRepo();
+    const { runCommand } = createCommandRecorder({ containsBase: true });
+
+    const result = await readyPullRequestTool({
+      all: false,
+      forge: createForge({
+        fetchPullRequestIssueComments: vi.fn().mockResolvedValue([
+          {
+            id: 201,
+            body: "Can we mention this in the release note?",
+            url: "https://github.com/DevwareUK/bos/pull/115#issuecomment-201",
+            createdAt: "2026-05-13T09:00:00Z",
+            updatedAt: "2026-05-13T09:00:00Z",
+            author: "reviewer-c",
+            isBot: false,
+          },
+          {
+            id: 202,
+            body: "   ",
+            url: "https://github.com/DevwareUK/bos/pull/115#issuecomment-202",
+            createdAt: "2026-05-13T09:10:00Z",
+            updatedAt: "2026-05-13T09:10:00Z",
+            author: "reviewer-d",
+            isBot: false,
+          },
+        ]),
+        fetchPullRequestReviewComments: vi.fn().mockResolvedValue([]),
+      }),
+      prNumber: 115,
+      repoRoot,
+      runCommand,
+      ensureCleanWorkingTree: vi.fn(),
+      ensureVerificationCommandAvailable: vi.fn(),
+      buildCommand: ["pnpm", "build"],
+    });
+
+    expect(result.prContext.commentSummary).toMatchObject({
+      status: "available",
+      totalCount: 2,
+      groups: [
+        {
+          category: "general",
+          title: "General discussion",
+          count: 2,
+          items: [
+            {
+              kind: "issue-comment",
+              summary: "Can we mention this in the release note?",
+              url: "https://github.com/DevwareUK/bos/pull/115#issuecomment-201",
+              author: "reviewer-c",
+            },
+            {
+              kind: "issue-comment",
+              summary: "(No comment body provided.)",
+              url: "https://github.com/DevwareUK/bos/pull/115#issuecomment-202",
+              author: "reviewer-d",
+            },
+          ],
+        },
+      ],
+    });
   });
 
   it("keeps readiness non-blocking when hosted PR context cannot be fetched", async () => {
