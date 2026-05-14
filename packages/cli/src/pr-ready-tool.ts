@@ -12,6 +12,8 @@ import type {
 } from "./forge";
 import {
   buildPullRequestReviewThreads,
+  buildPullRequestReviewThreadsFromDetails,
+  filterActionablePullRequestReviewThreads,
   formatReviewCommentLineRange,
 } from "./workflows/pr-fix-comments/selection";
 import {
@@ -742,8 +744,18 @@ async function collectPullRequestContext(
   }
 
   try {
-    const comments = await forge.fetchPullRequestReviewComments(pullRequest.number);
-    const threads = buildPullRequestReviewThreads(comments);
+    const threadDetails = forge.fetchPullRequestReviewThreads
+      ? await forge.fetchPullRequestReviewThreads(pullRequest.number)
+      : undefined;
+    const comments =
+      threadDetails === undefined
+        ? await forge.fetchPullRequestReviewComments(pullRequest.number)
+        : threadDetails.flatMap((thread) => thread.comments);
+    const threads = filterActionablePullRequestReviewThreads(
+      threadDetails === undefined
+        ? buildPullRequestReviewThreads(comments)
+        : buildPullRequestReviewThreadsFromDetails(threadDetails)
+    ).threads;
     reviewThreadsForSummary = threads;
     context.reviewComments = {
       status: "available",

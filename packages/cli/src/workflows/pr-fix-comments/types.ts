@@ -10,6 +10,9 @@ export type PullRequestFixWorkspace = {
 
 export type PullRequestReviewThread = {
   threadId: number;
+  nodeId?: string;
+  isResolved?: boolean;
+  isOutdated?: boolean;
   path: string;
   startLine?: number;
   endLine?: number;
