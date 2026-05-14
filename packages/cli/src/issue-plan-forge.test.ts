@@ -425,6 +425,102 @@ describe("Issue plan and GitHub forge workflows", () => {
     );
   });
 
+  it("fetches pull request review threads with lifecycle state through GraphQL", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      createFetchResponse({
+        data: {
+          repository: {
+            pullRequest: {
+              reviewThreads: {
+                pageInfo: {
+                  hasNextPage: false,
+                  endCursor: null,
+                },
+                nodes: [
+                  {
+                    id: "PRRT_kwDO_thread",
+                    isResolved: false,
+                    isOutdated: true,
+                    comments: {
+                      nodes: [
+                        {
+                          databaseId: 9001,
+                          body: "Handle lookup failures.",
+                          path: "src/migrate.ts",
+                          line: 42,
+                          originalLine: 40,
+                          startLine: null,
+                          originalStartLine: null,
+                          diffHunk: "@@ -40,3 +42,4 @@",
+                          url: "https://github.com/DevwareUK/prs/pull/133#discussion_r9001",
+                          author: {
+                            login: "github-actions[bot]",
+                          },
+                          createdAt: "2026-05-14T10:00:00Z",
+                          updatedAt: "2026-05-14T10:05:00Z",
+                          replyTo: null,
+                          commit: {
+                            oid: "abc123",
+                          },
+                        },
+                      ],
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { createGitHubRepositoryForge } = await loadGitHubForge({
+      spawnSyncImpl: () => ({ status: 1 }),
+    });
+    process.env.GH_TOKEN = "";
+    process.env.GITHUB_TOKEN = "test-token";
+    const forge = createGitHubRepositoryForge(REPO_ROOT);
+
+    await expect(forge.fetchPullRequestReviewThreads?.(133)).resolves.toEqual([
+      {
+        threadId: 9001,
+        nodeId: "PRRT_kwDO_thread",
+        isResolved: false,
+        isOutdated: true,
+        comments: [
+          {
+            id: 9001,
+            body: "Handle lookup failures.",
+            path: "src/migrate.ts",
+            line: 42,
+            originalLine: 40,
+            startLine: undefined,
+            originalStartLine: undefined,
+            diffHunk: "@@ -40,3 +42,4 @@",
+            url: "https://github.com/DevwareUK/prs/pull/133#discussion_r9001",
+            author: "github-actions[bot]",
+            authorIsBot: true,
+            createdAt: "2026-05-14T10:00:00Z",
+            updatedAt: "2026-05-14T10:05:00Z",
+            inReplyToId: undefined,
+            commitOid: "abc123",
+          },
+        ],
+      },
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.github.com/graphql",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          Authorization: "Bearer test-token",
+        }),
+      })
+    );
+  });
+
   it("fetches audit comments through the GitHub repository forge adapter", async () => {
     const issueNumber = 42;
     const fetchMock = vi

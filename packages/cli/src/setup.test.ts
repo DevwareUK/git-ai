@@ -203,6 +203,13 @@ describe("setup command", () => {
     expect(
       readFileSync(resolve(repoRoot, ".github", "workflows", "prs-pr-review.yml"), "utf8")
     ).toContain("DevwareUK/prs/actions/pr-review@main");
+    const prReviewWorkflow = readFileSync(
+      resolve(repoRoot, ".github", "workflows", "prs-pr-review.yml"),
+      "utf8"
+    );
+    expect(prReviewWorkflow).toContain("prs:pr-review-inline");
+    expect(prReviewWorkflow).toContain("findingKey");
+    expect(prReviewWorkflow).toContain("buildFindingKey(rawComment)");
     expect(
       readFileSync(resolve(repoRoot, ".github", "workflows", "prs-pr-assistant.yml"), "utf8")
     ).toContain("DevwareUK/prs/actions/pr-assistant@main");

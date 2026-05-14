@@ -1,5 +1,29 @@
-import type { PullRequestReviewComment } from "../../forge";
+import type {
+  PullRequestReviewComment,
+  PullRequestReviewThreadDetails,
+} from "../../forge";
 import type { PullRequestReviewTask, PullRequestReviewThread } from "./types";
+
+const PRS_INLINE_REVIEW_METADATA_PATTERN =
+  /<!--\s*prs:pr-review-inline\s+({[\s\S]*?})\s*-->/;
+
+export type LatestSuccessfulPullRequestFix = {
+  completedAt: string;
+  commitSha?: string;
+};
+
+export type PullRequestReviewThreadFilterContext = {
+  latestSuccessfulFix?: LatestSuccessfulPullRequestFix;
+};
+
+export type PullRequestReviewThreadFilterResult = {
+  threads: PullRequestReviewThread[];
+  skipped: {
+    resolved: number;
+    outdated: number;
+    stalePrsAuthored: number;
+  };
+};
 
 export function getReviewCommentDisplayLine(
   comment: PullRequestReviewComment
@@ -95,6 +119,140 @@ function summarizeReviewCommentBody(body: string): string {
   }
 
   return `${normalized.slice(0, 137)}...`;
+}
+
+function parsePrsInlineReviewMetadata(body: string): { findingKey?: string } | undefined {
+  const match = body.match(PRS_INLINE_REVIEW_METADATA_PATTERN);
+  if (!match?.[1]) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(match[1]) as { findingKey?: unknown };
+    return {
+      findingKey:
+        typeof parsed.findingKey === "string" && parsed.findingKey.trim()
+          ? parsed.findingKey.trim()
+          : undefined,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function getPrsInlineReviewFindingKey(
+  comment: PullRequestReviewComment
+): string | undefined {
+  return parsePrsInlineReviewMetadata(comment.body)?.findingKey;
+}
+
+function isLegacyPrsInlineReviewComment(comment: PullRequestReviewComment): boolean {
+  if (!comment.authorIsBot) {
+    return false;
+  }
+
+  return (
+    /^\*\*(?:High|Medium|Low) severity, (?:High|Medium|Low) confidence /i.test(
+      comment.body.trim()
+    ) && comment.body.includes("Why this matters:")
+  );
+}
+
+export function isPrsAuthoredReviewComment(
+  comment: PullRequestReviewComment
+): boolean {
+  return (
+    getPrsInlineReviewFindingKey(comment) !== undefined ||
+    isLegacyPrsInlineReviewComment(comment)
+  );
+}
+
+function getCommentTimestamp(comment: PullRequestReviewComment): number {
+  return Math.max(Date.parse(comment.createdAt), Date.parse(comment.updatedAt));
+}
+
+function hasCommentAfter(
+  thread: PullRequestReviewThread,
+  timestamp: number
+): boolean {
+  return thread.comments.some((comment) => getCommentTimestamp(comment) > timestamp);
+}
+
+function isPrsAuthoredThread(thread: PullRequestReviewThread): boolean {
+  return thread.actionableComments.length > 0
+    ? thread.actionableComments.every(isPrsAuthoredReviewComment)
+    : isPrsAuthoredReviewComment(thread.rootComment);
+}
+
+function dedupeThreadsByPrsFindingKey(
+  threads: PullRequestReviewThread[]
+): PullRequestReviewThread[] {
+  const seenKeys = new Set<string>();
+  const dedupedThreads: PullRequestReviewThread[] = [];
+
+  for (const thread of threads) {
+    const metadataKeys = thread.actionableComments
+      .map(getPrsInlineReviewFindingKey)
+      .filter((key): key is string => Boolean(key));
+    const dedupeKey = metadataKeys[0];
+
+    if (dedupeKey) {
+      if (seenKeys.has(dedupeKey)) {
+        continue;
+      }
+
+      seenKeys.add(dedupeKey);
+    }
+
+    dedupedThreads.push(thread);
+  }
+
+  return dedupedThreads;
+}
+
+export function filterActionablePullRequestReviewThreads(
+  threads: PullRequestReviewThread[],
+  context: PullRequestReviewThreadFilterContext = {}
+): PullRequestReviewThreadFilterResult {
+  const skipped = {
+    resolved: 0,
+    outdated: 0,
+    stalePrsAuthored: 0,
+  };
+  const latestFixTimestamp =
+    context.latestSuccessfulFix === undefined
+      ? undefined
+      : Date.parse(context.latestSuccessfulFix.completedAt);
+  const actionableThreads: PullRequestReviewThread[] = [];
+
+  for (const thread of dedupeThreadsByPrsFindingKey(threads)) {
+    if (thread.isResolved) {
+      skipped.resolved += 1;
+      continue;
+    }
+
+    if (thread.isOutdated) {
+      skipped.outdated += 1;
+      continue;
+    }
+
+    if (
+      latestFixTimestamp !== undefined &&
+      Number.isFinite(latestFixTimestamp) &&
+      isPrsAuthoredThread(thread) &&
+      !hasCommentAfter(thread, latestFixTimestamp)
+    ) {
+      skipped.stalePrsAuthored += 1;
+      continue;
+    }
+
+    actionableThreads.push(thread);
+  }
+
+  return {
+    threads: actionableThreads,
+    skipped,
+  };
 }
 
 function resolvePullRequestReviewThreadId(
@@ -220,6 +378,44 @@ export function buildPullRequestReviewThreads(
   });
 }
 
+export function buildPullRequestReviewThreadsFromDetails(
+  threadDetails: PullRequestReviewThreadDetails[]
+): PullRequestReviewThread[] {
+  const threads: PullRequestReviewThread[] = [];
+
+  for (const threadDetail of threadDetails) {
+    const builtThreads = buildPullRequestReviewThreads(threadDetail.comments);
+    const thread = builtThreads[0];
+    if (!thread) {
+      continue;
+    }
+
+    threads.push({
+      ...thread,
+      threadId: threadDetail.threadId,
+      nodeId: threadDetail.nodeId,
+      isResolved: threadDetail.isResolved,
+      isOutdated: threadDetail.isOutdated,
+    });
+  }
+
+  return threads.sort((left, right) => {
+    const pathComparison = left.path.localeCompare(right.path);
+    if (pathComparison !== 0) {
+      return pathComparison;
+    }
+
+    const lineComparison =
+      (left.startLine ?? Number.MAX_SAFE_INTEGER) -
+      (right.startLine ?? Number.MAX_SAFE_INTEGER);
+    if (lineComparison !== 0) {
+      return lineComparison;
+    }
+
+    return left.threadId - right.threadId;
+  });
+}
+
 function shouldGroupPullRequestReviewThreads(
   currentGroup: PullRequestReviewThread[],
   nextThread: PullRequestReviewThread
@@ -291,10 +487,9 @@ function createPullRequestReviewTask(
   };
 }
 
-export function buildPullRequestReviewTasks(
-  comments: PullRequestReviewComment[]
+export function buildPullRequestReviewTasksFromThreads(
+  threads: PullRequestReviewThread[]
 ): { groupTasks: PullRequestReviewTask[]; threadTasks: PullRequestReviewTask[] } {
-  const threads = buildPullRequestReviewThreads(comments);
   const threadTasks = threads.map((thread) =>
     createPullRequestReviewTask("thread", `thread-${thread.threadId}`, [thread])
   );
@@ -336,6 +531,18 @@ export function buildPullRequestReviewTasks(
     groupTasks,
     threadTasks,
   };
+}
+
+export function buildPullRequestReviewTasks(
+  comments: PullRequestReviewComment[],
+  context: PullRequestReviewThreadFilterContext = {}
+): { groupTasks: PullRequestReviewTask[]; threadTasks: PullRequestReviewTask[] } {
+  return buildPullRequestReviewTasksFromThreads(
+    filterActionablePullRequestReviewThreads(
+      buildPullRequestReviewThreads(comments),
+      context
+    ).threads
+  );
 }
 
 export function formatPullRequestReviewTaskLocation(

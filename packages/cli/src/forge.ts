@@ -71,9 +71,19 @@ export type PullRequestReviewComment = {
   diffHunk?: string;
   url: string;
   author: string;
+  authorIsBot?: boolean;
   createdAt: string;
   updatedAt: string;
   inReplyToId?: number;
+  commitOid?: string;
+};
+
+export type PullRequestReviewThreadDetails = {
+  threadId: number;
+  nodeId: string;
+  isResolved: boolean;
+  isOutdated: boolean;
+  comments: PullRequestReviewComment[];
 };
 
 export type CreatedIssueRecord = {
@@ -107,6 +117,11 @@ export interface RepositoryForge {
   listOpenPullRequestChanges(): Promise<OpenPullRequestChange[]>;
   fetchPullRequestIssueComments(prNumber: number): Promise<RepositoryComment[]>;
   fetchPullRequestReviewComments(prNumber: number): Promise<PullRequestReviewComment[]>;
+  fetchPullRequestReviewThreads?(
+    prNumber: number
+  ): Promise<PullRequestReviewThreadDetails[]>;
+  replyToPullRequestReviewThread?(threadNodeId: string, body: string): Promise<void>;
+  resolvePullRequestReviewThread?(threadNodeId: string): Promise<void>;
   createIssuePlanComment(issueNumber: number, body: string): Promise<IssuePlanComment>;
   createAuditComment(target: AuditTarget, body: string): Promise<RepositoryComment>;
   updateIssuePlanComment(commentId: number, body: string): Promise<IssuePlanComment>;

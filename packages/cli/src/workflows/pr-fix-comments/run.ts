@@ -1,3 +1,6 @@
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 import type {
   PullRequestDetails,
   PullRequestReviewComment,
@@ -8,10 +11,13 @@ import { finalizeRuntimeChanges } from "../../runtime-change-review";
 import { ensureVerificationCommandAvailable } from "../../workflow-preflights";
 import { pushReviewedPullRequestUpdates } from "../pull-request-reviewed-updates";
 import {
-  buildPullRequestReviewTasks,
+  buildPullRequestReviewTasksFromThreads,
   buildPullRequestReviewThreads,
+  buildPullRequestReviewThreadsFromDetails,
+  filterActionablePullRequestReviewThreads,
   formatPullRequestReviewTaskLocation,
   getReviewCommentDisplayLine,
+  isPrsAuthoredReviewComment,
   parsePullRequestReviewSelection,
   shouldRetainPullRequestReviewCommentInThread,
 } from "./selection";
@@ -20,7 +26,11 @@ import {
   createPullRequestFixWorkspace,
   writePullRequestFixWorkspaceFiles,
 } from "./workspace";
-import type { PullRequestFixWorkspace, PullRequestReviewTask } from "./types";
+import type {
+  PullRequestFixWorkspace,
+  PullRequestReviewTask,
+  PullRequestReviewThread,
+} from "./types";
 
 type RunPrFixCommentsCommandOptions = {
   prNumber: number;
@@ -47,6 +57,195 @@ type RunPrFixCommentsCommandOptions = {
   hasChanges(repoRoot: string): boolean;
   commitGeneratedChanges(repoRoot: string, commitMessage: ReviewedGeneratedText): void;
 };
+
+type AddressedReviewCommentsRun = {
+  prNumber: number;
+  completedAt: string;
+  commitSha?: string;
+  verification?: {
+    status?: string;
+  };
+  push?: {
+    status?: string;
+  };
+};
+
+function parseAddressedReviewCommentsRun(
+  raw: string
+): AddressedReviewCommentsRun | undefined {
+  try {
+    const parsed = JSON.parse(raw) as Partial<AddressedReviewCommentsRun>;
+    if (
+      typeof parsed.prNumber !== "number" ||
+      typeof parsed.completedAt !== "string"
+    ) {
+      return undefined;
+    }
+
+    return {
+      prNumber: parsed.prNumber,
+      completedAt: parsed.completedAt,
+      commitSha:
+        typeof parsed.commitSha === "string" ? parsed.commitSha : undefined,
+      verification:
+        parsed.verification && typeof parsed.verification === "object"
+          ? parsed.verification
+          : undefined,
+      push: parsed.push && typeof parsed.push === "object" ? parsed.push : undefined,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function findLatestSuccessfulFixCommentsRun(
+  repoRoot: string,
+  prNumber: number
+): AddressedReviewCommentsRun | undefined {
+  const runsDir = resolve(repoRoot, ".prs", "runs");
+  if (!existsSync(runsDir)) {
+    return undefined;
+  }
+
+  return readdirSync(runsDir)
+    .filter((entry) => entry.endsWith(`-pr-${prNumber}-fix-comments`))
+    .map((entry) => resolve(runsDir, entry, "addressed-review-comments.json"))
+    .filter((filePath) => existsSync(filePath))
+    .map((filePath) => parseAddressedReviewCommentsRun(readFileSync(filePath, "utf8")))
+    .filter((run): run is AddressedReviewCommentsRun => {
+      return (
+        run !== undefined &&
+        run.prNumber === prNumber &&
+        run.verification?.status === "passed" &&
+        (run.push?.status === "pushed" || run.push?.status === "already-up-to-date")
+      );
+    })
+    .sort((left, right) => Date.parse(right.completedAt) - Date.parse(left.completedAt))[0];
+}
+
+function areChecksGreen(checks: Awaited<ReturnType<RepositoryForge["fetchPullRequestChecks"]>>): boolean {
+  if (checks.length === 0) {
+    return false;
+  }
+
+  return checks.every((check) => {
+    if (check.status !== "completed") {
+      return false;
+    }
+
+    return (
+      check.conclusion === "success" ||
+      check.conclusion === "neutral" ||
+      check.conclusion === "skipped"
+    );
+  });
+}
+
+function getHeadCommitSha(repoRoot: string): string | undefined {
+  let result;
+  try {
+    result = spawnSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch {
+    return undefined;
+  }
+
+  return result.status === 0 && !result.error ? result.stdout.trim() || undefined : undefined;
+}
+
+function writeAddressedReviewCommentsRun(input: {
+  workspace: PullRequestFixWorkspace;
+  pullRequest: PullRequestDetails;
+  selectedTasks: PullRequestReviewTask[];
+  commitSha?: string;
+  pushStatus: "pushed" | "already-up-to-date";
+}): void {
+  const selectedThreads = input.selectedTasks.flatMap((task) => task.threads);
+  const selectedComments = input.selectedTasks.flatMap((task) => task.comments);
+  const completedAt = new Date().toISOString();
+
+  writeFileSync(
+    resolve(input.workspace.runDir, "addressed-review-comments.json"),
+    `${JSON.stringify(
+      {
+        prNumber: input.pullRequest.number,
+        completedAt,
+        commitSha: input.commitSha,
+        verification: {
+          status: "passed",
+        },
+        push: {
+          status: input.pushStatus,
+        },
+        selectedThreads: selectedThreads.map((thread) => ({
+          threadId: thread.threadId,
+          nodeId: thread.nodeId,
+          path: thread.path,
+          summary: thread.summary,
+        })),
+        selectedComments: selectedComments.map((comment) => ({
+          id: comment.id,
+          path: comment.path,
+          url: comment.url,
+        })),
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+}
+
+function isPrsAuthoredReviewThread(thread: PullRequestReviewTask["threads"][number]): boolean {
+  return thread.actionableComments.length > 0
+    ? thread.actionableComments.every(isPrsAuthoredReviewComment)
+    : isPrsAuthoredReviewComment(thread.rootComment);
+}
+
+async function acknowledgeAddressedReviewThreads(input: {
+  forge: RepositoryForge;
+  selectedTasks: PullRequestReviewTask[];
+  commitSha?: string;
+}): Promise<void> {
+  const reply = input.forge.replyToPullRequestReviewThread;
+  const resolveThread = input.forge.resolvePullRequestReviewThread;
+  if (!reply && !resolveThread) {
+    return;
+  }
+
+  const threadsByNodeId = new Map(
+    input.selectedTasks
+      .flatMap((task) => task.threads)
+      .filter((thread) => thread.nodeId && isPrsAuthoredReviewThread(thread))
+      .map((thread) => [thread.nodeId as string, thread])
+  );
+  const commitLabel = input.commitSha ? `\`${input.commitSha.slice(0, 12)}\`` : "the latest fix commit";
+  const body = `Addressed by ${commitLabel} after \`prs pr fix-comments\` verification passed.`;
+
+  for (const nodeId of threadsByNodeId.keys()) {
+    try {
+      await reply?.call(input.forge, nodeId, body);
+    } catch (error) {
+      console.log(
+        `Could not reply to addressed review thread ${nodeId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+
+    try {
+      await resolveThread?.call(input.forge, nodeId);
+    } catch (error) {
+      console.log(
+        `Could not resolve addressed review thread ${nodeId}; resolve it manually if needed. ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+  }
+}
 
 function sortPullRequestReviewComments(
   left: PullRequestReviewComment,
@@ -115,10 +314,10 @@ function printPullRequestReviewTasks(
 
 async function selectPullRequestReviewComments(
   pullRequest: PullRequestDetails,
-  comments: PullRequestReviewComment[],
+  threadTasks: PullRequestReviewTask[],
+  groupTasks: PullRequestReviewTask[],
   promptForLine: (prompt: string) => Promise<string>
 ): Promise<PullRequestReviewTask[]> {
-  const { groupTasks, threadTasks } = buildPullRequestReviewTasks(comments);
   printPullRequestReviewTasks(pullRequest, groupTasks, threadTasks);
 
   const selectionPrompt =
@@ -193,21 +392,68 @@ export async function runPrFixCommentsCommand(
   console.log(`Fetching pull request #${options.prNumber}...`);
   const pullRequest = await options.forge.fetchPullRequestDetails(options.prNumber);
   const linkedIssues = await fetchLinkedIssuesForPullRequest(options.forge, pullRequest);
-  const comments = (
-    await options.forge.fetchPullRequestReviewComments(options.prNumber)
-  )
-    .filter(shouldRetainPullRequestReviewCommentInThread)
-    .sort(sortPullRequestReviewComments);
+  const latestSuccessfulFix = findLatestSuccessfulFixCommentsRun(
+    options.repoRoot,
+    pullRequest.number
+  );
+  let comments: PullRequestReviewComment[] = [];
+  let reviewThreads: PullRequestReviewThread[];
+  if (options.forge.fetchPullRequestReviewThreads) {
+    try {
+      reviewThreads = buildPullRequestReviewThreadsFromDetails(
+        await options.forge.fetchPullRequestReviewThreads(options.prNumber)
+      );
+    } catch {
+      comments = (
+        await options.forge.fetchPullRequestReviewComments(options.prNumber)
+      )
+        .filter(shouldRetainPullRequestReviewCommentInThread)
+        .sort(sortPullRequestReviewComments);
+      reviewThreads = buildPullRequestReviewThreads(comments);
+    }
+  } else {
+    comments = (
+      await options.forge.fetchPullRequestReviewComments(options.prNumber)
+    )
+      .filter(shouldRetainPullRequestReviewCommentInThread)
+      .sort(sortPullRequestReviewComments);
+    reviewThreads = buildPullRequestReviewThreads(comments);
+  }
+  const filteredThreads = filterActionablePullRequestReviewThreads(reviewThreads, {
+    latestSuccessfulFix,
+  });
 
-  if (buildPullRequestReviewThreads(comments).length === 0) {
+  if (filteredThreads.threads.length === 0) {
+    if (latestSuccessfulFix && filteredThreads.skipped.stalePrsAuthored > 0) {
+      try {
+        const checks = await options.forge.fetchPullRequestChecks(pullRequest.number);
+        if (areChecksGreen(checks)) {
+          throw new Error(
+            `No new actionable review comments were found for PR #${options.prNumber}; previous PRS comments may need resolving.`
+          );
+        }
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message.startsWith("No new actionable review comments")
+        ) {
+          throw error;
+        }
+      }
+    }
+
     throw new Error(
       `No actionable pull request review comments were found for PR #${options.prNumber}.`
     );
   }
 
+  const { groupTasks, threadTasks } = buildPullRequestReviewTasksFromThreads(
+    filteredThreads.threads
+  );
   const selectedTasks = await selectPullRequestReviewComments(
     pullRequest,
-    comments,
+    threadTasks,
+    groupTasks,
     options.promptForLine
   );
   if (selectedTasks.length === 0) {
@@ -272,4 +518,17 @@ export async function runPrFixCommentsCommand(
     workspace.outputLogPath,
     pullRequest.headRefName
   );
+  const commitSha = getHeadCommitSha(options.repoRoot);
+  writeAddressedReviewCommentsRun({
+    workspace,
+    pullRequest,
+    selectedTasks,
+    commitSha,
+    pushStatus: "pushed",
+  });
+  await acknowledgeAddressedReviewThreads({
+    forge: options.forge,
+    selectedTasks,
+    commitSha,
+  });
 }

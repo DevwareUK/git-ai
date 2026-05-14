@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -6,6 +6,7 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   PullRequestDetails,
   PullRequestReviewComment,
+  PullRequestReviewThreadDetails,
   RepositoryForge,
 } from "../../forge";
 import type { PullRequestFixWorkspace } from "./types";
@@ -57,14 +58,29 @@ function createReviewComment(body: string): PullRequestReviewComment {
 }
 
 function createForge(
-  comments: PullRequestReviewComment[]
+  comments: PullRequestReviewComment[],
+  options: {
+    threads?: PullRequestReviewThreadDetails[];
+    replyToPullRequestReviewThread?: ReturnType<typeof vi.fn>;
+    resolvePullRequestReviewThread?: ReturnType<typeof vi.fn>;
+  } = {}
 ): {
   forge: RepositoryForge;
   fetchPullRequestDetails: ReturnType<typeof vi.fn>;
   fetchPullRequestReviewComments: ReturnType<typeof vi.fn>;
+  fetchPullRequestReviewThreads: ReturnType<typeof vi.fn>;
+  fetchPullRequestChecks: ReturnType<typeof vi.fn>;
 } {
   const fetchPullRequestDetails = vi.fn().mockResolvedValue(createPullRequest());
   const fetchPullRequestReviewComments = vi.fn().mockResolvedValue(comments);
+  const fetchPullRequestReviewThreads = vi.fn().mockResolvedValue(options.threads ?? []);
+  const fetchPullRequestChecks = vi.fn().mockResolvedValue([
+    {
+      name: "Vitest",
+      status: "completed",
+      conclusion: "success",
+    },
+  ]);
 
   return {
     forge: {
@@ -75,10 +91,17 @@ function createForge(
       fetchIssuePlanComment: vi.fn(),
       fetchAuditComment: vi.fn(),
       fetchPullRequestDetails,
-      fetchPullRequestChecks: vi.fn(),
+      fetchPullRequestChecks,
       listOpenPullRequestChanges: vi.fn(),
       fetchPullRequestIssueComments: vi.fn(),
       fetchPullRequestReviewComments,
+      ...(options.threads === undefined ? {} : { fetchPullRequestReviewThreads }),
+      ...(options.replyToPullRequestReviewThread === undefined
+        ? {}
+        : { replyToPullRequestReviewThread: options.replyToPullRequestReviewThread }),
+      ...(options.resolvePullRequestReviewThread === undefined
+        ? {}
+        : { resolvePullRequestReviewThread: options.resolvePullRequestReviewThread }),
       createIssuePlanComment: vi.fn(),
       createAuditComment: vi.fn(),
       updateIssuePlanComment: vi.fn(),
@@ -90,6 +113,8 @@ function createForge(
     },
     fetchPullRequestDetails,
     fetchPullRequestReviewComments,
+    fetchPullRequestReviewThreads,
+    fetchPullRequestChecks,
   };
 }
 
@@ -117,6 +142,8 @@ describe("runPrFixCommentsCommand", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    rmSync(resolve(repoRoot, ".prs"), { recursive: true, force: true });
+    mkdirSync(workspace.runDir, { recursive: true });
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     vi.mocked(spawnSync).mockImplementation((command, args) => {
       if (
@@ -416,5 +443,133 @@ describe("runPrFixCommentsCommand", () => {
       ["push", "origin", "HEAD:feat/pr-fix-comments"],
       expect.any(Object)
     );
+  });
+
+  it("does not reopen old PRS-authored bot threads after a successful fix run", async () => {
+    mkdirSync(resolve(repoRoot, ".prs/runs/20260514T120000000Z-pr-88-fix-comments"), {
+      recursive: true,
+    });
+    writeFileSync(
+      resolve(
+        repoRoot,
+        ".prs/runs/20260514T120000000Z-pr-88-fix-comments/addressed-review-comments.json"
+      ),
+      `${JSON.stringify(
+        {
+          prNumber: 88,
+          completedAt: "2026-05-14T12:00:00.000Z",
+          commitSha: "929ffc0",
+          verification: {
+            status: "passed",
+          },
+          push: {
+            status: "pushed",
+          },
+        },
+        null,
+        2
+      )}\n`,
+      "utf8"
+    );
+
+    const oldPrsComment = createReviewComment(
+      "**High severity, High confidence Migration**\n\nHandle product lookup failures.\n\nWhy this matters: Missing products break imports."
+    );
+    oldPrsComment.author = "github-actions[bot]";
+    oldPrsComment.authorIsBot = true;
+    oldPrsComment.createdAt = "2026-05-14T10:00:00.000Z";
+    oldPrsComment.updatedAt = "2026-05-14T10:00:00.000Z";
+    const { forge, fetchPullRequestReviewThreads, fetchPullRequestChecks } =
+      createForge([], {
+        threads: [
+          {
+            threadId: oldPrsComment.id,
+            nodeId: "PRRT_kwDO_stale",
+            isResolved: false,
+            isOutdated: false,
+            comments: [oldPrsComment],
+          },
+        ],
+      });
+    const launch = vi.fn();
+
+    await expect(
+      runPrFixCommentsCommand({
+        prNumber: 88,
+        repoRoot,
+        buildCommand: ["pnpm", "build"],
+        ensureVerificationCommandAvailable: vi.fn(),
+        runtime: {
+          resolve: () => ({
+            displayName: "Codex",
+            launch,
+          }),
+        },
+        forge,
+        ensureCleanWorkingTree: vi.fn(),
+        promptForLine: vi.fn(),
+        verifyBuild: vi.fn(),
+        hasChanges: vi.fn(),
+        commitGeneratedChanges: vi.fn(),
+      })
+    ).rejects.toThrow(
+      "No new actionable review comments were found for PR #88; previous PRS comments may need resolving."
+    );
+
+    expect(fetchPullRequestReviewThreads).toHaveBeenCalledWith(88);
+    expect(fetchPullRequestChecks).toHaveBeenCalledWith(88);
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it("replies to and resolves selected PRS-authored bot threads after a successful fix", async () => {
+    const prsComment = createReviewComment(
+      "**High severity, High confidence Migration**\n\nHandle media lookup failures.\n\nWhy this matters: Missing media breaks imports."
+    );
+    prsComment.author = "github-actions[bot]";
+    prsComment.authorIsBot = true;
+    prsComment.createdAt = "2026-05-14T13:00:00.000Z";
+    prsComment.updatedAt = "2026-05-14T13:00:00.000Z";
+    const replyToPullRequestReviewThread = vi.fn().mockResolvedValue(undefined);
+    const resolvePullRequestReviewThread = vi.fn().mockResolvedValue(undefined);
+    const { forge } = createForge([], {
+      threads: [
+        {
+          threadId: prsComment.id,
+          nodeId: "PRRT_kwDO_selected",
+          isResolved: false,
+          isOutdated: false,
+          comments: [prsComment],
+        },
+      ],
+      replyToPullRequestReviewThread,
+      resolvePullRequestReviewThread,
+    });
+    const promptForLine = vi.fn().mockResolvedValueOnce("1").mockResolvedValueOnce("y");
+    const launch = vi.fn();
+
+    await runPrFixCommentsCommand({
+      prNumber: 88,
+      repoRoot,
+      buildCommand: ["pnpm", "build"],
+      ensureVerificationCommandAvailable: vi.fn(),
+      runtime: {
+        resolve: () => ({
+          displayName: "Codex",
+          launch,
+        }),
+      },
+      forge,
+      ensureCleanWorkingTree: vi.fn(),
+      promptForLine,
+      verifyBuild: vi.fn(),
+      hasChanges: vi.fn().mockReturnValue(true),
+      commitGeneratedChanges: vi.fn(),
+    });
+
+    expect(replyToPullRequestReviewThread).toHaveBeenCalledWith(
+      "PRRT_kwDO_selected",
+      expect.stringContaining("Addressed by")
+    );
+    expect(resolvePullRequestReviewThread).toHaveBeenCalledWith("PRRT_kwDO_selected");
   });
 });

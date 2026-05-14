@@ -12,6 +12,7 @@ import type {
   PullRequestDetails,
   RepositoryComment,
   PullRequestReviewComment,
+  PullRequestReviewThreadDetails,
   RepositoryForge,
 } from "./forge";
 import { AUDIT_COMMENT_MARKER } from "./audit-artifacts";
@@ -804,7 +805,7 @@ async function listPullRequestReviewComments(
     start_side?: string | null;
     diff_hunk?: string | null;
     html_url?: string;
-    user?: { login?: string };
+    user?: { login?: string; type?: string };
     created_at?: string;
     updated_at?: string;
     in_reply_to_id?: number | null;
@@ -834,10 +835,214 @@ async function listPullRequestReviewComments(
       diffHunk: comment.diff_hunk ?? undefined,
       url: comment.html_url as string,
       author: comment.user?.login as string,
+      authorIsBot: comment.user?.type === "Bot",
       createdAt: comment.created_at as string,
       updatedAt: comment.updated_at as string,
       inReplyToId: comment.in_reply_to_id ?? undefined,
     }));
+}
+
+async function postGitHubGraphQL<T>(
+  repoRoot: string | undefined,
+  query: string,
+  variables: Record<string, unknown>,
+  errorMessage: string
+): Promise<T> {
+  const token = getGitHubApiToken(errorMessage, repoRoot);
+  const response = await fetch("https://api.github.com/graphql", {
+    method: "POST",
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      "User-Agent": "prs-cli",
+    },
+    body: JSON.stringify({
+      query,
+      variables,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`${errorMessage} (${response.status} ${response.statusText}).`);
+  }
+
+  const payload = (await response.json()) as { data?: T; errors?: Array<{ message?: string }> };
+  if (payload.errors?.length) {
+    const details = payload.errors
+      .map((error) => error.message)
+      .filter(Boolean)
+      .join("; ");
+    throw new Error(details ? `${errorMessage} ${details}` : errorMessage);
+  }
+
+  if (!payload.data) {
+    throw new Error(`${errorMessage} GitHub returned no data.`);
+  }
+
+  return payload.data;
+}
+
+function parseReviewThreadCommentPayload(comment: {
+  databaseId?: number | null;
+  body?: string | null;
+  path?: string | null;
+  line?: number | null;
+  originalLine?: number | null;
+  startLine?: number | null;
+  originalStartLine?: number | null;
+  diffHunk?: string | null;
+  url?: string | null;
+  author?: { login?: string | null } | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  replyTo?: { databaseId?: number | null } | null;
+  commit?: { oid?: string | null } | null;
+}): PullRequestReviewComment | undefined {
+  if (
+    !comment.databaseId ||
+    !comment.body ||
+    !comment.path ||
+    !comment.url ||
+    !comment.author?.login ||
+    !comment.createdAt ||
+    !comment.updatedAt
+  ) {
+    return undefined;
+  }
+
+  return {
+    id: comment.databaseId,
+    body: comment.body,
+    path: comment.path,
+    line: comment.line ?? undefined,
+    originalLine: comment.originalLine ?? undefined,
+    startLine: comment.startLine ?? undefined,
+    originalStartLine: comment.originalStartLine ?? undefined,
+    diffHunk: comment.diffHunk ?? undefined,
+    url: comment.url,
+    author: comment.author.login,
+    authorIsBot: comment.author.login.endsWith("[bot]"),
+    createdAt: comment.createdAt,
+    updatedAt: comment.updatedAt,
+    inReplyToId: comment.replyTo?.databaseId ?? undefined,
+    commitOid: comment.commit?.oid ?? undefined,
+  };
+}
+
+async function listPullRequestReviewThreads(
+  owner: string,
+  repo: string,
+  prNumber: number,
+  repoRoot?: string
+): Promise<PullRequestReviewThreadDetails[]> {
+  const query = `
+    query($owner: String!, $repo: String!, $number: Int!, $after: String) {
+      repository(owner: $owner, name: $repo) {
+        pullRequest(number: $number) {
+          reviewThreads(first: 100, after: $after) {
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+            nodes {
+              id
+              isResolved
+              isOutdated
+              comments(first: 100) {
+                nodes {
+                  databaseId
+                  body
+                  path
+                  line
+                  originalLine
+                  startLine
+                  originalStartLine
+                  diffHunk
+                  url
+                  author {
+                    login
+                  }
+                  createdAt
+                  updatedAt
+                  replyTo {
+                    databaseId
+                  }
+                  commit {
+                    oid
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+  type ReviewThreadsResponse = {
+    repository?: {
+      pullRequest?: {
+        reviewThreads?: {
+          pageInfo?: {
+            hasNextPage?: boolean;
+            endCursor?: string | null;
+          };
+          nodes?: Array<{
+            id?: string | null;
+            isResolved?: boolean | null;
+            isOutdated?: boolean | null;
+            comments?: {
+              nodes?: Array<Parameters<typeof parseReviewThreadCommentPayload>[0]>;
+            } | null;
+          } | null>;
+        } | null;
+      } | null;
+    } | null;
+  };
+  const threads: PullRequestReviewThreadDetails[] = [];
+  let after: string | undefined;
+
+  while (true) {
+    const data = await postGitHubGraphQL<ReviewThreadsResponse>(
+      repoRoot,
+      query,
+      {
+        owner,
+        repo,
+        number: prNumber,
+        after,
+      },
+      `Failed to fetch review threads for GitHub pull request #${prNumber}.`
+    );
+    const reviewThreads = data.repository?.pullRequest?.reviewThreads;
+    for (const thread of reviewThreads?.nodes ?? []) {
+      if (!thread?.id) {
+        continue;
+      }
+
+      const comments = (thread.comments?.nodes ?? [])
+        .map(parseReviewThreadCommentPayload)
+        .filter((comment): comment is PullRequestReviewComment => comment !== undefined);
+      const rootComment = comments[0];
+      if (!rootComment) {
+        continue;
+      }
+
+      threads.push({
+        threadId: rootComment.id,
+        nodeId: thread.id,
+        isResolved: thread.isResolved === true,
+        isOutdated: thread.isOutdated === true,
+        comments,
+      });
+    }
+
+    if (!reviewThreads?.pageInfo?.hasNextPage || !reviewThreads.pageInfo.endCursor) {
+      return threads;
+    }
+
+    after = reviewThreads.pageInfo.endCursor;
+  }
 }
 
 async function listOpenIssues(
@@ -1001,6 +1206,56 @@ class GitHubRepositoryForge implements RepositoryForge {
   async fetchPullRequestReviewComments(prNumber: number): Promise<PullRequestReviewComment[]> {
     const { owner, repo } = parseGitHubRepoFromRemote(this.repoRoot);
     return listPullRequestReviewComments(owner, repo, prNumber, this.repoRoot);
+  }
+
+  async fetchPullRequestReviewThreads(
+    prNumber: number
+  ): Promise<PullRequestReviewThreadDetails[]> {
+    const { owner, repo } = parseGitHubRepoFromRemote(this.repoRoot);
+    return listPullRequestReviewThreads(owner, repo, prNumber, this.repoRoot);
+  }
+
+  async replyToPullRequestReviewThread(threadNodeId: string, body: string): Promise<void> {
+    await postGitHubGraphQL(
+      this.repoRoot,
+      `
+        mutation($threadId: ID!, $body: String!) {
+          addPullRequestReviewThreadReply(input: {
+            pullRequestReviewThreadId: $threadId,
+            body: $body
+          }) {
+            comment {
+              id
+            }
+          }
+        }
+      `,
+      {
+        threadId: threadNodeId,
+        body,
+      },
+      "Failed to reply to the addressed GitHub pull request review thread."
+    );
+  }
+
+  async resolvePullRequestReviewThread(threadNodeId: string): Promise<void> {
+    await postGitHubGraphQL(
+      this.repoRoot,
+      `
+        mutation($threadId: ID!) {
+          resolveReviewThread(input: { threadId: $threadId }) {
+            thread {
+              id
+              isResolved
+            }
+          }
+        }
+      `,
+      {
+        threadId: threadNodeId,
+      },
+      "Failed to resolve the addressed GitHub pull request review thread."
+    );
   }
 
   async createIssuePlanComment(

@@ -34,11 +34,11 @@ Start here if you are evaluating `prs` for a team:
 
 | Surface | Why it is part of the primary offer |
 | --- | --- |
-| `actions/pr-review` | Adds AI pull request pre-review signal, higher-level findings, and line-linked review comments in GitHub. |
+| `actions/pr-review` | Adds AI pull request pre-review signal, higher-level findings, and line-linked review comments in GitHub. Generated setup workflows mark inline comments with hidden PRS metadata so local fix flows can recognize PRS-authored findings. |
 | `actions/pr-assistant` | Maintains a managed PR assistant section in the pull request body without overwriting unrelated manual content. |
 | `actions/test-suggestions` | Posts practical, task-ready test suggestions for the current pull request diff in GitHub. |
 | `prs review` | Runs a local top-risk diff pre-review that surfaces the strongest reviewer-ready concerns before or during a pull request. |
-| `prs pr fix-comments <pr-number>` | Pulls selected GitHub review comments into a focused local fix flow. |
+| `prs pr fix-comments <pr-number>` | Pulls selected GitHub review comments into a focused local fix flow, ignoring resolved/outdated threads and suppressing already-addressed PRS-authored bot findings after successful fix runs. |
 | `prs pr fix-failing-tests <pr-number>` | Captures currently failing local verification output on a PR branch and hands it to the configured runtime for a focused fix. |
 | `prs pr fix-tests <pr-number>` | Pulls selected managed AI test suggestions into a focused local implementation flow with preserved task context. |
 | `prs test-backlog` | Finds the highest-value automated testing gaps in the repository. |
@@ -146,7 +146,7 @@ Supporting commands:
 - `prs commit`
 - `prs diff`
 
-`prs tool pr ready <pr-number> --json` is the fast local PR-readiness path used by `/prs:pr`: it checks out the actual PR head branch, fetches and merges the latest PR base branch, writes readiness metadata with GitHub-hosted context such as failed/pending checks, managed AI test suggestions, and actionable review comments, and does not run the configured build or broad local verification. Add `--all` when you also want the configured local runtime started when possible.
+`prs tool pr ready <pr-number> --json` is the fast local PR-readiness path used by `/prs:pr`: it checks out the actual PR head branch, fetches and merges the latest PR base branch, writes readiness metadata with GitHub-hosted context such as failed/pending checks, managed AI test suggestions, and actionable review comments, and does not run the configured build or broad local verification. Review comment readiness uses the same resolved/outdated thread filtering as `prs pr fix-comments`. Add `--all` when you also want the configured local runtime started when possible.
 
 Detailed command behavior lives in [docs/cli-reference.md](docs/cli-reference.md). Codex and `/prs` operator guidance lives in [docs/codex-prs-workflows.md](docs/codex-prs-workflows.md).
 
