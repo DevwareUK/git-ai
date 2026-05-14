@@ -196,6 +196,24 @@ describe("config helpers", () => {
     });
   });
 
+  it("resolves a configured GitHub CLI path from repository config", () => {
+    const repoRoot = createRepoRoot();
+    writeRepositoryConfig(
+      repoRoot,
+      JSON.stringify({
+        forge: {
+          type: "github",
+          githubCliPath: "/opt/homebrew/bin/gh",
+        },
+      })
+    );
+
+    expect(loadResolvedRepositoryConfig(repoRoot).forge).toEqual({
+      type: "github",
+      githubCliPath: "/opt/homebrew/bin/gh",
+    });
+  });
+
   it("loads local runtime readiness config from disk", () => {
     const repoRoot = createRepoRoot();
     writeRepositoryConfig(

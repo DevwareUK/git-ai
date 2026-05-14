@@ -1204,6 +1204,31 @@ async function loadCli(options: {
       options.spawnSyncImpl?.(command, normalizedArgs, rawSecondArg);
 
     if (
+      (command === "/opt/homebrew/bin/gh" || command === "/usr/local/bin/gh") &&
+      normalizedArgs[0] === "--version"
+    ) {
+      try {
+        return invokeCustomSpawnSync() ?? {
+          status: 1,
+          error: new Error(`${command} unavailable`),
+          stdout: "",
+          stderr: "",
+        };
+      } catch (error: unknown) {
+        if (!isUnexpectedSpawnSyncCall(error)) {
+          throw error;
+        }
+
+        return {
+          status: 1,
+          error: new Error(`${command} unavailable`),
+          stdout: "",
+          stderr: "",
+        };
+      }
+    }
+
+    if (
       command !== "git" &&
       command !== "gh" &&
       command !== "codex" &&

@@ -1,8 +1,9 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import {
   filterActionablePullRequestsForUser,
   type ActionablePullRequest,
 } from "./actionable-github";
+import { formatGitHubAuthDiagnostics, resolveGitHubToken } from "./github-auth";
 
 export type PullRequestListToolResult =
   | {
@@ -32,6 +33,7 @@ type ListPullRequestsToolOptions = {
   fetchImpl?: FetchLike;
   repoRoot: string;
   runCommand?: (command: string, args: string[]) => string;
+  spawnSyncImpl?: (command: string, args: string[]) => { status?: number | null; error?: Error };
 };
 
 function runCommand(command: string, args: string[]): string {
@@ -52,31 +54,6 @@ function parseGitHubRepoFromRemote(remoteUrl: string): { owner: string; repo: st
     owner: match[1],
     repo: match[2],
   };
-}
-
-function canRunGh(): boolean {
-  const result = spawnSync("gh", ["--version"], { stdio: "ignore" });
-  return !result.error && result.status === 0;
-}
-
-function resolveGitHubToken(
-  env: Record<string, string | undefined>,
-  commandRunner: (command: string, args: string[]) => string
-): string | undefined {
-  const envToken = env.GH_TOKEN?.trim() || env.GITHUB_TOKEN?.trim();
-  if (envToken) {
-    return envToken;
-  }
-
-  if (!canRunGh()) {
-    return undefined;
-  }
-
-  try {
-    return commandRunner("gh", ["auth", "token"]).trim() || undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 function createGitHubHeaders(token: string): Record<string, string> {
@@ -162,13 +139,19 @@ export async function listPullRequestsTool(
 ): Promise<PullRequestListToolResult> {
   const env = options.env ?? process.env;
   const commandRunner = options.runCommand ?? runCommand;
-  const token = resolveGitHubToken(env, commandRunner);
+  const tokenResolution = resolveGitHubToken({
+    env,
+    repoRoot: options.repoRoot,
+    runCommand: commandRunner,
+    spawnSync: options.spawnSyncImpl,
+  });
+  const token = tokenResolution.token;
   if (!token) {
     return {
       status: "blocked",
       reason: "github-auth-required",
       message:
-        "GitHub authentication is required for `prs tool pr list --actionable --json`.",
+        `GitHub authentication is required for \`prs tool pr list --actionable --json\`.\n${formatGitHubAuthDiagnostics(tokenResolution.diagnostics)}`,
       nextAction:
         "Set GH_TOKEN or GITHUB_TOKEN in the repository environment, or authenticate gh in the shell that runs prs.",
     };

@@ -22,6 +22,22 @@ describe("repository config schema", () => {
     });
   });
 
+  it("accepts an optional GitHub CLI path in forge config", () => {
+    expect(
+      RepositoryConfig.parse({
+        forge: {
+          type: "github",
+          githubCliPath: "/opt/homebrew/bin/gh",
+        },
+      })
+    ).toEqual({
+      forge: {
+        type: "github",
+        githubCliPath: "/opt/homebrew/bin/gh",
+      },
+    });
+  });
+
   it("rejects empty local runtime command segments", () => {
     expect(() =>
       RepositoryConfig.parse({

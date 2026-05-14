@@ -16509,7 +16509,8 @@ var require_dist = __commonJS({
     var import_zod9 = require_zod();
     var RepositoryForgeType = import_zod9.z.enum(["github", "none"]);
     var RepositoryForgeConfig = import_zod9.z.object({
-      type: RepositoryForgeType.optional()
+      type: RepositoryForgeType.optional(),
+      githubCliPath: import_zod9.z.string().trim().min(1, "forge githubCliPath must be non-empty").optional()
     });
     var RepositoryAiContextConfig = import_zod9.z.object({
       excludePaths: import_zod9.z.array(import_zod9.z.string().trim().min(1, "excludePaths entries must be non-empty")).optional()
@@ -16582,7 +16583,8 @@ var require_dist = __commonJS({
       baseBranch: import_zod9.z.string().trim().min(1),
       buildCommand: RepositoryConfigCommand,
       forge: import_zod9.z.object({
-        type: RepositoryForgeType
+        type: RepositoryForgeType,
+        githubCliPath: import_zod9.z.string().trim().min(1).optional()
       }),
       localRuntime: RepositoryLocalRuntimeConfig.optional()
     });
@@ -17119,7 +17121,8 @@ ${formatValidationIssues(validationIssues)}`,
         baseBranch: parsedConfig.baseBranch ?? DEFAULT_REPOSITORY_BASE_BRANCH,
         buildCommand: parsedConfig.buildCommand ?? [...DEFAULT_REPOSITORY_BUILD_COMMAND],
         forge: {
-          type: parsedConfig.forge?.type ?? DEFAULT_REPOSITORY_FORGE_TYPE
+          type: parsedConfig.forge?.type ?? DEFAULT_REPOSITORY_FORGE_TYPE,
+          ...parsedConfig.forge?.githubCliPath ? { githubCliPath: parsedConfig.forge.githubCliPath } : {}
         },
         localRuntime: parsedConfig.localRuntime
       });

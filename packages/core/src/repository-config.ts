@@ -57,6 +57,9 @@ export function resolveRepositoryConfig(
     buildCommand: parsedConfig.buildCommand ?? [...DEFAULT_REPOSITORY_BUILD_COMMAND],
     forge: {
       type: parsedConfig.forge?.type ?? DEFAULT_REPOSITORY_FORGE_TYPE,
+      ...(parsedConfig.forge?.githubCliPath
+        ? { githubCliPath: parsedConfig.forge.githubCliPath }
+        : {}),
     },
     localRuntime: parsedConfig.localRuntime,
   });

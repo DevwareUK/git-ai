@@ -77,7 +77,7 @@ You only need extra tooling for advanced or deeper local workflows:
 - `codex` on `PATH` for `prs codex pr prepare-review <pr-number>`, which checks out a reviewer workspace, syncs it with the latest PR base branch, resolves merge conflicts in Codex when needed, generates the review brief, leaves you in an interactive Codex session for follow-up questions or fixes, offers the same reviewed commit-message flow as other local fix workflows when that session makes changes, and pushes any new reviewed commits back to the PR head branch before exiting
 - `codex` on `PATH` for `prs pr resolve-conflicts <pr-number>`, which checks out the PR head branch, syncs it with the latest PR base branch, opens a focused Codex session only when merge conflicts need local resolution, verifies the completed merge with the configured build command, writes `.prs/` run artifacts, and pushes the synced branch back to the PR head branch through the guarded push flow
 - `codex` plus authenticated GitHub access for `prs issue <number> --mode unattended`, `prs issue <number> <number> ...`, and `prs issue batch ...`
-- `gh`, `GH_TOKEN`, or `GITHUB_TOKEN` for GitHub-backed issue and pull request flows
+- authenticated `gh`, `GH_TOKEN`, or `GITHUB_TOKEN` for GitHub-backed issue and pull request flows
 
 `prs` resolves the active repository from your current Git working tree at runtime. It loads `.env` and `.prs/config.json` from that repository root, not from the CLI build location. If a repository has not been migrated yet, `prs` falls back to legacy `.git-ai/` config and workflow state when no `.prs/` equivalent exists.
 
@@ -136,12 +136,13 @@ Optional repository-specific defaults live in `.prs/config.json`. `prs setup` ca
   "baseBranch": "main",
   "buildCommand": ["pnpm", "build"],
   "forge": {
-    "type": "github"
+    "type": "github",
+    "githubCliPath": "/opt/homebrew/bin/gh"
   }
 }
 ```
 
-Recommended first configuration: leave `ai.provider.type` unset so it defaults to `openai`, leave `ai.runtime.type` unset so it defaults to `codex`, and use `forge.type: "github"` for GitHub-backed issue and PR flows. Change provider or runtime settings only when you need a deeper customization path.
+Recommended first configuration: leave `ai.provider.type` unset so it defaults to `openai`, leave `ai.runtime.type` unset so it defaults to `codex`, and use `forge.type: "github"` for GitHub-backed issue and PR flows. Change provider or runtime settings only when you need a deeper customization path. `forge.githubCliPath` is optional; use it only when the authenticated GitHub CLI lives outside the PATH used by `prs`.
 
 Supported fields:
 
@@ -156,6 +157,7 @@ Supported fields:
 - `baseBranch`: base branch used by `prs issue <number>` and `prs issue prepare <number>` when switching, syncing from `origin`, and opening pull requests. If unset, the resolved default is `main`, but `prs setup` first tries the remote default branch and then prints an explicit fallback warning when it has to guess.
 - `buildCommand`: command run after the interactive runtime exits during full local `prs issue <number>`, `prs pr fix-comments <pr-number>`, and `prs pr fix-tests <pr-number>` flows, and after a clean or Codex-resolved merge during `prs pr resolve-conflicts <pr-number>`. `prs pr fix-failing-tests <pr-number>` runs it once before launching the runtime and exits without a run directory if it already passes, then reruns it after the runtime when a failure was captured. If unset, the resolved default is `["pnpm", "build"]`, but `prs setup` first tries repository-local `verify`, `build`, or `test` commands from `package.json`, `composer.json`, or PHPUnit signals and warns before falling back.
 - `forge.type`: forge integration. Use `"github"` for GitHub-backed issue and PR flows or `"none"` to disable forge-backed issue and PR features for the repository.
+- `forge.githubCliPath`: optional path to the authenticated `gh` executable that prs should use for local GitHub operations when environment tokens are not set. PRS resolves auth in this order: `GH_TOKEN`, `GITHUB_TOKEN`, `PRS_GH_PATH` or `PRS_GITHUB_CLI_PATH`, `forge.githubCliPath`, `gh` on PATH, then common local install paths such as `/opt/homebrew/bin/gh` and `/usr/local/bin/gh`. CI and headless environments can keep using `GH_TOKEN` or `GITHUB_TOKEN`; normal local Codex shells can rely on authenticated `gh` without adding project-specific token values to `.env`.
 
 Runtime and provider fallback behavior:
 

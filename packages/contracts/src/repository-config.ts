@@ -4,6 +4,11 @@ export const RepositoryForgeType = z.enum(["github", "none"]);
 
 export const RepositoryForgeConfig = z.object({
   type: RepositoryForgeType.optional(),
+  githubCliPath: z
+    .string()
+    .trim()
+    .min(1, "forge githubCliPath must be non-empty")
+    .optional(),
 });
 
 export type RepositoryForgeConfigType = z.infer<typeof RepositoryForgeConfig>;
@@ -132,6 +137,7 @@ export const ResolvedRepositoryConfig = z.object({
   buildCommand: RepositoryConfigCommand,
   forge: z.object({
     type: RepositoryForgeType,
+    githubCliPath: z.string().trim().min(1).optional(),
   }),
   localRuntime: RepositoryLocalRuntimeConfig.optional(),
 });
