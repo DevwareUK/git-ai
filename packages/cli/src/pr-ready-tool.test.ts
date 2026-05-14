@@ -170,6 +170,11 @@ describe("PR ready tool", () => {
           status: "available",
           actionableThreadCount: 0,
         },
+        commentSummary: {
+          status: "available",
+          totalCount: 0,
+          groups: [],
+        },
       },
     });
     expect(calls.some((call) => call.command === "git" && gitCallArgs(call)[0] === "merge")).toBe(true);
@@ -437,6 +442,24 @@ describe("PR ready tool", () => {
           author: "github-actions",
           isBot: true,
         },
+        {
+          id: 43,
+          body: "Can we add browser coverage for the menu image fallback?",
+          url: "https://github.com/DevwareUK/bos/pull/115#issuecomment-43",
+          createdAt: "2026-05-13T08:10:00Z",
+          updatedAt: "2026-05-13T08:10:00Z",
+          author: "reviewer-a",
+          isBot: false,
+        },
+        {
+          id: 44,
+          body: "The smoke check is still pending; let's wait before merge.",
+          url: "https://github.com/DevwareUK/bos/pull/115#issuecomment-44",
+          createdAt: "2026-05-13T08:20:00Z",
+          updatedAt: "2026-05-13T08:20:00Z",
+          author: "reviewer-b",
+          isBot: false,
+        },
       ]),
       fetchPullRequestReviewComments: vi.fn().mockResolvedValue([
         {
@@ -491,10 +514,122 @@ describe("PR ready tool", () => {
           },
         ],
       },
+      commentSummary: {
+        status: "available",
+        totalCount: 4,
+        groups: [
+          {
+            category: "test-coverage",
+            title: "Test coverage",
+            count: 2,
+            items: [
+              {
+                kind: "managed-test-suggestions",
+                summary: "Open suggestions: Checkout readiness metadata",
+                url: "https://github.com/DevwareUK/bos/pull/115#issuecomment-42",
+              },
+              {
+                kind: "issue-comment",
+                summary: "Can we add browser coverage for the menu image fallback?",
+                url: "https://github.com/DevwareUK/bos/pull/115#issuecomment-43",
+              },
+            ],
+          },
+          {
+            category: "code-review",
+            title: "Code review",
+            count: 1,
+            items: [
+              {
+                kind: "review-thread",
+                path: "packages/cli/src/pr-ready-tool.ts",
+                lineRange: "25",
+                url: "https://github.com/DevwareUK/bos/pull/115#discussion_r100",
+              },
+            ],
+          },
+          {
+            category: "ci-checks",
+            title: "CI and checks",
+            count: 1,
+            items: [
+              {
+                kind: "issue-comment",
+                summary: "The smoke check is still pending; let's wait before merge.",
+                url: "https://github.com/DevwareUK/bos/pull/115#issuecomment-44",
+              },
+            ],
+          },
+        ],
+      },
     });
 
     const metadata = JSON.parse(readFileSync(result.metadataFilePath, "utf8")) as typeof result;
     expect(metadata.prContext).toEqual(result.prContext);
+  });
+
+  it("groups uncategorized and blank PR issue comments without review threads", async () => {
+    const repoRoot = createRepo();
+    const { runCommand } = createCommandRecorder({ containsBase: true });
+
+    const result = await readyPullRequestTool({
+      all: false,
+      forge: createForge({
+        fetchPullRequestIssueComments: vi.fn().mockResolvedValue([
+          {
+            id: 201,
+            body: "Can we mention this in the release note?",
+            url: "https://github.com/DevwareUK/bos/pull/115#issuecomment-201",
+            createdAt: "2026-05-13T09:00:00Z",
+            updatedAt: "2026-05-13T09:00:00Z",
+            author: "reviewer-c",
+            isBot: false,
+          },
+          {
+            id: 202,
+            body: "   ",
+            url: "https://github.com/DevwareUK/bos/pull/115#issuecomment-202",
+            createdAt: "2026-05-13T09:10:00Z",
+            updatedAt: "2026-05-13T09:10:00Z",
+            author: "reviewer-d",
+            isBot: false,
+          },
+        ]),
+        fetchPullRequestReviewComments: vi.fn().mockResolvedValue([]),
+      }),
+      prNumber: 115,
+      repoRoot,
+      runCommand,
+      ensureCleanWorkingTree: vi.fn(),
+      ensureVerificationCommandAvailable: vi.fn(),
+      buildCommand: ["pnpm", "build"],
+    });
+
+    expect(result.prContext.commentSummary).toMatchObject({
+      status: "available",
+      totalCount: 2,
+      groups: [
+        {
+          category: "general",
+          title: "General discussion",
+          count: 2,
+          items: [
+            {
+              kind: "issue-comment",
+              summary: "Can we mention this in the release note?",
+              url: "https://github.com/DevwareUK/bos/pull/115#issuecomment-201",
+              author: "reviewer-c",
+            },
+            {
+              kind: "issue-comment",
+              summary: "(No comment body provided.)",
+              url: "https://github.com/DevwareUK/bos/pull/115#issuecomment-202",
+              author: "reviewer-d",
+            },
+          ],
+        },
+      ],
+    });
   });
 
   it("keeps readiness non-blocking when hosted PR context cannot be fetched", async () => {
@@ -526,6 +661,9 @@ describe("PR ready tool", () => {
           status: "unavailable",
         },
         reviewComments: {
+          status: "unavailable",
+        },
+        commentSummary: {
           status: "unavailable",
         },
       },
