@@ -4,7 +4,12 @@ import { spawnSync } from "node:child_process";
 import type { RepositoryLocalRuntimeConfigType } from "@prs/contracts";
 import { ALL_TEST_SUGGESTIONS_COMMENT_MARKERS } from "@prs/contracts";
 import { formatRunTimestamp, toRepoRelativePath } from "./run-artifacts";
-import type { PullRequestCheckSignal, PullRequestDetails, RepositoryForge } from "./forge";
+import type {
+  PullRequestCheckSignal,
+  PullRequestDetails,
+  RepositoryComment,
+  RepositoryForge,
+} from "./forge";
 import {
   buildPullRequestReviewThreads,
   buildPullRequestReviewThreadsFromDetails,
@@ -60,6 +65,30 @@ export type PrReadyBaseSync =
       summary: string;
     };
 
+export type PrReadyCommentSummaryCategory =
+  | "test-coverage"
+  | "code-review"
+  | "ci-checks"
+  | "requirements"
+  | "general";
+
+export type PrReadyCommentSummaryItem = {
+  kind: "issue-comment" | "review-thread" | "managed-test-suggestions";
+  summary: string;
+  url: string;
+  author: string;
+  updatedAt: string;
+  path?: string;
+  lineRange?: string;
+};
+
+export type PrReadyCommentSummaryGroup = {
+  category: PrReadyCommentSummaryCategory;
+  title: string;
+  count: number;
+  items: PrReadyCommentSummaryItem[];
+};
+
 export type PrReadyPullRequestContext = {
   pullRequest: {
     draft: boolean | "unknown";
@@ -106,6 +135,16 @@ export type PrReadyPullRequestContext = {
           summary: string;
           url: string;
         }>;
+      }
+    | {
+        status: "unavailable";
+        warning: string;
+      };
+  commentSummary:
+    | {
+        status: "available";
+        totalCount: number;
+        groups: PrReadyCommentSummaryGroup[];
       }
     | {
         status: "unavailable";
@@ -436,11 +475,184 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function summarizeCommentBody(body: string): string {
+  const normalized = body
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/[`*_>#-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) {
+    return "(No comment body provided.)";
+  }
+  if (normalized.length <= 140) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, 137)}...`;
+}
+
+function classifyIssueComment(body: string): PrReadyCommentSummaryCategory {
+  const normalized = body.toLowerCase();
+  if (
+    /\b(ci|check|checks|build|smoke|workflow|action|pending|failing|failed|failure)\b/.test(
+      normalized
+    )
+  ) {
+    return "ci-checks";
+  }
+  if (/\b(test|tests|testing|coverage|spec|assert|regression)\b/.test(normalized)) {
+    return "test-coverage";
+  }
+  if (
+    /\b(requirement|requirements|acceptance|scope|product|ux|behavior|behaviour|expected)\b/.test(
+      normalized
+    )
+  ) {
+    return "requirements";
+  }
+
+  return "general";
+}
+
+function createGroupTitle(category: PrReadyCommentSummaryCategory): string {
+  switch (category) {
+    case "test-coverage":
+      return "Test coverage";
+    case "code-review":
+      return "Code review";
+    case "ci-checks":
+      return "CI and checks";
+    case "requirements":
+      return "Requirements";
+    case "general":
+      return "General discussion";
+  }
+}
+
+function hasManagedTestSuggestionsMarker(comment: RepositoryComment): boolean {
+  return ALL_TEST_SUGGESTIONS_COMMENT_MARKERS.some((marker) =>
+    comment.body.includes(marker)
+  );
+}
+
+function buildManagedTestSuggestionsSummary(
+  comment: RepositoryComment,
+  topOpenSuggestions: string[]
+): PrReadyCommentSummaryItem {
+  return {
+    kind: "managed-test-suggestions",
+    summary:
+      topOpenSuggestions.length > 0
+        ? `Open suggestions: ${topOpenSuggestions.join(", ")}`
+        : "All managed AI test suggestions addressed.",
+    url: comment.url,
+    author: comment.author,
+    updatedAt: comment.updatedAt,
+  };
+}
+
+function buildPullRequestCommentSummary(input: {
+  issueComments?: RepositoryComment[];
+  managedTestSuggestionsComment?: RepositoryComment;
+  topOpenTestSuggestions: string[];
+  reviewThreads?: ReturnType<typeof buildPullRequestReviewThreads>;
+}): PrReadyPullRequestContext["commentSummary"] {
+  if (input.issueComments === undefined && input.reviewThreads === undefined) {
+    return {
+      status: "unavailable",
+      warning: "Pull request comment context is unavailable.",
+    };
+  }
+
+  const groups = new Map<PrReadyCommentSummaryCategory, PrReadyCommentSummaryItem[]>();
+  const addItem = (
+    category: PrReadyCommentSummaryCategory,
+    item: PrReadyCommentSummaryItem
+  ) => {
+    const existing = groups.get(category);
+    if (existing) {
+      existing.push(item);
+    } else {
+      groups.set(category, [item]);
+    }
+  };
+
+  if (input.managedTestSuggestionsComment) {
+    addItem(
+      "test-coverage",
+      buildManagedTestSuggestionsSummary(
+        input.managedTestSuggestionsComment,
+        input.topOpenTestSuggestions
+      )
+    );
+  }
+
+  for (const comment of input.issueComments ?? []) {
+    if (
+      input.managedTestSuggestionsComment?.id === comment.id ||
+      hasManagedTestSuggestionsMarker(comment)
+    ) {
+      continue;
+    }
+
+    addItem(classifyIssueComment(comment.body), {
+      kind: "issue-comment",
+      summary: summarizeCommentBody(comment.body),
+      url: comment.url,
+      author: comment.author,
+      updatedAt: comment.updatedAt,
+    });
+  }
+
+  for (const thread of input.reviewThreads ?? []) {
+    addItem("code-review", {
+      kind: "review-thread",
+      summary: thread.summary,
+      url: thread.rootComment.url,
+      author: thread.rootComment.author,
+      updatedAt: thread.rootComment.updatedAt,
+      path: thread.path,
+      lineRange: formatReviewCommentLineRange(thread.startLine, thread.endLine),
+    });
+  }
+
+  const orderedCategories: PrReadyCommentSummaryCategory[] = [
+    "test-coverage",
+    "code-review",
+    "ci-checks",
+    "requirements",
+    "general",
+  ];
+  const renderedGroups = orderedCategories
+    .map((category) => {
+      const items = groups.get(category) ?? [];
+      return {
+        category,
+        title: createGroupTitle(category),
+        count: items.length,
+        items,
+      };
+    })
+    .filter((group) => group.count > 0);
+
+  return {
+    status: "available",
+    totalCount: renderedGroups.reduce((total, group) => total + group.count, 0),
+    groups: renderedGroups,
+  };
+}
+
 async function collectPullRequestContext(
   forge: RepositoryForge,
   pullRequest: PullRequestDetails
 ): Promise<PrReadyPullRequestContext> {
   const warnings: string[] = [];
+  let issueCommentsForSummary: RepositoryComment[] | undefined;
+  let managedTestSuggestionsComment: RepositoryComment | undefined;
+  let topOpenTestSuggestions: string[] = [];
+  let reviewThreadsForSummary:
+    | ReturnType<typeof buildPullRequestReviewThreads>
+    | undefined;
   const context: PrReadyPullRequestContext = {
     pullRequest: {
       draft: pullRequest.isDraft ?? "unknown",
@@ -458,6 +670,10 @@ async function collectPullRequestContext(
     reviewComments: {
       status: "unavailable",
       warning: "Pull request review comment context has not been fetched yet.",
+    },
+    commentSummary: {
+      status: "unavailable",
+      warning: "Pull request comment context has not been fetched yet.",
     },
     warnings,
   };
@@ -493,6 +709,7 @@ async function collectPullRequestContext(
 
   try {
     const comments = await forge.fetchPullRequestIssueComments(pullRequest.number);
+    issueCommentsForSummary = comments;
     const comment = findManagedTestSuggestionsComment(comments);
     if (!comment) {
       context.testSuggestions = {
@@ -504,15 +721,17 @@ async function collectPullRequestContext(
       const openSuggestions = suggestionsComment.suggestions.filter(
         (suggestion) => !suggestion.addressed
       );
+      topOpenTestSuggestions = openSuggestions
+        .slice(0, 3)
+        .map((suggestion) => suggestion.area);
+      managedTestSuggestionsComment = comment;
       context.testSuggestions = {
         status: "available",
         commentUrl: comment.url,
         totalCount: suggestionsComment.suggestions.length,
         openCount: openSuggestions.length,
         addressedCount: suggestionsComment.suggestions.length - openSuggestions.length,
-        topOpenSuggestions: openSuggestions
-          .slice(0, 3)
-          .map((suggestion) => suggestion.area),
+        topOpenSuggestions: topOpenTestSuggestions,
       };
     }
   } catch (error) {
@@ -537,6 +756,7 @@ async function collectPullRequestContext(
         ? buildPullRequestReviewThreads(comments)
         : buildPullRequestReviewThreadsFromDetails(threadDetails)
     ).threads;
+    reviewThreadsForSummary = threads;
     context.reviewComments = {
       status: "available",
       totalCount: comments.length,
@@ -557,6 +777,13 @@ async function collectPullRequestContext(
       warning,
     };
   }
+
+  context.commentSummary = buildPullRequestCommentSummary({
+    issueComments: issueCommentsForSummary,
+    managedTestSuggestionsComment,
+    topOpenTestSuggestions,
+    reviewThreads: reviewThreadsForSummary,
+  });
 
   return context;
 }
