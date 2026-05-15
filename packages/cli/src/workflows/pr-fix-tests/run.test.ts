@@ -226,6 +226,69 @@ describe("runPrFixTestsCommand", () => {
     rmSync(repoRoot, { recursive: true, force: true });
   });
 
+  it("prepares selected test suggestion artifacts without launching a runtime", async () => {
+    const comment = createManagedComment(
+      [
+        "<!-- prs:test-suggestions -->",
+        "## AI Test Suggestions",
+        "",
+        "### Suggested test areas",
+        "",
+        ...buildSuggestionBlock({
+          title: "Verify command execution for 'prs pr fix-tests'",
+          priority: "High",
+          value: "The command should orchestrate the selected test workflow.",
+        }),
+      ].join("\n")
+    );
+    const { forge } = createForge([comment]);
+    const launch = vi.fn();
+    const verifyBuild = vi.fn();
+    const hasChanges = vi.fn();
+    const commitGeneratedChanges = vi.fn();
+    const promptForLine = vi.fn();
+
+    const result = await runPrFixTestsCommand({
+      mode: "prepare",
+      selection: "1",
+      prNumber: 71,
+      repoRoot,
+      buildCommand: ["pnpm", "build"],
+      ensureVerificationCommandAvailable: vi.fn(),
+      runtime: {
+        resolve: () => ({
+          displayName: "Codex",
+          launch,
+        }),
+      },
+      forge,
+      ensureCleanWorkingTree: vi.fn(),
+      promptForLine,
+      verifyBuild,
+      hasChanges,
+      commitGeneratedChanges,
+    });
+
+    expect(result).toEqual({
+      status: "ready",
+      flow: "pr-fix-tests",
+      prNumber: 71,
+      runDir: workspace.runDir,
+      snapshotFilePath: workspace.snapshotFilePath,
+      promptFilePath: workspace.promptFilePath,
+      metadataFilePath: workspace.metadataFilePath,
+      outputLogPath: workspace.outputLogPath,
+      selectedCount: 1,
+      nextAction: "continue-in-current-codex-session",
+    });
+    expect(writePullRequestFixTestsWorkspaceFiles).toHaveBeenCalled();
+    expect(promptForLine).not.toHaveBeenCalled();
+    expect(launch).not.toHaveBeenCalled();
+    expect(verifyBuild).not.toHaveBeenCalled();
+    expect(hasChanges).not.toHaveBeenCalled();
+    expect(commitGeneratedChanges).not.toHaveBeenCalled();
+  });
+
   it("fetches PR context, writes workspace files, runs the selected runtime, verifies the build, and commits", async () => {
     const comment = createManagedComment(
       [

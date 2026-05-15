@@ -95,6 +95,43 @@ describe("prs tool command parser", () => {
     });
   });
 
+  it("parses skill-first PR fix preparation JSON commands", () => {
+    expect(parsePrsToolCommandArgs(["pr", "fix-comments", "115", "--json"])).toEqual({
+      kind: "pr-fix-comments",
+      prNumber: 115,
+      selection: "all",
+      json: true,
+    });
+    expect(
+      parsePrsToolCommandArgs([
+        "pr",
+        "fix-tests",
+        "116",
+        "--selection",
+        "1,2",
+        "--json",
+      ])
+    ).toEqual({
+      kind: "pr-fix-tests",
+      prNumber: 116,
+      selection: "1,2",
+      json: true,
+    });
+    expect(
+      parsePrsToolCommandArgs([
+        "pr",
+        "fix-failing-tests",
+        "117",
+        "--json",
+      ])
+    ).toEqual({
+      kind: "pr-fix-failing-tests",
+      prNumber: 117,
+      selection: "all",
+      json: true,
+    });
+  });
+
   it("parses PR ready JSON command", () => {
     expect(parsePrsToolCommandArgs(["pr", "ready", "115", "--json"])).toEqual({
       kind: "pr-ready",

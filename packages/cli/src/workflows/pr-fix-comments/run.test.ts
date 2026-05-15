@@ -181,6 +181,57 @@ describe("runPrFixCommentsCommand", () => {
     rmSync(repoRoot, { recursive: true, force: true });
   });
 
+  it("prepares selected review comment artifacts without launching a runtime", async () => {
+    const { forge } = createForge([
+      createReviewComment("Guard against an empty comment selection before starting Codex."),
+    ]);
+    const launch = vi.fn();
+    const verifyBuild = vi.fn();
+    const hasChanges = vi.fn();
+    const commitGeneratedChanges = vi.fn();
+    const promptForLine = vi.fn();
+
+    const result = await runPrFixCommentsCommand({
+      mode: "prepare",
+      selection: "1",
+      prNumber: 88,
+      repoRoot,
+      buildCommand: ["pnpm", "build"],
+      ensureVerificationCommandAvailable: vi.fn(),
+      runtime: {
+        resolve: () => ({
+          displayName: "Codex",
+          launch,
+        }),
+      },
+      forge,
+      ensureCleanWorkingTree: vi.fn(),
+      promptForLine,
+      verifyBuild,
+      hasChanges,
+      commitGeneratedChanges,
+    });
+
+    expect(result).toEqual({
+      status: "ready",
+      flow: "pr-fix-comments",
+      prNumber: 88,
+      runDir: workspace.runDir,
+      snapshotFilePath: workspace.snapshotFilePath,
+      promptFilePath: workspace.promptFilePath,
+      metadataFilePath: workspace.metadataFilePath,
+      outputLogPath: workspace.outputLogPath,
+      selectedCount: 1,
+      nextAction: "continue-in-current-codex-session",
+    });
+    expect(writePullRequestFixWorkspaceFiles).toHaveBeenCalled();
+    expect(promptForLine).not.toHaveBeenCalled();
+    expect(launch).not.toHaveBeenCalled();
+    expect(verifyBuild).not.toHaveBeenCalled();
+    expect(hasChanges).not.toHaveBeenCalled();
+    expect(commitGeneratedChanges).not.toHaveBeenCalled();
+  });
+
   it("fetches PR review context, runs the selected runtime, verifies the build, and commits the reviewed message", async () => {
     const { forge, fetchPullRequestDetails, fetchPullRequestReviewComments } = createForge([
       createReviewComment("Guard against an empty comment selection before starting Codex."),

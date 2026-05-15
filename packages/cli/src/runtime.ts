@@ -94,6 +94,11 @@ function runInteractiveCommand(
   errorMessage: string,
   cwd?: string
 ): void {
+  const launchBlocker = getInteractiveRuntimeLaunchBlocker();
+  if (launchBlocker) {
+    throw new Error(`${errorMessage} ${launchBlocker}`);
+  }
+
   const result = spawnSync(command, args, {
     cwd,
     stdio: "inherit",
@@ -151,6 +156,42 @@ function canRunCommand(command: string, args: string[] = ["--version"]): boolean
   });
 
   return !result.error && result.status === 0;
+}
+
+export function getInteractiveRuntimeLaunchBlocker(
+  env: NodeJS.ProcessEnv = process.env,
+  stdio: {
+    stdin?: { isTTY?: boolean };
+    stdout?: { isTTY?: boolean };
+  } = process
+): string | undefined {
+  if (env.PRS_ALLOW_INTERACTIVE_RUNTIME_LAUNCH === "1") {
+    return undefined;
+  }
+
+  if (env.VITEST === "true" || env.NODE_ENV === "test") {
+    return undefined;
+  }
+
+  if (env.TERM === "dumb") {
+    return "Legacy interactive runtime launch is disabled when TERM=dumb. Use the skill-first `prs tool ... --json` preparation command instead.";
+  }
+
+  if (stdio.stdin?.isTTY === false || stdio.stdout?.isTTY === false) {
+    return "Legacy interactive runtime launch requires an interactive terminal. Use the skill-first `prs tool ... --json` preparation command instead.";
+  }
+
+  const nestedCodexMarkers = [
+    "CODEX_SESSION_ID",
+    "CODEX_SANDBOX",
+    "CODEX_WORKSPACE_ID",
+  ];
+  const marker = nestedCodexMarkers.find((name) => env[name]?.trim());
+  if (marker) {
+    return `Legacy interactive runtime launch is disabled inside an active Codex session (${marker} is set). Use the skill-first \`prs tool ... --json\` preparation command instead.`;
+  }
+
+  return undefined;
 }
 
 function getCodexHome(): string {

@@ -7,9 +7,9 @@ Run `prs help` or `prs --help` for the same tiered overview in the terminal.
 Primary offer commands:
 
 - `prs review`: review the current diff or a branch comparison
-- `prs pr fix-comments <pr-number>`: fix selected PR review comments with the configured interactive runtime, ignoring resolved/outdated threads and stale PRS-authored bot findings
-- `prs pr fix-failing-tests <pr-number>`: capture failing local verification output, open the configured interactive runtime with that context, then rerun verification before commit review and safe push
-- `prs pr fix-tests <pr-number>`: implement selected AI PR test suggestions with the configured interactive runtime and their preserved task details
+- `/prs pr <pr-number> fix-comments`: prepare selected PR review comments for the active Codex session, ignoring resolved/outdated threads and stale PRS-authored bot findings
+- `/prs pr <pr-number> fix-failing-tests`: capture failing local verification output and prepare focused artifacts for the active Codex session
+- `/prs pr <pr-number> fix-tests`: prepare selected AI PR test suggestions and their preserved task details for the active Codex session
 - `prs test-backlog`: find high-value automated testing gaps
 
 Advanced commands:
@@ -36,6 +36,9 @@ Supporting commands:
 - `prs tool pr ready <pr-number> [--all] --json`: fast local PR readiness for `/prs:pr`; checks out the actual PR head branch, fetches and merges the latest PR base branch, reports GitHub-hosted review signals in `prContext`, includes grouped PR comment summaries with source links when comments are available, and skips broad local verification
 - `prs codex pr prepare-review <pr-number>`: explicit legacy launcher for reviewer workspace preparation and live Codex follow-up
 - `prs tool pr prepare-review <pr-number> --json`: deterministic Codex-safe review preparation
+- `prs tool pr fix-comments <pr-number> [--selection <value>] --json`: deterministic Codex-safe review-comment fix preparation; writes `.prs/` artifacts and returns file paths without launching a runtime
+- `prs tool pr fix-failing-tests <pr-number> --json`: deterministic Codex-safe failing-test fix preparation; captures failing verification output and returns file paths without launching a runtime
+- `prs tool pr fix-tests <pr-number> [--selection <value>] --json`: deterministic Codex-safe AI-test-suggestion fix preparation; writes selected-suggestion artifacts and returns file paths without launching a runtime
 - `prs commit`: generate a commit message from staged changes
 - `prs diff`: summarize `git diff HEAD`
 
@@ -197,9 +200,16 @@ Important behavior:
 
 The direct `prs pr prepare-review <pr-number>` launcher is retired. Use `prs tool pr prepare-review <pr-number> --json` for deterministic Codex-safe review preparation, or `prs codex pr prepare-review <pr-number>` when you explicitly want the legacy live Codex launcher.
 
+The managed `/prs pr <number> fix-comments`, `/prs pr <number> fix-failing-tests`, and `/prs pr <number> fix-tests` skill routes use the deterministic `prs tool pr ... --json` commands. These commands write `.prs/runs/...` context artifacts and return `promptFilePath`, `snapshotFilePath`, `metadataFilePath`, `outputLogPath`, and `nextAction` for the active Codex session. They do not launch Codex.
+
+The direct local `prs pr fix-comments`, `prs pr fix-failing-tests`, and `prs pr fix-tests` commands remain legacy manual interactive launchers for terminals where you explicitly want the CLI to open a configured runtime and resume verification, commit review, and safe push after that runtime exits. Legacy interactive launch is blocked in `TERM=dumb`, non-interactive, or nested Codex contexts unless `PRS_ALLOW_INTERACTIVE_RUNTIME_LAUNCH=1` is set.
+
 Usage:
 
 ```bash
+prs tool pr fix-comments <pr-number> [--selection <value>] --json
+prs tool pr fix-failing-tests <pr-number> --json
+prs tool pr fix-tests <pr-number> [--selection <value>] --json
 prs codex pr prepare-review <pr-number>
 prs pr resolve-conflicts <pr-number>
 prs pr fix-comments <pr-number>
@@ -211,6 +221,9 @@ Available subcommands:
 
 | Command | What it does |
 | --- | --- |
+| `prs tool pr fix-comments <pr-number> [--selection <value>] --json` | Requires a clean working tree, preflights the configured verification command, fetches pull request metadata and lifecycle-aware review threads from the configured forge, filters/group selectable review tasks using the same rules as the legacy launcher, defaults `--selection` to `all`, writes `pr-review-comments.md`, `prompt.md`, `metadata.json`, and `output.log`, and returns JSON file paths plus `nextAction: "continue-in-current-codex-session"` without launching a runtime, running final verification, committing, or pushing. |
+| `prs tool pr fix-failing-tests <pr-number> --json` | Requires a clean working tree, preflights and runs the configured verification command, exits with `Configured verification command passed. No failing test output was captured.` when it already passes, otherwise writes `failing-tests.md`, `prompt.md`, `metadata.json`, and `output.log`, and returns JSON file paths plus `nextAction: "continue-in-current-codex-session"` without launching a runtime, committing, or pushing. |
+| `prs tool pr fix-tests <pr-number> [--selection <value>] --json` | Requires a clean working tree, preflights the configured verification command, fetches pull request metadata and PR issue comments, parses unchecked managed AI Test Suggestions, defaults `--selection` to `all`, writes selected-suggestion `pr-test-suggestions.md`, `prompt.md`, `metadata.json`, and `output.log`, and returns JSON file paths plus `nextAction: "continue-in-current-codex-session"` without launching a runtime, marking suggestions resolved, committing, or pushing. |
 | `prs codex pr prepare-review <pr-number>` | Fetches pull request metadata and linked issues, requires a clean working tree, preflights the configured verification command plus the live PR base branch on `origin`, checks out the best available local review branch for the PR, fetches the latest `origin/<base-branch>` tip, skips merging when the checked-out branch already contains that tip, otherwise merges the base branch into the review branch before brief generation, routes merge conflicts through an interactive Codex conflict-resolution session when needed, writes `.prs/` run artifacts, generates `review-brief.md`, prints the saved brief path plus a terminal preview, and then leaves you in an interactive Codex session on that branch for follow-up review questions or requested fixes. After that session exits, `prs` exits cleanly if there are no new reviewed commits to sync, or else runs the configured build command when there are follow-up file changes, offers the same reviewed commit-message flow used by the other local fix workflows, and pushes any new reviewed commits back to `origin/<pr-head-branch>`. |
 | `prs pr resolve-conflicts <pr-number>` | Requires a clean working tree, requires `codex` on `PATH`, preflights the configured verification command plus the live PR base branch on `origin`, checks out the PR head branch, fetches the latest `origin/<base-branch>` tip, exits without build or push when the checked-out branch already contains that tip, otherwise merges the base branch into the PR head branch, opens a focused Codex conflict-resolution session when the merge conflicts, verifies that the final branch has no in-progress merge or unmerged paths and contains the fetched base tip, runs the configured build command after a completed merge, writes `prompt.md`, `conflict-resolution-prompt.md`, `metadata.json`, and `output.log` under `.prs/runs/<timestamp>-pr-<number>-resolve-conflicts/`, and pushes the resolved branch back to `origin/<pr-head-branch>` only when `HEAD` is ahead and not behind. |
 | `prs pr fix-comments <pr-number>` | Requires a clean working tree, preflights the configured verification command, fetches pull request metadata and lifecycle-aware review threads from the configured forge, filters out obviously non-actionable comments plus resolved and outdated GitHub review threads, groups nearby threads into selectable review tasks, preserves non-trivial replies as thread context, suppresses PRS-authored bot threads that predate the latest successful `fix-comments` commit unless a newer reply reopened the concern, writes richer `.prs/` run artifacts, opens the configured interactive runtime, runs the configured build command, previews a proposed commit message that you can edit, accept, or skip, records the selected addressed review threads, attempts to reply to and resolve selected PRS-authored bot threads, and then pushes the reviewed commit back to `origin/<pr-head-branch>` when `HEAD` is ahead and not behind after fetching the latest remote head. Human-authored review comments are never auto-resolved by default. |

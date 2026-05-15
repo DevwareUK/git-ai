@@ -343,9 +343,9 @@ const TOP_LEVEL_HELP = [
   "",
   "Start here:",
   "  prs review",
-  "  prs pr fix-comments <pr-number>",
-  "  prs pr fix-failing-tests <pr-number>",
-  "  prs pr fix-tests <pr-number>",
+  "  prs tool pr fix-comments <pr-number> --json",
+  "  prs tool pr fix-failing-tests <pr-number> --json",
+  "  prs tool pr fix-tests <pr-number> --json",
   "  prs review tests [--top <count>]",
   "",
   "Advanced:",
@@ -362,11 +362,14 @@ const TOP_LEVEL_HELP = [
   "  prs pr resolve-conflicts <pr-number>",
   "  prs review features [repo-path]",
   "",
-  "Codex launchers:",
+  "Legacy interactive launchers:",
   "  prs codex issue <number>",
   "  prs codex issue batch <number> <number> [...number] [--mode unattended]",
   "  prs codex pr prepare-review <pr-number>",
   "  prs codex pr resolve-conflicts <pr-number>",
+  "  prs pr fix-comments <pr-number>",
+  "  prs pr fix-failing-tests <pr-number>",
+  "  prs pr fix-tests <pr-number>",
   "",
   "Supporting commands:",
   "  prs setup",
@@ -378,6 +381,9 @@ const TOP_LEVEL_HELP = [
   "  prs tool pr list [--actionable] --json",
   "  prs tool pr ready <pr-number> [--all] --json",
   "  prs tool pr prepare-review <pr-number> --json",
+  "  prs tool pr fix-comments <pr-number> [--selection <value>] --json",
+  "  prs tool pr fix-failing-tests <pr-number> --json",
+  "  prs tool pr fix-tests <pr-number> [--selection <value>] --json",
   "  prs test-backlog [--top <count>]",
   "  prs feature-backlog [repo-path]",
   "  prs audit publish (--issue <number>|--pr <number>) --file <path> --section <name> [--local-run <path>]",
@@ -4078,6 +4084,86 @@ async function runToolCommand(): Promise<void> {
         readDiff: readIssueWorkflowDiff,
         createProvider: async (providerRepoRoot) => createProvider(providerRepoRoot),
       });
+    } finally {
+      console.log = originalConsoleLog;
+    }
+
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+
+  if (
+    toolCommand.kind === "pr-fix-comments" ||
+    toolCommand.kind === "pr-fix-failing-tests" ||
+    toolCommand.kind === "pr-fix-tests"
+  ) {
+    const originalConsoleLog = console.log;
+    console.log = (...values: unknown[]) => {
+      process.stderr.write(`${values.map((value) => String(value)).join(" ")}\n`);
+    };
+
+    const runtime = {
+      resolve: () => ({
+        displayName: "Codex",
+        launch: () => {
+          throw new Error("prs tool pr fix preparation must not launch Codex.");
+        },
+      }),
+    };
+    let result:
+      | Awaited<ReturnType<typeof runPrFixCommentsCommand>>
+      | Awaited<ReturnType<typeof runPrFixFailingTestsCommand>>
+      | Awaited<ReturnType<typeof runPrFixTestsCommand>>;
+    try {
+      if (toolCommand.kind === "pr-fix-comments") {
+        result = await runPrFixCommentsCommand({
+          mode: "prepare",
+          selection: toolCommand.selection,
+          prNumber: toolCommand.prNumber,
+          repoRoot,
+          buildCommand: repositoryConfig.buildCommand,
+          ensureVerificationCommandAvailable,
+          runtime,
+          forge: getRepositoryForge(repoRoot),
+          ensureCleanWorkingTree,
+          promptForLine,
+          verifyBuild,
+          hasChanges,
+          commitGeneratedChanges,
+        });
+      } else if (toolCommand.kind === "pr-fix-failing-tests") {
+        result = await runPrFixFailingTestsCommand({
+          mode: "prepare",
+          prNumber: toolCommand.prNumber,
+          repoRoot,
+          buildCommand: repositoryConfig.buildCommand,
+          ensureVerificationCommandAvailable,
+          runtime,
+          forge: getRepositoryForge(repoRoot),
+          ensureCleanWorkingTree,
+          captureVerificationFailure,
+          promptForLine,
+          verifyBuild,
+          hasChanges,
+          commitGeneratedChanges,
+        });
+      } else {
+        result = await runPrFixTestsCommand({
+          mode: "prepare",
+          selection: toolCommand.selection,
+          prNumber: toolCommand.prNumber,
+          repoRoot,
+          buildCommand: repositoryConfig.buildCommand,
+          ensureVerificationCommandAvailable,
+          runtime,
+          forge: getRepositoryForge(repoRoot),
+          ensureCleanWorkingTree,
+          promptForLine,
+          verifyBuild,
+          hasChanges,
+          commitGeneratedChanges,
+        });
+      }
     } finally {
       console.log = originalConsoleLog;
     }

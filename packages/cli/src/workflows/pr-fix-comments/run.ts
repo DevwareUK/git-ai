@@ -33,6 +33,8 @@ import type {
 } from "./types";
 
 type RunPrFixCommentsCommandOptions = {
+  mode?: "legacy-launch" | "prepare";
+  selection?: string;
   prNumber: number;
   repoRoot: string;
   buildCommand: string[];
@@ -56,6 +58,19 @@ type RunPrFixCommentsCommandOptions = {
   verifyBuild(repoRoot: string, buildCommand: string[], outputLogPath: string): void;
   hasChanges(repoRoot: string): boolean;
   commitGeneratedChanges(repoRoot: string, commitMessage: ReviewedGeneratedText): void;
+};
+
+export type PullRequestFixCommentsPreparationResult = {
+  status: "ready";
+  flow: "pr-fix-comments";
+  prNumber: number;
+  runDir: string;
+  snapshotFilePath: string;
+  promptFilePath: string;
+  metadataFilePath: string;
+  outputLogPath: string;
+  selectedCount: number;
+  nextAction: "continue-in-current-codex-session";
 };
 
 type AddressedReviewCommentsRun = {
@@ -316,7 +331,8 @@ async function selectPullRequestReviewComments(
   pullRequest: PullRequestDetails,
   threadTasks: PullRequestReviewTask[],
   groupTasks: PullRequestReviewTask[],
-  promptForLine: (prompt: string) => Promise<string>
+  promptForLine: (prompt: string) => Promise<string>,
+  selectionOverride?: string
 ): Promise<PullRequestReviewTask[]> {
   printPullRequestReviewTasks(pullRequest, groupTasks, threadTasks);
 
@@ -324,7 +340,7 @@ async function selectPullRequestReviewComments(
     groupTasks.length > 0
       ? "Select tasks to address [All|none|g1,2,...] (default: All; `all` selects every individual thread): "
       : "Select tasks to address [All|none|1,2,...] (default: All): ";
-  const selection = await promptForLine(selectionPrompt);
+  const selection = selectionOverride ?? (await promptForLine(selectionPrompt));
   const selectedEntries = parsePullRequestReviewSelection(
     selection,
     threadTasks.length,
@@ -375,7 +391,7 @@ async function selectPullRequestReviewComments(
 
 export async function runPrFixCommentsCommand(
   options: RunPrFixCommentsCommandOptions
-): Promise<void> {
+): Promise<void | PullRequestFixCommentsPreparationResult> {
   if (options.forge.type === "none") {
     throw new Error(
       "Repository forge support is disabled by .prs/config.json. Configure `forge.type` to enable pull request workflows."
@@ -454,7 +470,8 @@ export async function runPrFixCommentsCommand(
     pullRequest,
     threadTasks,
     groupTasks,
-    options.promptForLine
+    options.promptForLine,
+    options.selection
   );
   if (selectedTasks.length === 0) {
     console.log("No review tasks selected. Exiting without changes.");
@@ -473,6 +490,21 @@ export async function runPrFixCommentsCommand(
     options.buildCommand,
     linkedIssues
   );
+
+  if (options.mode === "prepare") {
+    return {
+      status: "ready",
+      flow: "pr-fix-comments",
+      prNumber: pullRequest.number,
+      runDir: workspace.runDir,
+      snapshotFilePath: workspace.snapshotFilePath,
+      promptFilePath: workspace.promptFilePath,
+      metadataFilePath: workspace.metadataFilePath,
+      outputLogPath: workspace.outputLogPath,
+      selectedCount: selectedTasks.length,
+      nextAction: "continue-in-current-codex-session",
+    };
+  }
 
   const runtime = options.runtime.resolve();
   console.log(

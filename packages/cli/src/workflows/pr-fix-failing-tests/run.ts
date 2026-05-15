@@ -14,6 +14,7 @@ import {
 } from "./workspace";
 
 type RunPrFixFailingTestsCommandOptions = {
+  mode?: "legacy-launch" | "prepare";
   prNumber: number;
   repoRoot: string;
   buildCommand: string[];
@@ -46,9 +47,22 @@ type RunPrFixFailingTestsCommandOptions = {
   commitGeneratedChanges(repoRoot: string, commitMessage: ReviewedGeneratedText): void;
 };
 
+export type PullRequestFixFailingTestsPreparationResult = {
+  status: "ready";
+  flow: "pr-fix-failing-tests";
+  prNumber: number;
+  runDir: string;
+  snapshotFilePath: string;
+  promptFilePath: string;
+  metadataFilePath: string;
+  outputLogPath: string;
+  selectedCount: number;
+  nextAction: "continue-in-current-codex-session";
+};
+
 export async function runPrFixFailingTestsCommand(
   options: RunPrFixFailingTestsCommandOptions
-): Promise<void> {
+): Promise<void | PullRequestFixFailingTestsPreparationResult> {
   if (options.forge.type === "none") {
     throw new Error(
       "Repository forge support is disabled by .prs/config.json. Configure `forge.type` to enable pull request workflows."
@@ -89,6 +103,21 @@ export async function runPrFixFailingTestsCommand(
     options.buildCommand,
     linkedIssues
   );
+
+  if (options.mode === "prepare") {
+    return {
+      status: "ready",
+      flow: "pr-fix-failing-tests",
+      prNumber: pullRequest.number,
+      runDir: workspace.runDir,
+      snapshotFilePath: workspace.snapshotFilePath,
+      promptFilePath: workspace.promptFilePath,
+      metadataFilePath: workspace.metadataFilePath,
+      outputLogPath: workspace.outputLogPath,
+      selectedCount: 1,
+      nextAction: "continue-in-current-codex-session",
+    };
+  }
 
   const runtime = options.runtime.resolve();
   console.log(
