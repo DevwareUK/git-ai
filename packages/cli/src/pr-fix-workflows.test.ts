@@ -617,27 +617,7 @@ describe("PR fix workflows", () => {
       edgeCases: ["The marker exists but the suggested test areas section is missing."],
       likelyLocations: ["packages/cli/src/index.test.ts"],
     });
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      3,
-      "https://api.github.com/repos/DevwareUK/prs/issues/comments/801",
-      expect.objectContaining({
-        method: "PATCH",
-        body: expect.not.stringContaining("fixed-tests-head-sha"),
-      })
-    );
-    const updatedCommentBody = JSON.parse(
-      String(fetchMock.mock.calls[2]?.[1]?.body)
-    ).body as string;
-    expect(updatedCommentBody).toContain(
-      "#### Verify prompt generation for selected test suggestions\n- [ ] Addressed"
-    );
-    expect(updatedCommentBody).toContain(
-      "#### Verify managed comment parsing failure cases\n- [x] Addressed"
-    );
-    expect(updatedCommentBody).not.toContain("<!-- prs:test-suggestions:resolved-start -->");
-    expect(updatedCommentBody).not.toContain("<!-- prs:test-suggestions:resolved-end -->");
-    expect(updatedCommentBody).not.toContain("fixed-tests-head-sha");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(spawnSync).toHaveBeenCalledWith(
       "git",
       ["commit", "-F", expect.stringContaining("commit-message.txt")],

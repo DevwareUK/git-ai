@@ -230,28 +230,6 @@ describe("runPrFixTestsCommand", () => {
     const comment = createManagedComment(
       [
         "<!-- prs:test-suggestions -->",
-        "<!-- prs:test-suggestions:resolved-start -->",
-        JSON.stringify(
-          [
-            {
-              key: "legacy-key",
-              area: "Legacy resolved suggestion",
-              testType: "unit",
-              behavior: "Old resolved JSON should be removed.",
-              regressionRisk: "Old state can leak into comments.",
-              value: "The checklist is the source of truth.",
-              protectedPaths: [],
-              likelyLocations: [],
-              edgeCases: [],
-              implementationNote: "Remove this legacy state.",
-              resolvedAt: "2026-05-18T11:47:00.829Z",
-              commitSha: "old-ledger-sha",
-            },
-          ],
-          null,
-          2
-        ),
-        "<!-- prs:test-suggestions:resolved-end -->",
         "## AI Test Suggestions",
         "",
         "### Suggested test areas",
@@ -427,20 +405,7 @@ describe("runPrFixTestsCommand", () => {
         filePath: resolve(workspace.runDir, "commit-message.txt"),
       })
     );
-    const updatedCommentBody = updateIssueComment.mock.calls[0]?.[1] as string;
-    expect(updatedCommentBody).toContain("<!-- prs:test-suggestions -->");
-    expect(updatedCommentBody).toContain("#### Verify command execution for 'prs pr fix-tests'\n- [x] Addressed");
-    expect(updatedCommentBody).toContain("#### Verify output artifacts are created correctly\n- [x] Addressed");
-    expect(updatedCommentBody).not.toContain("<!-- prs:test-suggestions:resolved-start -->");
-    expect(updatedCommentBody).not.toContain("<!-- prs:test-suggestions:resolved-end -->");
-    expect(updatedCommentBody).not.toContain("old-ledger-sha");
-    expect(updatedCommentBody).not.toContain("accepted-head-sha");
-    expect(updatedCommentBody).toContain(
-      "Verify command execution for 'prs pr fix-tests'"
-    );
-    expect(commitGeneratedChanges.mock.invocationCallOrder[0]).toBeLessThan(
-      updateIssueComment.mock.invocationCallOrder[0] ?? 0
-    );
+    expect(updateIssueComment).not.toHaveBeenCalled();
     const pushCallIndex = vi.mocked(spawnSync).mock.calls.findIndex(
       ([command, args]) =>
         command === "git" &&
@@ -449,7 +414,7 @@ describe("runPrFixTestsCommand", () => {
         args[2] === "HEAD:feat/pr-fix-tests"
     );
     expect(pushCallIndex).toBeGreaterThanOrEqual(0);
-    expect(updateIssueComment.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(commitGeneratedChanges.mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(spawnSync).mock.invocationCallOrder[pushCallIndex] ?? 0
     );
     expect(spawnSync).toHaveBeenCalledWith(
