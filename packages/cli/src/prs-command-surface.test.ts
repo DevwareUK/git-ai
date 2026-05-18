@@ -400,8 +400,37 @@ describe("prs command surface routing", () => {
     ).toEqual({
       interaction: "direct",
       skillName: "prs",
-      cliArgs: ["pr", "fix-comments", "456"],
+      cliArgs: ["tool", "pr", "fix-comments", "456", "--json"],
       target: { type: "pull-request", number: 456 },
+      toolOnly: true,
+    });
+    expect(
+      routePrsCommandSurfaceAction({
+        kind: "pr",
+        mode: "direct",
+        prNumber: 456,
+        action: "fix-failing-tests",
+      })
+    ).toEqual({
+      interaction: "direct",
+      skillName: "prs",
+      cliArgs: ["tool", "pr", "fix-failing-tests", "456", "--json"],
+      target: { type: "pull-request", number: 456 },
+      toolOnly: true,
+    });
+    expect(
+      routePrsCommandSurfaceAction({
+        kind: "pr",
+        mode: "direct",
+        prNumber: 456,
+        action: "fix-tests",
+      })
+    ).toEqual({
+      interaction: "direct",
+      skillName: "prs",
+      cliArgs: ["tool", "pr", "fix-tests", "456", "--json"],
+      target: { type: "pull-request", number: 456 },
+      toolOnly: true,
     });
   });
 

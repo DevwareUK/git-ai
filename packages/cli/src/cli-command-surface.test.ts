@@ -1420,7 +1420,7 @@ describe("CLI command surface", () => {
     expect(stdout.output()).toContain("GitHub-first AI workflows");
     expect(stdout.output()).toContain("Start here:");
     expect(stdout.output()).toContain("prs review tests [--top <count>]");
-    expect(stdout.output()).toContain("prs pr fix-comments <pr-number>");
+    expect(stdout.output()).toContain("prs tool pr fix-comments <pr-number> --json");
     expect(stdout.output()).toContain("Advanced:");
     expect(stdout.output()).toContain("Beta:");
     expect(stdout.output()).toContain("prs issue draft");
@@ -1428,9 +1428,10 @@ describe("CLI command surface", () => {
     expect(stdout.output()).not.toContain("  prs pr prepare-review <pr-number>");
     expect(stdout.output()).toContain("prs review features [repo-path]");
     expect(stdout.output()).toContain("prs pr resolve-conflicts <pr-number>");
-    expect(stdout.output()).toContain("Codex launchers:");
+    expect(stdout.output()).toContain("Legacy interactive launchers:");
     expect(stdout.output()).toContain("prs codex issue <number>");
     expect(stdout.output()).toContain("prs codex pr prepare-review <pr-number>");
+    expect(stdout.output()).toContain("prs pr fix-comments <pr-number>");
   });
 
   it("prints a deprecation notice when invoked through the legacy git-ai alias", async () => {

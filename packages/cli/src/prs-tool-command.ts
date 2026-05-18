@@ -13,6 +13,12 @@ export type PrsToolCommand =
     }
   | { kind: "pr-list"; actionable: boolean; json: boolean }
   | { kind: "pr-prepare-review"; prNumber: number; json: boolean }
+  | {
+      kind: "pr-fix-comments" | "pr-fix-failing-tests" | "pr-fix-tests";
+      prNumber: number;
+      selection: string;
+      json: boolean;
+    }
   | { kind: "pr-ready"; prNumber: number; all: boolean; json: boolean };
 
 export function renderPrsToolCommandHelp(): string {
@@ -26,6 +32,9 @@ export function renderPrsToolCommandHelp(): string {
     "                        [--force-prs-managed]",
     "  prs tool pr list [--actionable] --json",
     "  prs tool pr prepare-review <pr-number> --json",
+    "  prs tool pr fix-comments <pr-number> [--selection <value>] --json",
+    "  prs tool pr fix-failing-tests <pr-number> --json",
+    "  prs tool pr fix-tests <pr-number> [--selection <value>] --json",
     "  prs tool pr ready <pr-number> [--all] --json",
   ].join("\n");
 }
@@ -260,6 +269,55 @@ export function parsePrsToolCommandArgs(args: string[]): PrsToolCommand {
     }
 
     return { kind: "pr-prepare-review", prNumber, json: true };
+  }
+
+  if (
+    command === "fix-comments" ||
+    command === "fix-failing-tests" ||
+    command === "fix-tests"
+  ) {
+    if (!third || third === "--json" || third === "--selection") {
+      throw new Error(renderPrsToolCommandHelp());
+    }
+
+    const prNumber = parseToolNumber(third, "pr");
+    const optionArgs = [fourth, ...rest].filter(
+      (arg): arg is string => arg !== undefined
+    );
+    let selection = "all";
+    let json = false;
+
+    for (let index = 0; index < optionArgs.length; index += 1) {
+      const rawArg = optionArgs[index];
+
+      if (rawArg === "--json") {
+        json = true;
+        continue;
+      }
+
+      if (rawArg === "--selection") {
+        const value = optionArgs[index + 1];
+        if (!value) {
+          throw new Error(`Missing value for --selection. ${renderPrsToolCommandHelp()}`);
+        }
+        selection = value;
+        index += 1;
+        continue;
+      }
+
+      if (rawArg.startsWith("--selection=")) {
+        selection = rawArg.slice("--selection=".length);
+        continue;
+      }
+
+      throw new Error(`Unknown tool option "${rawArg}". ${renderPrsToolCommandHelp()}`);
+    }
+
+    if (!json) {
+      throw new Error(`prs tool pr ${command} requires --json. ${renderPrsToolCommandHelp()}`);
+    }
+
+    return { kind: `pr-${command}` as const, prNumber, selection, json: true };
   }
 
   if (command === "ready") {

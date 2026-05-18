@@ -330,6 +330,20 @@ export function routePrsCommandSurfaceAction(action: PrsCommandSurfaceAction): P
       };
     }
 
+    if (
+      action.action === "fix-comments" ||
+      action.action === "fix-failing-tests" ||
+      action.action === "fix-tests"
+    ) {
+      return {
+        interaction: "direct",
+        skillName: "prs",
+        cliArgs: ["tool", "pr", action.action, String(action.prNumber), "--json"],
+        target: { type: "pull-request", number: action.prNumber },
+        toolOnly: true,
+      };
+    }
+
     return {
       interaction: "direct",
       skillName: "prs",

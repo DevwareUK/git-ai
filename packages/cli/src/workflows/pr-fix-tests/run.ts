@@ -26,6 +26,8 @@ import type {
 } from "./types";
 
 type RunPrFixTestsCommandOptions = {
+  mode?: "legacy-launch" | "prepare";
+  selection?: string;
   prNumber: number;
   repoRoot: string;
   buildCommand: string[];
@@ -49,6 +51,19 @@ type RunPrFixTestsCommandOptions = {
   verifyBuild(repoRoot: string, buildCommand: string[], outputLogPath: string): void;
   hasChanges(repoRoot: string): boolean;
   commitGeneratedChanges(repoRoot: string, commitMessage: ReviewedGeneratedText): void;
+};
+
+export type PullRequestFixPreparationResult = {
+  status: "ready";
+  flow: "pr-fix-tests";
+  prNumber: number;
+  runDir: string;
+  snapshotFilePath: string;
+  promptFilePath: string;
+  metadataFilePath: string;
+  outputLogPath: string;
+  selectedCount: number;
+  nextAction: "continue-in-current-codex-session";
 };
 
 function resolveHeadCommitSha(repoRoot: string): string {
@@ -78,14 +93,17 @@ function resolveHeadCommitSha(repoRoot: string): string {
 async function selectPullRequestTestSuggestions(
   pullRequest: PullRequestDetails,
   suggestions: PullRequestTestSuggestion[],
-  promptForLine: (prompt: string) => Promise<string>
+  promptForLine: (prompt: string) => Promise<string>,
+  selectionOverride?: string
 ): Promise<PullRequestTestSuggestion[]> {
   console.log(`AI test suggestions for PR #${pullRequest.number}: ${pullRequest.title}`);
   printPullRequestTestSuggestions(suggestions);
 
-  const selection = await promptForLine(
-    "Select test suggestions to implement [All|none|1,2,...] (default: All): "
-  );
+  const selection =
+    selectionOverride ??
+    (await promptForLine(
+      "Select test suggestions to implement [All|none|1,2,...] (default: All): "
+    ));
   const selectedIndexes = parsePullRequestTestSuggestionSelection(
     selection,
     suggestions.length
@@ -96,7 +114,7 @@ async function selectPullRequestTestSuggestions(
 
 export async function runPrFixTestsCommand(
   options: RunPrFixTestsCommandOptions
-): Promise<void> {
+): Promise<void | PullRequestFixPreparationResult> {
   if (options.forge.type === "none") {
     throw new Error(
       "Repository forge support is disabled by .prs/config.json. Configure `forge.type` to enable pull request workflows."
@@ -144,7 +162,8 @@ export async function runPrFixTestsCommand(
   const selectedSuggestions = await selectPullRequestTestSuggestions(
     pullRequest,
     uncheckedSuggestions,
-    options.promptForLine
+    options.promptForLine,
+    options.selection
   );
   if (selectedSuggestions.length === 0) {
     console.log("No test suggestions selected. Exiting without changes.");
@@ -164,6 +183,21 @@ export async function runPrFixTestsCommand(
     options.buildCommand,
     linkedIssues
   );
+
+  if (options.mode === "prepare") {
+    return {
+      status: "ready",
+      flow: "pr-fix-tests",
+      prNumber: pullRequest.number,
+      runDir: workspace.runDir,
+      snapshotFilePath: workspace.snapshotFilePath,
+      promptFilePath: workspace.promptFilePath,
+      metadataFilePath: workspace.metadataFilePath,
+      outputLogPath: workspace.outputLogPath,
+      selectedCount: selectedSuggestions.length,
+      nextAction: "continue-in-current-codex-session",
+    };
+  }
 
   const runtime = options.runtime.resolve();
   console.log(

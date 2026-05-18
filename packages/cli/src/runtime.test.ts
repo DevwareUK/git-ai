@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  getInteractiveRuntimeLaunchBlocker,
   getInteractiveRuntimeByType,
   isCodexSuperpowersAvailable,
   selectInteractiveRuntime,
@@ -160,6 +161,38 @@ describe("selectInteractiveRuntime", () => {
     } finally {
       rmSync(repoRoot, { recursive: true, force: true });
     }
+  });
+});
+
+describe("getInteractiveRuntimeLaunchBlocker", () => {
+  it("blocks legacy interactive launches in dumb, non-tty, and nested Codex contexts", () => {
+    expect(
+      getInteractiveRuntimeLaunchBlocker(
+        { TERM: "dumb" },
+        { stdin: { isTTY: true }, stdout: { isTTY: true } }
+      )
+    ).toContain("TERM=dumb");
+    expect(
+      getInteractiveRuntimeLaunchBlocker(
+        { TERM: "xterm-256color" },
+        { stdin: { isTTY: false }, stdout: { isTTY: true } }
+      )
+    ).toContain("interactive terminal");
+    expect(
+      getInteractiveRuntimeLaunchBlocker(
+        { TERM: "xterm-256color", CODEX_SESSION_ID: "session-1" },
+        { stdin: { isTTY: true }, stdout: { isTTY: true } }
+      )
+    ).toContain("CODEX_SESSION_ID");
+  });
+
+  it("allows explicit legacy launch override", () => {
+    expect(
+      getInteractiveRuntimeLaunchBlocker(
+        { TERM: "dumb", PRS_ALLOW_INTERACTIVE_RUNTIME_LAUNCH: "1" },
+        { stdin: { isTTY: false }, stdout: { isTTY: false } }
+      )
+    ).toBeUndefined();
   });
 });
 
