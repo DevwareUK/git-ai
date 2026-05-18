@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { RepositoryComment } from "../../forge";
 import {
+  markSelectedTestSuggestionsAddressed,
   findManagedTestSuggestionsComment,
   parseManagedTestSuggestionsComment,
   parsePullRequestTestSuggestionSelection,
@@ -339,6 +340,66 @@ describe("pr-fix-tests selection helpers", () => {
     expect(parseManagedTestSuggestionsComment(comment).suggestions).toEqual([
       expect.objectContaining({ area: "Visible suggestion" }),
     ]);
+  });
+
+  it("checks selected suggestions and removes legacy resolved ledger blocks", () => {
+    const body = [
+      "<!-- prs:test-suggestions -->",
+      "<!-- prs:test-suggestions:resolved-start -->",
+      JSON.stringify(
+        [
+          {
+            key: "legacy-key",
+            area: "Legacy resolved suggestion",
+            testType: "unit",
+            behavior: "Old resolved JSON should be removed.",
+            regressionRisk: "Old state can leak into comments.",
+            value: "The checklist is the source of truth.",
+            protectedPaths: [],
+            likelyLocations: [],
+            edgeCases: [],
+            implementationNote: "Remove this legacy state.",
+            resolvedAt: "2026-05-18T11:47:00.829Z",
+            commitSha: "old-ledger-sha",
+          },
+        ],
+        null,
+        2
+      ),
+      "<!-- prs:test-suggestions:resolved-end -->",
+      "## AI Test Suggestions",
+      "",
+      "### Suggested test areas",
+      "",
+      ...buildSuggestionBlock({
+        title: "First suggestion",
+        priority: "High",
+        addressed: false,
+        value: "The first item should remain open.",
+      }),
+      "",
+      ...buildSuggestionBlock({
+        title: "Second suggestion",
+        priority: "Medium",
+        addressed: false,
+        value: "The selected item should be checked.",
+      }),
+    ].join("\n");
+
+    const comment = createComment(body);
+    const selectedSuggestion = parseManagedTestSuggestionsComment(comment).suggestions[1];
+    expect(selectedSuggestion).toBeDefined();
+
+    const updatedBody = markSelectedTestSuggestionsAddressed(body, [
+      selectedSuggestion!,
+    ]);
+
+    expect(updatedBody).toContain("<!-- prs:test-suggestions -->");
+    expect(updatedBody).toContain("#### First suggestion\n- [ ] Addressed");
+    expect(updatedBody).toContain("#### Second suggestion\n- [x] Addressed");
+    expect(updatedBody).not.toContain("<!-- prs:test-suggestions:resolved-start -->");
+    expect(updatedBody).not.toContain("<!-- prs:test-suggestions:resolved-end -->");
+    expect(updatedBody).not.toContain("old-ledger-sha");
   });
 
   it("parses interactive suggestion selection and rejects invalid entries", () => {

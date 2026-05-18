@@ -403,6 +403,7 @@ describe("PR fix workflows", () => {
               ...buildManagedTestSuggestionBlock({
                 title: "Verify prompt generation for selected test suggestions",
                 priority: "High",
+                addressed: false,
                 value:
                   "The Codex handoff should preserve the selected test context.",
                 protectedPaths: [
@@ -419,6 +420,7 @@ describe("PR fix workflows", () => {
               ...buildManagedTestSuggestionBlock({
                 title: "Verify managed comment parsing failure cases",
                 priority: "Medium",
+                addressed: false,
                 value:
                   "The command should fail clearly when the managed comment is malformed.",
                 likelyLocations: ["packages/cli/src/index.test.ts"],
@@ -621,12 +623,21 @@ describe("PR fix workflows", () => {
       "https://api.github.com/repos/DevwareUK/prs/issues/comments/801",
       expect.objectContaining({
         method: "PATCH",
-        body: expect.stringContaining("fixed-tests-head-sha"),
+        body: expect.not.stringContaining("fixed-tests-head-sha"),
       })
     );
-    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body)).body).toContain(
-      "<!-- prs:test-suggestions:resolved-start -->"
+    const updatedCommentBody = JSON.parse(
+      String(fetchMock.mock.calls[2]?.[1]?.body)
+    ).body as string;
+    expect(updatedCommentBody).toContain(
+      "#### Verify prompt generation for selected test suggestions\n- [ ] Addressed"
     );
+    expect(updatedCommentBody).toContain(
+      "#### Verify managed comment parsing failure cases\n- [x] Addressed"
+    );
+    expect(updatedCommentBody).not.toContain("<!-- prs:test-suggestions:resolved-start -->");
+    expect(updatedCommentBody).not.toContain("<!-- prs:test-suggestions:resolved-end -->");
+    expect(updatedCommentBody).not.toContain("fixed-tests-head-sha");
     expect(spawnSync).toHaveBeenCalledWith(
       "git",
       ["commit", "-F", expect.stringContaining("commit-message.txt")],

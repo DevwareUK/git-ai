@@ -6,15 +6,11 @@ import { ensureVerificationCommandAvailable } from "../../workflow-preflights";
 import { pushReviewedPullRequestUpdates } from "../pull-request-reviewed-updates";
 import {
   findManagedTestSuggestionsComment,
+  markSelectedTestSuggestionsAddressed,
   parseManagedTestSuggestionsComment,
   parsePullRequestTestSuggestionSelection,
   printPullRequestTestSuggestions,
 } from "./selection";
-import {
-  mergeResolvedTestSuggestions,
-  parseResolvedTestSuggestionsFromCommentBody,
-  upsertResolvedTestSuggestionsBlock,
-} from "./resolved";
 import { fetchLinkedIssuesForPullRequest } from "./snapshot";
 import {
   createPullRequestFixTestsWorkspace,
@@ -241,17 +237,9 @@ export async function runPrFixTestsCommand(
   }
 
   const commitSha = resolveHeadCommitSha(options.repoRoot);
-  const resolvedRecords = mergeResolvedTestSuggestions(
-    parseResolvedTestSuggestionsFromCommentBody(comment.body),
-    selectedSuggestions,
-    {
-      commitSha,
-      resolvedAt: new Date().toISOString(),
-    }
-  );
-  const updatedCommentBody = upsertResolvedTestSuggestionsBlock(
+  const updatedCommentBody = markSelectedTestSuggestionsAddressed(
     comment.body,
-    resolvedRecords
+    selectedSuggestions
   );
 
   try {

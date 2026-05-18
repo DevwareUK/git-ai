@@ -321,6 +321,39 @@ export function parseManagedTestSuggestionsComment(
   };
 }
 
+export function markSelectedTestSuggestionsAddressed(
+  body: string,
+  selectedSuggestions: PullRequestTestSuggestion[]
+): string {
+  const selectedSuggestionIds = new Set(
+    selectedSuggestions.map((suggestion) => suggestion.suggestionId)
+  );
+  const lines = stripResolvedTestSuggestionsBlocks(body).split(/\r?\n/);
+  let suggestionIndex = -1;
+
+  return lines
+    .map((line) => {
+      if (line.trim().match(/^#### (.+)$/)) {
+        suggestionIndex += 1;
+        return line;
+      }
+
+      const addressedMatch = line.trim().match(/^- \[( |x|X)\] Addressed$/);
+      if (!addressedMatch) {
+        return line;
+      }
+
+      const suggestionId = `suggestion-${suggestionIndex + 1}`;
+      const alreadyChecked = addressedMatch[1].toLowerCase() === "x";
+      if (alreadyChecked || selectedSuggestionIds.has(suggestionId)) {
+        return line.replace(/^- \[( |x|X)\] Addressed$/, "- [x] Addressed");
+      }
+
+      return line;
+    })
+    .join("\n");
+}
+
 export function printPullRequestTestSuggestions(
   suggestions: PullRequestTestSuggestion[]
 ): void {

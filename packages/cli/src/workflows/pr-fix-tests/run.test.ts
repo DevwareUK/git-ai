@@ -230,6 +230,28 @@ describe("runPrFixTestsCommand", () => {
     const comment = createManagedComment(
       [
         "<!-- prs:test-suggestions -->",
+        "<!-- prs:test-suggestions:resolved-start -->",
+        JSON.stringify(
+          [
+            {
+              key: "legacy-key",
+              area: "Legacy resolved suggestion",
+              testType: "unit",
+              behavior: "Old resolved JSON should be removed.",
+              regressionRisk: "Old state can leak into comments.",
+              value: "The checklist is the source of truth.",
+              protectedPaths: [],
+              likelyLocations: [],
+              edgeCases: [],
+              implementationNote: "Remove this legacy state.",
+              resolvedAt: "2026-05-18T11:47:00.829Z",
+              commitSha: "old-ledger-sha",
+            },
+          ],
+          null,
+          2
+        ),
+        "<!-- prs:test-suggestions:resolved-end -->",
         "## AI Test Suggestions",
         "",
         "### Suggested test areas",
@@ -300,6 +322,7 @@ describe("runPrFixTestsCommand", () => {
         ...buildSuggestionBlock({
           title: "Verify command execution for 'prs pr fix-tests'",
           priority: "High",
+          addressed: false,
           value: "The command should orchestrate the selected test workflow.",
           protectedPaths: [
             "packages/cli/src/workflows/pr-fix-tests/run.ts",
@@ -315,6 +338,7 @@ describe("runPrFixTestsCommand", () => {
         ...buildSuggestionBlock({
           title: "Verify output artifacts are created correctly",
           priority: "Medium",
+          addressed: false,
           value: "The workflow should produce auditable run artifacts.",
           protectedPaths: [
             "packages/cli/src/workflows/pr-fix-tests/workspace.ts",
@@ -403,14 +427,17 @@ describe("runPrFixTestsCommand", () => {
         filePath: resolve(workspace.runDir, "commit-message.txt"),
       })
     );
-    expect(updateIssueComment).toHaveBeenCalledWith(
-      801,
-      expect.stringContaining("<!-- prs:test-suggestions:resolved-start -->")
-    );
-    expect(updateIssueComment.mock.calls[0]?.[1]).toContain(
+    const updatedCommentBody = updateIssueComment.mock.calls[0]?.[1] as string;
+    expect(updatedCommentBody).toContain("<!-- prs:test-suggestions -->");
+    expect(updatedCommentBody).toContain("#### Verify command execution for 'prs pr fix-tests'\n- [x] Addressed");
+    expect(updatedCommentBody).toContain("#### Verify output artifacts are created correctly\n- [x] Addressed");
+    expect(updatedCommentBody).not.toContain("<!-- prs:test-suggestions:resolved-start -->");
+    expect(updatedCommentBody).not.toContain("<!-- prs:test-suggestions:resolved-end -->");
+    expect(updatedCommentBody).not.toContain("old-ledger-sha");
+    expect(updatedCommentBody).not.toContain("accepted-head-sha");
+    expect(updatedCommentBody).toContain(
       "Verify command execution for 'prs pr fix-tests'"
     );
-    expect(updateIssueComment.mock.calls[0]?.[1]).toContain("accepted-head-sha");
     expect(commitGeneratedChanges.mock.invocationCallOrder[0]).toBeLessThan(
       updateIssueComment.mock.invocationCallOrder[0] ?? 0
     );
