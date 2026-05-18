@@ -300,6 +300,7 @@ describe("runPrFixTestsCommand", () => {
         ...buildSuggestionBlock({
           title: "Verify command execution for 'prs pr fix-tests'",
           priority: "High",
+          addressed: false,
           value: "The command should orchestrate the selected test workflow.",
           protectedPaths: [
             "packages/cli/src/workflows/pr-fix-tests/run.ts",
@@ -315,6 +316,7 @@ describe("runPrFixTestsCommand", () => {
         ...buildSuggestionBlock({
           title: "Verify output artifacts are created correctly",
           priority: "Medium",
+          addressed: false,
           value: "The workflow should produce auditable run artifacts.",
           protectedPaths: [
             "packages/cli/src/workflows/pr-fix-tests/workspace.ts",
@@ -403,17 +405,7 @@ describe("runPrFixTestsCommand", () => {
         filePath: resolve(workspace.runDir, "commit-message.txt"),
       })
     );
-    expect(updateIssueComment).toHaveBeenCalledWith(
-      801,
-      expect.stringContaining("<!-- prs:test-suggestions:resolved-start -->")
-    );
-    expect(updateIssueComment.mock.calls[0]?.[1]).toContain(
-      "Verify command execution for 'prs pr fix-tests'"
-    );
-    expect(updateIssueComment.mock.calls[0]?.[1]).toContain("accepted-head-sha");
-    expect(commitGeneratedChanges.mock.invocationCallOrder[0]).toBeLessThan(
-      updateIssueComment.mock.invocationCallOrder[0] ?? 0
-    );
+    expect(updateIssueComment).not.toHaveBeenCalled();
     const pushCallIndex = vi.mocked(spawnSync).mock.calls.findIndex(
       ([command, args]) =>
         command === "git" &&
@@ -422,7 +414,7 @@ describe("runPrFixTestsCommand", () => {
         args[2] === "HEAD:feat/pr-fix-tests"
     );
     expect(pushCallIndex).toBeGreaterThanOrEqual(0);
-    expect(updateIssueComment.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(commitGeneratedChanges.mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(spawnSync).mock.invocationCallOrder[pushCallIndex] ?? 0
     );
     expect(spawnSync).toHaveBeenCalledWith(

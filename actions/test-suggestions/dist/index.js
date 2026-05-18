@@ -46321,6 +46321,8 @@ function getOptionalInlineOrFileInput(inputName, fileInputName) {
 
 // src/comment.ts
 var import_contracts = __toESM(require_dist());
+var RESOLVED_TEST_SUGGESTIONS_START_MARKER = "<!-- prs:test-suggestions:resolved-start -->";
+var RESOLVED_TEST_SUGGESTIONS_END_MARKER = "<!-- prs:test-suggestions:resolved-end -->";
 function toTitleCase(value) {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
@@ -46372,6 +46374,26 @@ function splitCommentSections(lines) {
     sections.get(currentSection)?.push(line);
   }
   return sections;
+}
+function stripResolvedTestSuggestionsBlocks(body) {
+  const lines = body.split(/\r?\n/);
+  const result = [];
+  let insideResolvedBlock = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed === RESOLVED_TEST_SUGGESTIONS_START_MARKER) {
+      insideResolvedBlock = true;
+      continue;
+    }
+    if (trimmed === RESOLVED_TEST_SUGGESTIONS_END_MARKER) {
+      insideResolvedBlock = false;
+      continue;
+    }
+    if (!insideResolvedBlock) {
+      result.push(line);
+    }
+  }
+  return result.join("\n");
 }
 function parseSuggestionBlock(blockTitle, blockLines, suggestionIndex) {
   let addressed = false;
@@ -46525,7 +46547,7 @@ function parseSuggestedTestsSection(sectionLines) {
   return suggestions;
 }
 function parseChecklistCommentBody(body) {
-  const lines = body.split(/\r?\n/).filter((line) => line.trim() !== "<!-- prs:test-suggestions -->");
+  const lines = stripResolvedTestSuggestionsBlocks(body).split(/\r?\n/).filter((line) => line.trim() !== "<!-- prs:test-suggestions -->");
   if (!lines.some((line) => line.trim() === "## AI Test Suggestions")) {
     throw new Error('The managed comment is missing the "## AI Test Suggestions" heading.');
   }
@@ -46541,7 +46563,7 @@ function parseChecklistCommentBody(body) {
 }
 function applyAddressedSuggestionUpdates(body, addressedIds) {
   const addressedIdSet = new Set(addressedIds);
-  const lines = body.split(/\r?\n/);
+  const lines = stripResolvedTestSuggestionsBlocks(body).split(/\r?\n/);
   let suggestionIndex = -1;
   return lines.map((line) => {
     if (line.trim().match(/^#### (.+)$/)) {

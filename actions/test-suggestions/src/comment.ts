@@ -23,6 +23,11 @@ export type ChecklistComment = {
   suggestions: ChecklistTestSuggestion[];
 };
 
+const RESOLVED_TEST_SUGGESTIONS_START_MARKER =
+  "<!-- prs:test-suggestions:resolved-start -->";
+const RESOLVED_TEST_SUGGESTIONS_END_MARKER =
+  "<!-- prs:test-suggestions:resolved-end -->";
+
 function toTitleCase(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
@@ -91,6 +96,31 @@ function splitCommentSections(lines: string[]): Map<string, string[]> {
   }
 
   return sections;
+}
+
+function stripResolvedTestSuggestionsBlocks(body: string): string {
+  const lines = body.split(/\r?\n/);
+  const result: string[] = [];
+  let insideResolvedBlock = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed === RESOLVED_TEST_SUGGESTIONS_START_MARKER) {
+      insideResolvedBlock = true;
+      continue;
+    }
+
+    if (trimmed === RESOLVED_TEST_SUGGESTIONS_END_MARKER) {
+      insideResolvedBlock = false;
+      continue;
+    }
+
+    if (!insideResolvedBlock) {
+      result.push(line);
+    }
+  }
+
+  return result.join("\n");
 }
 
 function parseSuggestionBlock(
@@ -276,7 +306,7 @@ function parseSuggestedTestsSection(sectionLines: string[]): ChecklistTestSugges
 }
 
 export function parseChecklistCommentBody(body: string): ChecklistComment {
-  const lines = body
+  const lines = stripResolvedTestSuggestionsBlocks(body)
     .split(/\r?\n/)
     .filter((line) => line.trim() !== "<!-- prs:test-suggestions -->");
   if (!lines.some((line) => line.trim() === "## AI Test Suggestions")) {
@@ -300,7 +330,7 @@ export function applyAddressedSuggestionUpdates(
   addressedIds: string[]
 ): string {
   const addressedIdSet = new Set(addressedIds);
-  const lines = body.split(/\r?\n/);
+  const lines = stripResolvedTestSuggestionsBlocks(body).split(/\r?\n/);
   let suggestionIndex = -1;
 
   return lines

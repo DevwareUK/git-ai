@@ -15,7 +15,7 @@ inputs:
     description: "Optional pull request body"
     required: false
   resolved_suggestions:
-    description: "Optional JSON array of previously addressed AI test suggestions for this pull request"
+    description: "Legacy optional JSON array of previously addressed AI test suggestions. Generated workflows use existing_comment_file instead."
     required: false
   existing_comment:
     description: "Existing managed AI test suggestions comment body. When provided, the action updates addressed checkboxes instead of generating new suggestions."

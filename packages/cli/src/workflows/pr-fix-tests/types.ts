@@ -29,15 +29,6 @@ export type PullRequestTestSuggestion = {
   implementationNote: string;
 };
 
-export type PullRequestResolvedTestSuggestion = Omit<
-  PullRequestTestSuggestion,
-  "suggestionId" | "priority"
-> & {
-  key: string;
-  resolvedAt: string;
-  commitSha: string;
-};
-
 export type PullRequestTestSuggestionsComment = {
   sourceComment: RepositoryComment;
   overview: string;
