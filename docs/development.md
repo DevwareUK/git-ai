@@ -139,7 +139,7 @@ Inputs:
 - `INPUT_COMMIT_MESSAGES_FILE` optional file path for commit messages
 - `INPUT_PR_TITLE` optional
 - `INPUT_PR_BODY` optional
-- `INPUT_RESOLVED_SUGGESTIONS` optional JSON array of previously addressed AI test suggestions, normally supplied by the generated workflow from the managed PR comment
+- `INPUT_RESOLVED_SUGGESTIONS` legacy optional JSON array of previously addressed AI test suggestions for manual callers; generated workflows use the existing managed comment file instead
 - `INPUT_OPENAI_API_KEY` required
 - `INPUT_OPENAI_MODEL` optional, defaults to `gpt-4o-mini`
 - `INPUT_OPENAI_BASE_URL` optional

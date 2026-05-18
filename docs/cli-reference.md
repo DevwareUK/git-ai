@@ -266,6 +266,7 @@ Important behavior:
 - `prs pr fix-failing-tests <pr-number>` writes `failing-tests.md`, `prompt.md`, `metadata.json`, and `output.log` under `.prs/runs/<timestamp>-pr-<number>-fix-failing-tests` after an initial verification failure; passing initial verification does not create a no-op run directory
 - `prs pr fix-tests <pr-number>` offers only unchecked AI Test Suggestions checklist items; if every managed suggestion is already checked, it exits with `All managed AI test suggestions are already addressed.`
 - the direct PR fix preparation commands do not update managed PR comments, commit, or push; after making changes in the active Codex session, finish through the normal verification, commit, push, and audit flow
+- `prs pr fix-tests <pr-number>` does not update the managed AI Test Suggestions PR comment after local fixes; the GitHub Action owns checking addressed suggestions when it next evaluates the PR
 - local PR fix prompts end with an explicit done-state summary, a short note about how to see the result or what was verified, and plain-language next steps
 - the command expects the relevant PR branch to already be checked out locally before the active session starts editing
 - the interactive comment selector accepts numbered thread choices, grouped task choices like `g1` when available, `all`, `none`, and blank input; pressing Enter selects every individual thread

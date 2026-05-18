@@ -356,6 +356,7 @@ describe("PR fix workflows", () => {
               ...buildManagedTestSuggestionBlock({
                 title: "Verify prompt generation for selected test suggestions",
                 priority: "High",
+                addressed: false,
                 value:
                   "The Codex handoff should preserve the selected test context.",
                 protectedPaths: [
@@ -372,6 +373,7 @@ describe("PR fix workflows", () => {
               ...buildManagedTestSuggestionBlock({
                 title: "Verify managed comment parsing failure cases",
                 priority: "Medium",
+                addressed: false,
                 value:
                   "The command should fail clearly when the managed comment is malformed.",
                 likelyLocations: ["packages/cli/src/index.test.ts"],

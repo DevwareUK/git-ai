@@ -138,4 +138,34 @@ describe("parseChecklistCommentBody", () => {
     expect(updatedBody).toContain("- Implementation note: Add a checkout workflow test.");
     expect(updatedBody).toContain("- Implementation note: Add a rendering test.");
   });
+
+  it("removes legacy resolved suggestion ledger blocks while checking addressed suggestions", () => {
+    const body = [
+      "<!-- prs:test-suggestions -->",
+      "<!-- prs:test-suggestions:resolved-start -->",
+      "[",
+      "  { \"commitSha\": \"old-ledger-sha\" }",
+      "]",
+      "<!-- prs:test-suggestions:resolved-end -->",
+      "## AI Test Suggestions",
+      "",
+      "### Suggested test areas",
+      "",
+      "#### Verify checkout flow",
+      "- [ ] Addressed",
+      "- Priority: High",
+      "- Test type: integration",
+      "- Behavior covered: Checkout completes.",
+      "- Regression risk: Checkout can fail silently.",
+      "- Why it matters: It protects revenue.",
+      "- Implementation note: Add a checkout workflow test.",
+    ].join("\n");
+
+    const updatedBody = applyAddressedSuggestionUpdates(body, ["suggestion-1"]);
+
+    expect(updatedBody).toContain("#### Verify checkout flow\n- [x] Addressed");
+    expect(updatedBody).not.toContain("<!-- prs:test-suggestions:resolved-start -->");
+    expect(updatedBody).not.toContain("<!-- prs:test-suggestions:resolved-end -->");
+    expect(updatedBody).not.toContain("old-ledger-sha");
+  });
 });

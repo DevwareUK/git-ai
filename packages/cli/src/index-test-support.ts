@@ -100,6 +100,7 @@ function buildManagedTestSuggestionBlock(options: {
   title: string;
   priority: "High" | "Medium" | "Low";
   value: string;
+  addressed?: boolean;
   testType?: string;
   behavior?: string;
   regressionRisk?: string;
@@ -110,6 +111,9 @@ function buildManagedTestSuggestionBlock(options: {
 }): string[] {
   const lines = [
     `#### ${options.title}`,
+    ...(options.addressed === undefined
+      ? []
+      : [`- [${options.addressed ? "x" : " "}] Addressed`]),
     `- Priority: ${options.priority}`,
     `- Test type: ${options.testType ?? "integration"}`,
     `- Behavior covered: ${options.behavior ?? `${options.title} should stay covered.`}`,
