@@ -3760,25 +3760,19 @@ async function runPrCommand(): Promise<void> {
   }
 
   if (prCommand.action === "fix-comments") {
-    await runPrFixCommentsCommand({
+    const result = await runPrFixCommentsCommand({
+      mode: "prepare",
       prNumber: prCommand.prNumber,
       repoRoot,
       buildCommand: repositoryConfig.buildCommand,
       ensureVerificationCommandAvailable,
       runtime: {
-        resolve: () => {
-          const runtime = selectInteractiveRuntime(repositoryConfig.ai.runtime, {
-            onFallback: (message) => {
-              console.log(message);
-            },
-          });
-          return {
-            displayName: runtime.displayName,
-            launch: (runtimeRepoRoot, workspace) => {
-              runtime.launch(runtimeRepoRoot, workspace);
-            },
-          };
-        },
+        resolve: () => ({
+          displayName: "Codex",
+          launch: () => {
+            throw new Error("prs pr fix-comments must not launch Codex.");
+          },
+        }),
       },
       forge: getRepositoryForge(repoRoot),
       ensureCleanWorkingTree,
@@ -3787,29 +3781,26 @@ async function runPrCommand(): Promise<void> {
       hasChanges,
       commitGeneratedChanges,
     });
+    if (result) {
+      console.log(JSON.stringify(result, null, 2));
+    }
     return;
   }
 
   if (prCommand.action === "fix-failing-tests") {
-    await runPrFixFailingTestsCommand({
+    const result = await runPrFixFailingTestsCommand({
+      mode: "prepare",
       prNumber: prCommand.prNumber,
       repoRoot,
       buildCommand: repositoryConfig.buildCommand,
       ensureVerificationCommandAvailable,
       runtime: {
-        resolve: () => {
-          const runtime = selectInteractiveRuntime(repositoryConfig.ai.runtime, {
-            onFallback: (message) => {
-              console.log(message);
-            },
-          });
-          return {
-            displayName: runtime.displayName,
-            launch: (runtimeRepoRoot, workspace) => {
-              runtime.launch(runtimeRepoRoot, workspace);
-            },
-          };
-        },
+        resolve: () => ({
+          displayName: "Codex",
+          launch: () => {
+            throw new Error("prs pr fix-failing-tests must not launch Codex.");
+          },
+        }),
       },
       forge: getRepositoryForge(repoRoot),
       ensureCleanWorkingTree,
@@ -3819,28 +3810,25 @@ async function runPrCommand(): Promise<void> {
       hasChanges,
       commitGeneratedChanges,
     });
+    if (result) {
+      console.log(JSON.stringify(result, null, 2));
+    }
     return;
   }
 
-  await runPrFixTestsCommand({
+  const result = await runPrFixTestsCommand({
+    mode: "prepare",
     prNumber: prCommand.prNumber,
     repoRoot,
     buildCommand: repositoryConfig.buildCommand,
     ensureVerificationCommandAvailable,
     runtime: {
-      resolve: () => {
-        const runtime = selectInteractiveRuntime(repositoryConfig.ai.runtime, {
-          onFallback: (message) => {
-            console.log(message);
-          },
-        });
-        return {
-          displayName: runtime.displayName,
-          launch: (runtimeRepoRoot, workspace) => {
-            runtime.launch(runtimeRepoRoot, workspace);
-          },
-        };
-      },
+      resolve: () => ({
+        displayName: "Codex",
+        launch: () => {
+          throw new Error("prs pr fix-tests must not launch Codex.");
+        },
+      }),
     },
     forge: getRepositoryForge(repoRoot),
     ensureCleanWorkingTree,
@@ -3849,6 +3837,9 @@ async function runPrCommand(): Promise<void> {
     hasChanges,
     commitGeneratedChanges,
   });
+  if (result) {
+    console.log(JSON.stringify(result, null, 2));
+  }
 }
 
 async function runPrPrepareReviewCodexLauncher(
