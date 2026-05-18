@@ -60,8 +60,10 @@ describe("managed prs Codex skills", () => {
     expect(markdown).toContain("/prs create");
     expect(markdown).toContain("/prs:create");
     expect(markdown).toContain("/prs create issue");
+    expect(markdown).toContain("Default workflow handoff: `/prs create` -> `/prs issue` -> `/prs pr`");
     expect(markdown).toContain("Draft GitHub Issue: <short topic>");
     expect(markdown).toContain("ask the user to approve the draft before creating it in GitHub");
+    expect(markdown).toContain("offer the next `/prs issue` step for that issue");
     expect(markdown).toContain("/prs:review");
     expect(markdown).toContain("/prs review tests`: run `prs test-backlog`");
     expect(markdown).toContain("/prs review features`: run `prs feature-backlog`");
@@ -83,6 +85,7 @@ describe("managed prs Codex skills", () => {
       "do not stop after the readiness JSON when `--all` is present."
     );
     expect(markdown).toContain("/prs issue <number> finish");
+    expect(markdown).toContain("offer the next `/prs pr` step for that pull request");
     expect(markdown).toContain("/prs pr <number> resolve-conflicts");
     expect(markdown).toContain(
       "/prs pr <number>`: run `prs tool pr ready <number> --json`"
@@ -133,6 +136,9 @@ describe("managed prs Codex skills", () => {
     expect(createMarkdown).toContain("Draft a GitHub issue from a rough idea");
     expect(createMarkdown).toContain("Draft GitHub Issue: <short topic>");
     expect(createMarkdown).toContain("ask the user to approve them before creating");
+    expect(createMarkdown).toContain("offer the next `/prs issue` step for that issue");
+    expect(createMarkdown).not.toContain("offer the `/prs issue <number>` step");
+    expect(createMarkdown).not.toContain("offer to start `prs:start-issue-work`");
     expect(reviewMarkdown).toContain("name: prs:review");
     expect(reviewMarkdown).toContain("testing strategy and coverage review");
     expect(reviewMarkdown).toContain("/prs:review tests");
@@ -145,6 +151,8 @@ describe("managed prs Codex skills", () => {
     expect(auditMarkdown).toContain("prs audit publish");
     expect(finishMarkdown).toContain("name: prs:finish");
     expect(finishMarkdown).toContain("safely cleaning up");
+    expect(finishMarkdown).toContain("offer the next `/prs pr` step for that pull request");
+    expect(finishMarkdown).not.toContain("offer to prepare the pull request for review with `/prs pr <number> prepare-review`");
   });
 
   it("renders a setup-captured fallback CLI command for Codex sessions", () => {
